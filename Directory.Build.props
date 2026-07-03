@@ -1,0 +1,33 @@
+<Project>
+    <PropertyGroup>
+        <OctoRootDirectoryPropsFilePath>$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))</OctoRootDirectoryPropsFilePath>
+        <OctoUserPropsFilePath>$([MSBuild]::GetPathOfFileAbove('Octo.User.props', '$(MSBuildThisFileDirectory)'))</OctoUserPropsFilePath>
+        <OctoRepoRootPath>$(MSBuildThisFileDirectory)</OctoRepoRootPath>
+        <OctoRepoRootPath Condition="'$(OctoRootDirectoryPropsFilePath)'!=''">$([System.IO.Path]::GetDirectoryName($(OctoRootDirectoryPropsFilePath)))</OctoRepoRootPath>
+    </PropertyGroup>
+    <!-- Import an custom file to overwrite versions etc. -->
+    <Import Condition="'$(OctoRootDirectoryPropsFilePath)'=='' And Exists($(OctoUserPropsFilePath))" Project="$(OctoUserPropsFilePath)"/>
+    <!-- Import the Directory.Build.props file of the root directory -->
+    <Import Condition="Exists($(OctoRootDirectoryPropsFilePath))" Project="$(OctoRootDirectoryPropsFilePath)"/>
+    <PropertyGroup>
+        <LangVersion>latestmajor</LangVersion>
+        <Nullable>enable</Nullable>
+        <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+        <ImplicitUsings>true</ImplicitUsings>
+        <RepositoryUrl>https://github.com/meshmakers/octo-adapter-weclapp</RepositoryUrl>
+        <TargetFramework>net10.0</TargetFramework>
+        <UserSecretsId>bab956b5-41cb-48c4-af5a-32252ac38952</UserSecretsId>
+        <OctoVersion Condition="'$(Configuration)'=='DebugL'">999.0.0</OctoVersion>
+        <OctoVersion Condition="'$(OctoNugetPrivateServer)'!='' And '$(OctoVersion)'==''">0.1.*</OctoVersion>
+        <OctoVersion Condition="'$(OctoNugetPrivateServer)'=='' And '$(OctoVersion)'==''">3.4.*</OctoVersion>
+        <OctoCoreLibVersion Condition="'$(Configuration)'=='DebugL'">999.0.0</OctoCoreLibVersion>
+        <OctoCoreLibVersion Condition="'$(OctoNugetPrivateServer)'!='' And '$(OctoCoreLibVersion)'==''">0.1.*</OctoCoreLibVersion>
+        <OctoCoreLibVersion Condition="'$(OctoNugetPrivateServer)'=='' And '$(OctoCoreLibVersion)'==''">3.4.*</OctoCoreLibVersion>
+        <OctoCommVersion Condition="'$(Configuration)'=='DebugL'">999.0.0</OctoCommVersion>
+        <OctoCommVersion Condition="'$(OctoNugetPrivateServer)'!='' And '$(OctoCommVersion)'==''">0.1.*</OctoCommVersion>
+        <OctoCommVersion Condition="'$(OctoNugetPrivateServer)'=='' And '$(OctoCommVersion)'==''">3.4.*</OctoCommVersion>
+        <Version Condition="'$(Configuration)'=='DebugL'">999.0.0</Version>
+        <RestoreSources Condition="'$(OctoNugetPrivateServer)'!=''">$(OctoNugetPrivateServer)</RestoreSources>
+        <RestoreSources Condition="'$(Configuration)'=='DebugL'">$(RestoreSources);$(OctoRepoRootPath)../nuget</RestoreSources>
+    </PropertyGroup>
+</Project>

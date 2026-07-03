@@ -1,0 +1,14 @@
+<Solution>
+  <Configurations>
+    <BuildType Name="Debug" />
+    <BuildType Name="DebugL" />
+    <BuildType Name="Release" />
+  </Configurations>
+  <Folder Name="/src/">
+    <Project Path="src/AdapterMeshWeClapp/AdapterMeshWeClapp.csproj" />
+    <Project Path="src/Lkv.WeClapp.Core/Lkv.WeClapp.Core.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Lkv.WeClapp.Core.Tests/Lkv.WeClapp.Core.Tests.csproj" />
+  </Folder>
+</Solution>
