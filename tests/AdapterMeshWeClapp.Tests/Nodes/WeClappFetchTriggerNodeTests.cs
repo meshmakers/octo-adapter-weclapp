@@ -98,10 +98,11 @@ public class WeClappFetchTriggerNodeTests
 
         await sut.FetchOnceAsync(_context);
 
-        // salesOrder query carries the additional filter AND additionalProperties=orderItems
+        // salesOrder query carries the additional filter; NO additionalProperties parameter
+        // (live-verified: it does not exist, orderItems are in the default response).
         var orderRequest = handler.Requests[0].Url;
         Assert.Contains("salesOrder?page=1&pageSize=10", orderRequest);
-        Assert.Contains("additionalProperties=orderItems", orderRequest);
+        Assert.DoesNotContain("additionalProperties", orderRequest);
         Assert.Contains("status-eq=ORDER_ENTRY_IN_PROGRESS", orderRequest);
 
         // one customer lookup only (cached for the second order), via verified -eq filter syntax

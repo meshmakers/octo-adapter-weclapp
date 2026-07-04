@@ -14,7 +14,7 @@ triggers:
   - type: WeClappFetch@1
     baseUrl: https://REPLACE-TENANT.weclapp.com/webapp/api/v1
     apiKey: ${WECLAPP_API_KEY}
-    entity: salesOrder
+    entity: salesOrder    # orderItems are part of the default response (live-verified 2026-07-04)
     # additionalQuery: status-eq=ORDER_ENTRY_IN_PROGRESS   # real status filter TBD (Kickoff: "Im Fulfillment")
     pageSize: 100
     pollingIntervalSeconds: 900

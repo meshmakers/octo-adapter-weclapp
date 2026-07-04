@@ -22,6 +22,14 @@ await adapterBuilder.RunAsync(args, builder =>
     // Add the adapter service to startup and shutdown the adapter
     builder.Services.AddSingleton<IAdapterService, AdapterMeshWeClappService>();
 
+    // WeClapp serves gzip-compressed responses (live-verified: raw bodies start with 0x1F) —
+    // the named client for the fetch node must decompress automatically.
+    builder.Services.AddHttpClient(nameof(WeClappFetchTriggerNode))
+        .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+        {
+            AutomaticDecompression = System.Net.DecompressionMethods.All,
+        });
+
     // Add mesh adapter nodes and services to the container:
     // the three custom nodes of the ingestion design (WeClappFetch → WeClappToCk → DilosRender).
     builder.Services.AddOctoMeshAdapter()

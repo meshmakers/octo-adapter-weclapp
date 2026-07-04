@@ -23,7 +23,8 @@ public record WeClappFetchTriggerNodeConfiguration : TriggerNodeConfiguration
     public required string ApiKey { get; set; }
 
     /// <summary>WeClapp entity to pull: "article" or "salesOrder" (orders are joined with
-    /// their customer; the query automatically carries additionalProperties=orderItems).</summary>
+    /// their customer; orderItems are part of the default salesOrder response — live-verified,
+    /// an additionalProperties parameter does NOT exist and yields HTTP 400).</summary>
     public required string Entity { get; set; }
 
     /// <summary>Optional additional query, e.g. "status-eq=ORDER_ENTRY_IN_PROGRESS".</summary>
@@ -159,9 +160,8 @@ public class WeClappFetchTriggerNode(
     private static async Task FetchOrdersAsync(HttpClient http, WeClappFetchTriggerNodeConfiguration config,
         ITriggerContext context)
     {
-        // orderItems must be requested explicitly (verified WeClapp query vocabulary).
-        var query = JoinQuery(config.AdditionalQuery, "additionalProperties=orderItems");
-        var orders = await FetchAllPagesAsync(http, config, "salesOrder", query);
+        // orderItems are included in the default salesOrder response (live-verified).
+        var orders = await FetchAllPagesAsync(http, config, "salesOrder", config.AdditionalQuery);
 
         var customerCache = new Dictionary<string, JsonNode?>();
 
@@ -249,14 +249,15 @@ public class WeClappFetchTriggerNode(
                 }
 
                 var status = (int)response.StatusCode;
+                var errorBody = Truncate(await response.Content.ReadAsStringAsync(), 300);
                 var transient = status >= 500 || status == 408 || status == 429;
                 if (!transient)
                 {
                     throw new WeClappPipelineExecutionException(
-                        $"WeClapp request failed with HTTP {status} for {url}");
+                        $"WeClapp request failed with HTTP {status} for {url}: {errorBody}");
                 }
 
-                lastError = $"HTTP {status}";
+                lastError = $"HTTP {status}: {errorBody}";
             }
             catch (HttpRequestException ex)
             {
@@ -274,6 +275,6 @@ public class WeClappFetchTriggerNode(
             $"WeClapp request failed after {config.MaxRetries} attempts ({lastError}) for {url}");
     }
 
-    private static string JoinQuery(string first, string second) =>
-        first.Length == 0 ? second : first + "&" + second;
+    private static string Truncate(string value, int maxLength) =>
+        value.Length <= maxLength ? value : value[..maxLength];
 }

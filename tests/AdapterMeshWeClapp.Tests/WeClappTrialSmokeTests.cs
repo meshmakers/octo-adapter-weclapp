@@ -53,8 +53,10 @@ public class WeClappTrialSmokeTests(ITestOutputHelper output)
             .Invokes(call => documents.Add((JsonNode?)call.Arguments[1]))
             .Returns(Task.FromResult<object?>(null));
 
+        // Same handler setup as the adapter's named client: WeClapp serves gzip.
         var httpClientFactory = A.Fake<IHttpClientFactory>();
-        A.CallTo(() => httpClientFactory.CreateClient(A<string>._)).Returns(new HttpClient());
+        A.CallTo(() => httpClientFactory.CreateClient(A<string>._)).Returns(new HttpClient(
+            new HttpClientHandler { AutomaticDecompression = System.Net.DecompressionMethods.All }));
 
         var node = new WeClappFetchTriggerNode(A.Fake<ILogger<WeClappFetchTriggerNode>>(), httpClientFactory);
         return (node, context, documents);
