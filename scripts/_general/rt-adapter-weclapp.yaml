@@ -1,0 +1,9 @@
+$schema: https://schemas.meshmakers.cloud/runtime-model.schema.json
+dependencies:
+  - System.Communication
+entities:
+  - rtId: 3ff972bcd8a6369e8b38de78
+    ckTypeId: System.Communication/MeshAdapter
+    attributes:
+      - id: System/Name
+        value: WeClapp Mesh Adapter (LKV)

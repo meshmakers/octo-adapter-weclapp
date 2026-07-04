@@ -1,0 +1,31 @@
+# Pipeline: WeClapp articles → CK entities + DILOS AS file content (daily article sync).
+# Deployment + key handling identical to weclapp-orders-to-ai.yaml.
+
+triggers:
+  - type: WeClappFetch@1
+    baseUrl: https://REPLACE-TENANT.weclapp.com/webapp/api/v1
+    apiKey: ${WECLAPP_API_KEY}
+    entity: article
+    pageSize: 100
+    pollingIntervalSeconds: 86400
+
+transformations:
+  - type: WeClappToCk@1
+    description: WeClapp article → CK-shaped document (system articles filtered)
+    mode: Article
+    path: $.item
+    targetPath: $.ck
+
+  # --- CK persistence (built-ins; validate at tenant) ---
+  # - type: GetOrCreateRtEntitiesByType@1   → Article by $.ck.ArticleNumber
+  # - type: ApplyChanges@1
+
+  - type: DilosRender@1
+    description: Render the AS line for this article
+    mode: AS
+    path: $.item
+    targetPath: $.dilosAs
+
+  # --- File delivery (built-ins; validate at tenant) ---
+  # - type: SftpUpload@1  → AS<timestamp>.txt (article sync collects into one file per run —
+  #   aggregation strategy to validate at tenant: per-document vs. collected)

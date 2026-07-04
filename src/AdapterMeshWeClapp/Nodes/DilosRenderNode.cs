@@ -55,12 +55,9 @@ public class DilosRenderNode(NodeDelegate next) : IPipelineNode
 
     private static string RenderArticles(IDataContext dataContext, DilosRenderNodeConfiguration config)
     {
-        var articles = dataContext.GetArray<WeClappArticle>(config.Path)
-                       ?? throw new WeClappPipelineExecutionException(
-                           $"No article array found at path '{config.Path}'");
+        var articles = ReadOneOrMany<WeClappArticle>(dataContext, config.Path, "article");
 
         var lines = articles
-            .OfType<WeClappArticle>()
             .Select(a => DilosArticleWriter.RenderLine(a, DilosArticleContext.Default));
 
         return JoinCrlf(lines);
@@ -73,17 +70,33 @@ public class DilosRenderNode(NodeDelegate next) : IPipelineNode
             throw new WeClappPipelineExecutionException("DilosRender mode 'AI' requires Submandant");
         }
 
-        var orders = dataContext.GetArray<WeClappSalesOrder>(config.Path)
-                     ?? throw new WeClappPipelineExecutionException(
-                         $"No order array found at path '{config.Path}'");
+        var orders = ReadOneOrMany<WeClappSalesOrder>(dataContext, config.Path, "order");
 
         var ctx = new DilosOrderContext { Submandant = config.Submandant };
         var lines = orders
-            .OfType<WeClappSalesOrder>()
             .SelectMany(o => new[] { DilosOrderWriter.RenderHeader(o, ctx) }
                 .Concat(DilosOrderWriter.RenderPositions(o, ctx)));
 
         return JoinCrlf(lines);
+    }
+
+    /// <summary>Reads the source as an array OR a single object — per-document pipelines
+    /// (one order per execution; golden AI files are one file per order) carry one object.</summary>
+    private static List<T> ReadOneOrMany<T>(IDataContext dataContext, string path, string what)
+        where T : class
+    {
+        if (dataContext.GetKind(path) == DataKind.Object)
+        {
+            var single = dataContext.Get<T>(path)
+                         ?? throw new WeClappPipelineExecutionException(
+                             $"No {what} found at path '{path}'");
+            return new List<T> { single };
+        }
+
+        var many = dataContext.GetArray<T>(path)
+                   ?? throw new WeClappPipelineExecutionException(
+                       $"No {what} array found at path '{path}'");
+        return many.OfType<T>().ToList();
     }
 
     private static string JoinCrlf(IEnumerable<string> lines)

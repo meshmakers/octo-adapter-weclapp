@@ -89,6 +89,37 @@ public class DilosRenderNodeTests
             config.TargetValueKind, config.TargetValueWriteMode)).MustHaveHappenedOnceExactly();
     }
 
+    // Per-document pipelines (one order per execution — golden AI files are one file per
+    // order!) carry a single OBJECT at Path, not an array. The node must render it as one.
+    [Fact]
+    public async Task ProcessObjectAsync_AiMode_SingleObjectAtPathRendersOneOrder()
+    {
+        var config = Configure("AI", submandant: "51696697501");
+        A.CallTo(() => _dataContext.GetKind("$.items")).Returns(DataKind.Object);
+        var order = new WeClappSalesOrder
+        {
+            Id = "5910986621265",
+            CustomerNumber = "7067387625809",
+            OrderItems =
+            {
+                new WeClappOrderItem
+                {
+                    PositionNumber = 1, ArticleId = "43222003744925",
+                    Quantity = "1", NetAmount = "29.99", Title = "Ersatzglas VOLT"
+                }
+            },
+        };
+        A.CallTo(() => _dataContext.Get<WeClappSalesOrder>("$.items")).Returns(order);
+
+        await _sut.ProcessObjectAsync(_dataContext, _nodeContext);
+
+        var ctx = new DilosOrderContext { Submandant = "51696697501" };
+        var expected = DilosOrderWriter.RenderHeader(order, ctx) + "\r\n" +
+                       string.Join("\r\n", DilosOrderWriter.RenderPositions(order, ctx)) + "\r\n";
+        A.CallTo(() => _dataContext.Set(config.TargetPath, expected, config.DocumentMode,
+            config.TargetValueKind, config.TargetValueWriteMode)).MustHaveHappenedOnceExactly();
+    }
+
     [Fact]
     public async Task ProcessObjectAsync_EmptyArray_WritesEmptyContent()
     {

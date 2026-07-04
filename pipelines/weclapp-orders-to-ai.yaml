@@ -1,0 +1,44 @@
+# Pipeline: WeClapp sales orders → CK entities + DILOS AI file content (one file per order,
+# file name = Auftragsnummer1; golden precedent). Deployed to the tenant via AdminPanel
+# (pipeline YAML per DEVELOPMENT.md of octo-adapter-demos).
+#
+# ${WECLAPP_API_KEY} is substituted at deploy time from the local environment variable
+# WECLAPP_TRIAL_API_KEY (see scripts/om_setup_lkv.ps1) — the key never enters the repo.
+#
+# NOTE (spike status): the custom-node chain below is proven end-to-end by
+# PipelineChainIntegrationTests; the built-in upsert/association/write section is prepared
+# per the node configurations but still needs validation at the tenant (association role
+# ids come from the compiled Industry.Logistics CK).
+
+triggers:
+  - type: WeClappFetch@1
+    baseUrl: https://REPLACE-TENANT.weclapp.com/webapp/api/v1
+    apiKey: ${WECLAPP_API_KEY}
+    entity: salesOrder
+    # additionalQuery: status-eq=ORDER_ENTRY_IN_PROGRESS   # real status filter TBD (Kickoff: "Im Fulfillment")
+    pageSize: 100
+    pollingIntervalSeconds: 900
+
+transformations:
+  - type: WeClappToCk@1
+    description: WeClapp order + customer → CK-shaped document
+    mode: Order
+    path: $.item
+    customerPath: $.customer
+    targetPath: $.ck
+
+  # --- CK persistence (built-ins; validate at tenant: association role ids from the CK) ---
+  # - type: GetOrCreateRtEntitiesByType@1   → Customer by $.ck.Customer.CustomerNumber
+  # - type: GetOrCreateRtEntitiesByType@1   → Order by $.ck.Order.OrderNumber
+  # - type: CreateAssociationUpdate@1       → Order→Customer (role id from Industry.Logistics)
+  # - type: ApplyChanges@1
+
+  - type: DilosRender@1
+    description: Render the AI file content for this order (K* + P* + shipping -1 line)
+    mode: AI
+    submandant: "51696697501"
+    path: $.item
+    targetPath: $.dilosAi
+
+  # --- File delivery (built-ins; validate at tenant) ---
+  # - type: SftpUpload@1  → AI<Auftragsnummer1>.txt to the LKV SFTP (credentials via tenant secret)
