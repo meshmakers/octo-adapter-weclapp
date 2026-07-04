@@ -26,4 +26,15 @@ public class WeClappParseTests
         Assert.All(orders, o => Assert.NotNull(o.OrderItems));
         Assert.Contains(orders, o => o.OrderItems.Count > 0);
     }
+
+    [Fact]
+    public void ParseCustomers_ReadsAnonymousDebitorSample()
+    {
+        var customers = WeClappJson.ParseCustomers(Fx("customer.json"));
+
+        var anon = Assert.Single(customers, c => c.CustomerNumber == "ANONYMOUS_DEBITOR");
+        Assert.Equal("ANONYMOUS_COMPANY", anon.Company);
+        Assert.Equal("ORGANIZATION", anon.PartyType);
+        Assert.NotNull(anon.Addresses); // trial sample: empty list, structure to re-verify with real data
+    }
 }

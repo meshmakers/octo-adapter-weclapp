@@ -12,6 +12,8 @@ public static class WeClappJson
 
     public static IReadOnlyList<WeClappSalesOrder> ParseOrders(string json) => Parse<WeClappSalesOrder>(json);
 
+    public static IReadOnlyList<WeClappCustomer> ParseCustomers(string json) => Parse<WeClappCustomer>(json);
+
     private static IReadOnlyList<T> Parse<T>(string json)
     {
         var wrapper = JsonSerializer.Deserialize<ResultWrapper<T>>(json, Options);
