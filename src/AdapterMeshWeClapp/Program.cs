@@ -22,10 +22,10 @@ await adapterBuilder.RunAsync(args, builder =>
     // Add the adapter service to startup and shutdown the adapter
     builder.Services.AddSingleton<IAdapterService, AdapterMeshWeClappService>();
 
-    // Add mesh adapter nodes and services to the container.
-    // Remaining custom node (WeClappFetch trigger — see the ingestion design)
-    // is registered here once implemented.
+    // Add mesh adapter nodes and services to the container:
+    // the three custom nodes of the ingestion design (WeClappFetch → WeClappToCk → DilosRender).
     builder.Services.AddOctoMeshAdapter()
+        .RegisterTriggerNode<WeClappFetchTriggerNode>()
         .RegisterNode<WeClappToCkNode>()
         .RegisterNode<DilosRenderNode>();
 
