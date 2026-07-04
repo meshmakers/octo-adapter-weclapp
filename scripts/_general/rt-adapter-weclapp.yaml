@@ -2,8 +2,11 @@ $schema: https://schemas.meshmakers.cloud/runtime-model.schema.json
 dependencies:
   - System.Communication
 entities:
+  # EdgeAdapter/MeshAdapter were merged into Adapter in System.Communication 3.1.0
+  # (see octo-communication-controller-services ConstructionKit/migrations/3.0.3-to-3.1.0.yaml)
   - rtId: 3ff972bcd8a6369e8b38de78
-    ckTypeId: System.Communication/MeshAdapter
+    ckTypeId: System.Communication/Adapter
+    rtWellKnownName: WeClappAdapter
     attributes:
       - id: System/Name
         value: WeClapp Mesh Adapter (LKV)
