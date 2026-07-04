@@ -1,3 +1,4 @@
+using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Nodes;
 using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Services;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb.Configuration;
 using Meshmakers.Octo.Sdk.Common.Adapters;
@@ -22,13 +23,10 @@ await adapterBuilder.RunAsync(args, builder =>
     builder.Services.AddSingleton<IAdapterService, AdapterMeshWeClappService>();
 
     // Add mesh adapter nodes and services to the container.
-    // Custom nodes (WeClappFetch, WeClappToCk, DilosRender — see WECLAPP-INGESTION-DESIGN)
-    // are registered here as they are implemented:
-    // builder.Services.AddOctoMeshAdapter()
-    //     .RegisterTriggerNode<WeClappFetchTriggerNode>()
-    //     .RegisterNode<WeClappToCkNode>()
-    //     .RegisterNode<DilosRenderNode>();
-    builder.Services.AddOctoMeshAdapter();
+    // Remaining custom nodes (WeClappFetch trigger, WeClappToCk — see the ingestion
+    // design) are registered here as they are implemented.
+    builder.Services.AddOctoMeshAdapter()
+        .RegisterNode<DilosRenderNode>();
 
 }, app =>
 {

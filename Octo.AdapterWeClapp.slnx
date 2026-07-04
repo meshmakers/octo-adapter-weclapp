@@ -9,6 +9,7 @@
     <Project Path="src/Lkv.WeClapp.Core/Lkv.WeClapp.Core.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/AdapterMeshWeClapp.Tests/AdapterMeshWeClapp.Tests.csproj" />
     <Project Path="tests/Lkv.WeClapp.Core.Tests/Lkv.WeClapp.Core.Tests.csproj" />
   </Folder>
 </Solution>
