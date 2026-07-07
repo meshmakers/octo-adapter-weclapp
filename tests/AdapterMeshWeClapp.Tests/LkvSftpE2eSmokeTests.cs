@@ -257,4 +257,142 @@ public class LkvSftpE2eSmokeTests(ITestOutputHelper output)
             sftp.Disconnect();
         }
     }
+
+    private const string BeTestFileName = "BE_TEST_MESHMAKERS.txt";
+
+    [Fact]
+    public async Task BeTestFile_FlowsFromLkvSftpThroughRealChainToStockBooking()
+    {
+        if (Gate() is not var (baseUrl, apiKey, sftpSettings))
+        {
+            output.WriteLine("SKIPPED: gate not open (trial envs + WECLAPP_TRIAL_REAL_WRITE=1 + LKV_SFTP_CREDENTIALS_FILE).");
+            return;
+        }
+
+        var api = new WeClappApi(LiveHttpClient(), baseUrl, apiKey, 4, 1);
+
+        // --- Trial arrange: STORABLE article + the warehouse the BE node will reconcile. ---
+        var articleId = JsonNode.Parse(WeClappApi.EnsureSuccess(
+                await api.GetAsync("article?page=1&pageSize=50&properties=id,articleType"), "GET article"))!
+            ["result"]!.AsArray().OfType<JsonNode>()
+            .FirstOrDefault(a => a["articleType"]?.ToString() == "STORABLE")?["id"]?.ToString();
+        var warehouseId = JsonNode.Parse(WeClappApi.EnsureSuccess(
+                await api.GetAsync("warehouse"), "GET warehouse"))!["result"]!.AsArray().OfType<JsonNode>()
+            .FirstOrDefault(w => !string.IsNullOrEmpty(w["defaultStoragePlaceId"]?.ToString()))?["id"]?.ToString();
+        if (string.IsNullOrEmpty(articleId) || string.IsNullOrEmpty(warehouseId))
+        {
+            output.WriteLine("SKIPPED: trial lacks a STORABLE article or a warehouse with default place.");
+            return;
+        }
+
+        async Task<decimal> CurrentStockAsync()
+        {
+            var rows = JsonNode.Parse(WeClappApi.EnsureSuccess(
+                    await api.GetAsync($"warehouseStock?articleId-eq={articleId}&warehouseId-eq={warehouseId}"),
+                    "GET warehouseStock"))!["result"]!.AsArray();
+            return rows.OfType<JsonNode>()
+                .Sum(r => decimal.Parse(r["quantity"]?.ToString() ?? "0", CultureInfo.InvariantCulture));
+        }
+
+        var initial = await CurrentStockAsync();
+        var target = initial + 1;
+        var beContent =
+            $"{articleId}|0|0||{target.ToString(CultureInfo.InvariantCulture).Replace('.', ',')}|VER\r\n";
+
+        using var sftp = new SftpClient(sftpSettings.Host, sftpSettings.Port,
+            sftpSettings.Username, sftpSettings.Password!);
+        sftp.Connect();
+        Assert.DoesNotContain(sftp.ListDirectory("/"),
+            f => f.Name.StartsWith("BE_TEST", StringComparison.OrdinalIgnoreCase)); // clean start
+        using (var stream = new MemoryStream(Encoding.UTF8.GetBytes(beContent)))
+        {
+            sftp.UploadFile(stream, $"/{BeTestFileName}", true);
+        }
+
+        output.WriteLine($"  uploaded: /{BeTestFileName} (stock {initial} → target {target})");
+
+        try
+        {
+            var beNodeContext = A.Fake<INodeContext>();
+            A.CallTo(() => beNodeContext.GetNodeConfiguration<WeClappBeWriteNodeConfiguration>())
+                .Returns(new WeClappBeWriteNodeConfiguration
+                {
+                    BaseUrl = baseUrl,
+                    ApiKey = apiKey,
+                    WarehouseId = warehouseId,
+                    DryRun = false, // REAL booking — trial only, triple-gated
+                });
+            A.CallTo(() => beNodeContext.Error(A<string>._)).Invokes(call =>
+                output.WriteLine($"  beWrite ERROR: {call.Arguments[0]}"));
+            var beWriteNode = new WeClappBeWriteNode(A.Fake<NodeDelegate>(),
+                A.Fake<ILogger<WeClappBeWriteNode>>(), LiveHttpClientFactory());
+
+            var triggerContext = A.Fake<ITriggerContext>();
+            var triggerNodeContext = A.Fake<INodeContext>();
+            var globalConfiguration = A.Fake<IGlobalConfiguration>();
+            A.CallTo(() => triggerContext.NodeContext).Returns(triggerNodeContext);
+            A.CallTo(() => triggerContext.GlobalConfiguration).Returns(globalConfiguration);
+            A.CallTo(() => globalConfiguration.IsDefined("LkvSftp")).Returns(true);
+            A.CallTo(() => globalConfiguration.GetValue<SftpConnectionSettings>("LkvSftp"))
+                .Returns(sftpSettings);
+            A.CallTo(() => triggerNodeContext.GetNodeConfiguration<DilosFileFetchTriggerNodeConfiguration>())
+                .Returns(new DilosFileFetchTriggerNodeConfiguration
+                {
+                    ServerConfiguration = "LkvSftp",
+                    RemoteDirectory = "/",
+                    FilePattern = "BE_TEST*txt", // can never match a real BE file
+                    MinFileAgeSeconds = 0,
+                    PollingIntervalSeconds = 3600,
+                });
+            A.CallTo(() => triggerNodeContext.Error(A<string>._)).Invokes(call =>
+                output.WriteLine($"  trigger ERROR: {call.Arguments[0]}"));
+
+            var executed = new List<string>();
+            A.CallTo(() => triggerContext.ExecuteAsync(A<ExecutePipelineOptions>._, A<object?>._))
+                .ReturnsLazily(async call =>
+                {
+                    var document = (JsonNode)call.Arguments[1]!;
+                    executed.Add(document["fileName"]!.ToString());
+                    using var dataContext = new DataContextImpl(JsonDocument.Parse(document.ToJsonString()));
+                    await beWriteNode.ProcessObjectAsync(dataContext, beNodeContext);
+                    return (object?)null;
+                });
+
+            var fetchNode = new DilosFileFetchTriggerNode(
+                A.Fake<ILogger<DilosFileFetchTriggerNode>>(), new SshNetSftpFileSystemFactory());
+            await fetchNode.FetchOnceAsync(triggerContext);
+
+            // --- Proof: executed once, stock really booked, remote file gone. ---
+            Assert.Equal(new[] { BeTestFileName }, executed);
+            Assert.Equal(target, await CurrentStockAsync());
+            Assert.DoesNotContain(sftp.ListDirectory("/"),
+                f => f.Name.StartsWith("BE_TEST", StringComparison.OrdinalIgnoreCase));
+
+            output.WriteLine($"LIVE SFTP-E2E (BE): /{BeTestFileName} → trigger → parse → stock " +
+                             $"{initial} → {target} booked in warehouse {warehouseId} → remote file deleted.");
+        }
+        finally
+        {
+            // Restore the trial stock and leave the partner server exactly as found.
+            if (await CurrentStockAsync() > initial)
+            {
+                await api.SendAsync(HttpMethod.Post, "warehouseStockMovement/bookOutgoingMovement",
+                    new JsonObject
+                    {
+                        ["articleId"] = articleId,
+                        ["quantity"] = "1",
+                        ["movementNote"] = "sftp-e2e BE smoke cleanup",
+                    });
+                output.WriteLine($"  cleanup: stock restored to {initial}");
+            }
+
+            if (sftp.Exists($"/{BeTestFileName}"))
+            {
+                sftp.DeleteFile($"/{BeTestFileName}");
+                output.WriteLine("  finally: BE test file removed from server after failure");
+            }
+
+            sftp.Disconnect();
+        }
+    }
 }
