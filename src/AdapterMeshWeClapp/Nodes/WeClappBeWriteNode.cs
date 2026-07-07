@@ -63,7 +63,17 @@ public class WeClappBeWriteNode(
                             $"WeClappBeWrite: warehouse '{config.WarehouseId}' not found in WeClapp");
         var defaultStoragePlaceId = warehouse["defaultStoragePlaceId"]?.ToString();
 
-        var articleIds = (await api.GetPagedAsync("article", "properties=id", config.PageSize))
+        var articles = await api.GetPagedAsync("article", "properties=id,articleType", config.PageSize);
+        var articleIds = articles
+            .Select(a => a["id"]?.ToString())
+            .Where(id => !string.IsNullOrEmpty(id))
+            .Cast<string>()
+            .ToHashSet(StringComparer.Ordinal);
+        // Movement bookings on non-storable articles are rejected by WeClapp
+        // (trial-proven 400 "article is not storable") — skip them loudly up front
+        // instead of poisoning the file's retry loop.
+        var storableIds = articles
+            .Where(a => a["articleType"]?.ToString() == "STORABLE")
             .Select(a => a["id"]?.ToString())
             .Where(id => !string.IsNullOrEmpty(id))
             .Cast<string>()
@@ -83,15 +93,26 @@ public class WeClappBeWriteNode(
             .ToDictionary(g => g.Key, g => (IReadOnlyList<WeClappStockRow>)g.Select(x => x.Row).ToList(),
                 StringComparer.Ordinal);
 
-        var states = lines.Select(line => new BeArticleState
+        var states = new List<BeArticleState>();
+        foreach (var line in lines)
         {
-            Line = line,
-            // BE Artikelnummer carries the WeClapp article id (our own AS/AI echo) —
-            // validated against the bulk id read, never resolved by articleNumber.
-            ArticleId = articleIds.Contains(line.ArticleNumber) ? line.ArticleNumber : null,
-            CurrentRows = rowsByArticle.GetValueOrDefault(line.ArticleNumber) ?? [],
-            DefaultStoragePlaceId = defaultStoragePlaceId,
-        }).ToList();
+            if (articleIds.Contains(line.ArticleNumber) && !storableIds.Contains(line.ArticleNumber))
+            {
+                nodeContext.Error(
+                    $"WeClappBeWrite: article {line.ArticleNumber} is not storable — line skipped");
+                continue;
+            }
+
+            states.Add(new BeArticleState
+            {
+                Line = line,
+                // BE Artikelnummer carries the WeClapp article id (our own AS/AI echo) —
+                // validated against the bulk id read, never resolved by articleNumber.
+                ArticleId = articleIds.Contains(line.ArticleNumber) ? line.ArticleNumber : null,
+                CurrentRows = rowsByArticle.GetValueOrDefault(line.ArticleNumber) ?? [],
+                DefaultStoragePlaceId = defaultStoragePlaceId,
+            });
+        }
 
         var plan = BeStockDeltaPlanner.Plan(states, fileName);
         foreach (var warning in plan.Warnings)

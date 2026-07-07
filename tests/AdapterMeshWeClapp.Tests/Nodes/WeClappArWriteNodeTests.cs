@@ -104,15 +104,18 @@ public class WeClappArWriteNodeTests
 
         await sut.ProcessObjectAsync(_dataContext, _nodeContext);
 
-        // GET order, GET shipments (idempotency), GET full shipment, data PUT,
-        // fresh GET, status PUT — v1 requires the complete shipment in every PUT.
-        Assert.Equal(6, handler.Requests.Count);
+        // GET order, GET shipments (idempotency), GET full shipment, data PUT, then the
+        // status LADDER (trial-proven: NEW→SHIPPED directly is rejected, the transition
+        // must step through DELIVERY_NOTE_PRINTED): fresh GET + PUT per rung —
+        // v1 requires the complete shipment in every PUT.
+        Assert.Equal(8, handler.Requests.Count);
         Assert.Equal("GET", handler.Requests[0].Method);
         Assert.Contains("/salesOrder/id/400000001247987", handler.Requests[0].Url);
         Assert.Equal("GET", handler.Requests[1].Method);
         Assert.Contains("shipment?salesOrderId-eq=400000001247987", handler.Requests[1].Url);
         Assert.Equal(("GET", true), (handler.Requests[2].Method, handler.Requests[2].Url.Contains("/shipment/id/S1")));
         Assert.Equal(("GET", true), (handler.Requests[4].Method, handler.Requests[4].Url.Contains("/shipment/id/S1")));
+        Assert.Equal(("GET", true), (handler.Requests[6].Method, handler.Requests[6].Url.Contains("/shipment/id/S1")));
         Assert.All(handler.Requests, r => Assert.Equal("test-key", r.AuthToken));
 
         // Data PUT: the full fetched shipment with the AR fields merged in — status untouched.
@@ -144,15 +147,51 @@ public class WeClappArWriteNodeTests
         Assert.Equal("I2", items[1]!["id"]!.ToString());
         Assert.Equal("3", items[1]!["quantity"]!.ToString());
 
-        // Status PUT: again the full shipment, now with status SHIPPED.
-        var (statusMethod, statusUrl, _, statusBody) = handler.Requests[5];
-        Assert.Equal("PUT", statusMethod);
-        Assert.Contains("/shipment/id/S1", statusUrl);
-        var status = JsonNode.Parse(statusBody!)!;
-        Assert.Equal("SHIPPED", status["status"]!.ToString());
-        Assert.Equal("4711", status["recipientPartyId"]!.ToString());
+        // Status ladder PUTs: full shipment each, DELIVERY_NOTE_PRINTED first, SHIPPED last.
+        var (rung1Method, rung1Url, _, rung1Body) = handler.Requests[5];
+        Assert.Equal("PUT", rung1Method);
+        Assert.Contains("/shipment/id/S1", rung1Url);
+        var rung1 = JsonNode.Parse(rung1Body!)!;
+        Assert.Equal("DELIVERY_NOTE_PRINTED", rung1["status"]!.ToString());
+        Assert.Equal("4711", rung1["recipientPartyId"]!.ToString());
+
+        var (rung2Method, rung2Url, _, rung2Body) = handler.Requests[7];
+        Assert.Equal("PUT", rung2Method);
+        Assert.Contains("/shipment/id/S1", rung2Url);
+        var rung2 = JsonNode.Parse(rung2Body!)!;
+        Assert.Equal("SHIPPED", rung2["status"]!.ToString());
+        Assert.Equal("4711", rung2["recipientPartyId"]!.ToString());
 
         A.CallTo(() => _next(_dataContext, _nodeContext)).MustHaveHappenedOnceExactly();
+    }
+
+    [Fact]
+    public async Task Process_ShipmentAlreadyDeliveryNotePrinted_OnlyStepsToShipped()
+    {
+        Configure();
+        var handler = new FakeHttpMessageHandler((req, _) =>
+        {
+            var url = req.RequestUri!.ToString();
+            if (url.Contains("/shipment/id/S1") && req.Method == HttpMethod.Get)
+            {
+                return FakeHttpMessageHandler.Json(
+                    """
+                    {"id":"S1","version":"5","status":"DELIVERY_NOTE_PRINTED","recipientPartyId":"4711",
+                      "shipmentItems":[]}
+                    """);
+            }
+
+            return DefaultResponder(req);
+        });
+        var sut = CreateSut(handler);
+
+        await sut.ProcessObjectAsync(_dataContext, _nodeContext);
+
+        var statusPuts = handler.Requests.Where(r => r.Method == "PUT")
+            .Select(r => JsonNode.Parse(r.Body!)!["status"]!.ToString())
+            .ToList();
+        // Data PUT echoes the current status; the ladder adds only the missing rung.
+        Assert.Equal(new[] { "DELIVERY_NOTE_PRINTED", "SHIPPED" }, statusPuts);
     }
 
     [Fact]
@@ -188,14 +227,15 @@ public class WeClappArWriteNodeTests
         Assert.Equal("{}", create.Body); // must be a real JSON object, not an empty string
 
         var puts = handler.Requests.Where(r => r.Method == "PUT").ToList();
-        Assert.Equal(2, puts.Count);
+        Assert.Equal(3, puts.Count); // data + status ladder (DELIVERY_NOTE_PRINTED, SHIPPED)
         Assert.All(puts, p => Assert.Contains("/shipment/id/S9", p.Url));
         var data = JsonNode.Parse(puts[0].Body!)!;
         Assert.Equal("4711", data["recipientPartyId"]!.ToString()); // full-shipment round trip
         var item = data["shipmentItems"]!.AsArray()
             .Single(i => i!["id"]!.ToString() == "I9");
         Assert.Equal("1", item!["quantity"]!.ToString()); // delivered quantity patched in place
-        Assert.Equal("SHIPPED", JsonNode.Parse(puts[1].Body!)!["status"]!.ToString());
+        Assert.Equal("DELIVERY_NOTE_PRINTED", JsonNode.Parse(puts[1].Body!)!["status"]!.ToString());
+        Assert.Equal("SHIPPED", JsonNode.Parse(puts[2].Body!)!["status"]!.ToString());
     }
 
     [Fact]
@@ -334,7 +374,7 @@ public class WeClappArWriteNodeTests
         await sut.ProcessObjectAsync(_dataContext, _nodeContext);
 
         var puts = handler.Requests.Where(r => r.Method == "PUT").ToList();
-        Assert.Equal(2, puts.Count);
+        Assert.Equal(3, puts.Count); // data + both status-ladder rungs
         Assert.All(puts, p => Assert.Contains("dryRun=true", p.Url));
     }
 

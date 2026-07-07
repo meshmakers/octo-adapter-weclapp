@@ -130,7 +130,11 @@ public class WeClappArWriteNode(
 
             // 5. v1 validates every PUT body as a COMPLETE shipment (trial-proven:
             //    "recipientPartyId is required" on a partial body) → GET → merge → full PUT,
-            //    then a fresh GET and status=SHIPPED as the last write.
+            //    then the status LADDER: a direct NEW→SHIPPED is rejected ("status update
+            //    not possible", real-write-proven), the transition must step through
+            //    DELIVERY_NOTE_PRINTED — one fresh GET + full PUT per missing rung.
+            //    (The dry-run validation does NOT check transitions — only the real write
+            //    surfaced this.)
             var dryRunSuffix = config.DryRun ? "?dryRun=true" : "";
             var full = await GetFullShipmentAsync(api, shipmentId);
             MergeArData(full, plan.Update, shippingCarrierId, nodeContext);
@@ -138,11 +142,14 @@ public class WeClappArWriteNode(
                 await api.SendAsync(HttpMethod.Put, $"shipment/id/{shipmentId}{dryRunSuffix}", full),
                 $"PUT shipment {shipmentId} (data) for order {ar.OrderNumber1}");
 
-            var fresh = await GetFullShipmentAsync(api, shipmentId);
-            fresh["status"] = ArShipmentUpdate.TargetStatus;
-            WeClappApi.EnsureSuccess(
-                await api.SendAsync(HttpMethod.Put, $"shipment/id/{shipmentId}{dryRunSuffix}", fresh),
-                $"PUT shipment {shipmentId} (status) for order {ar.OrderNumber1}");
+            foreach (var rung in MissingStatusRungs(full["status"]?.ToString()))
+            {
+                var fresh = await GetFullShipmentAsync(api, shipmentId);
+                fresh["status"] = rung;
+                WeClappApi.EnsureSuccess(
+                    await api.SendAsync(HttpMethod.Put, $"shipment/id/{shipmentId}{dryRunSuffix}", fresh),
+                    $"PUT shipment {shipmentId} (status {rung}) for order {ar.OrderNumber1}");
+            }
 
             nodeContext.Info(
                 $"WeClappArWrite: order {ar.OrderNumber1} → shipment {shipmentId} {ArShipmentUpdate.TargetStatus}"
@@ -245,6 +252,20 @@ public class WeClappArWriteNode(
                 itemNode["quantity"] = delivered;
             }
         }
+    }
+
+    /// <summary>The shipment status rungs still missing up to SHIPPED. WeClapp rejects
+    /// skipping a rung (real-write-proven: NEW→SHIPPED = 400 "status update not possible"),
+    /// and rungs at or below the current status must not be re-applied (a reused shipment
+    /// may already be DELIVERY_NOTE_PRINTED — or SHIPPED with a different tracking number,
+    /// in which case there is nothing left to set).</summary>
+    internal static IReadOnlyList<string> MissingStatusRungs(string? currentStatus)
+    {
+        string[] ladder = ["NEW", "DELIVERY_NOTE_PRINTED", ArShipmentUpdate.TargetStatus];
+        var currentIndex = Array.IndexOf(ladder, currentStatus ?? "NEW");
+        // Unknown = a status outside the ladder (IN_ROUTE, DELIVERED, …): already past
+        // SHIPPED — never step "back up", leave the status alone.
+        return currentIndex < 0 ? [] : ladder.Skip(currentIndex + 1).ToArray();
     }
 
     private static async Task<JsonObject> GetFullShipmentAsync(WeClappApi api, string shipmentId)

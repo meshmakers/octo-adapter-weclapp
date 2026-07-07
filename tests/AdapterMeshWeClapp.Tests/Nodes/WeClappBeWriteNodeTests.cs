@@ -16,12 +16,14 @@ public class WeClappBeWriteNodeTests
     //   C: 7 vs current 7      → in sync, nothing
     //   X: unknown in WeClapp  → skipped loudly
     //   G: GES (blocked)       → skipped loudly (semantics not agreed)
+    //   N: not STORABLE        → skipped loudly (bookings on it are rejected — trial-proven 400)
     private const string BeContent =
         "A|0|0||5|VER\r\n" +
         "B|0|0||1|VER\r\n" +
         "C|0|0||7|VER\r\n" +
         "X|0|0||3|VER\r\n" +
-        "G|0|0||2|GES\r\n";
+        "G|0|0||2|GES\r\n" +
+        "N|0|0||4|VER\r\n";
 
     private readonly IDataContext _dataContext = A.Fake<IDataContext>();
     private readonly INodeContext _nodeContext = A.Fake<INodeContext>();
@@ -64,7 +66,11 @@ public class WeClappBeWriteNodeTests
         if (url.Contains("/article?"))
         {
             return FakeHttpMessageHandler.Json(
-                """{"result":[{"id":"A"},{"id":"B"},{"id":"C"},{"id":"G"}]}""");
+                """
+                {"result":[{"id":"A","articleType":"STORABLE"},{"id":"B","articleType":"STORABLE"},
+                  {"id":"C","articleType":"STORABLE"},{"id":"G","articleType":"STORABLE"},
+                  {"id":"N","articleType":"SALES"}]}
+                """);
         }
 
         if (url.Contains("warehouseStock?"))
@@ -107,8 +113,10 @@ public class WeClappBeWriteNodeTests
         Assert.Equal("3", outgoingBody["quantity"]!.ToString());
         Assert.Equal("P1", outgoingBody["sourceStoragePlaceId"]!.ToString());
 
-        // Unknown article X and blocked line G must be reported, not booked.
+        // Unknown article X, blocked line G and non-storable N must be reported, not booked.
         A.CallTo(() => _nodeContext.Error(A<string>.That.Contains("X"))).MustHaveHappenedOnceOrMore();
+        A.CallTo(() => _nodeContext.Error(A<string>.That.Contains("not storable")))
+            .MustHaveHappenedOnceOrMore();
         A.CallTo(() => _next(_dataContext, _nodeContext)).MustHaveHappenedOnceExactly();
     }
 
@@ -136,11 +144,12 @@ public class WeClappBeWriteNodeTests
             {
                 if (url.Contains("page=1"))
                 {
-                    return FakeHttpMessageHandler.Json("""{"result":[{"id":"A"},{"id":"B"}]}""");
+                    return FakeHttpMessageHandler.Json(
+                        """{"result":[{"id":"A","articleType":"STORABLE"},{"id":"B","articleType":"STORABLE"}]}""");
                 }
 
                 return FakeHttpMessageHandler.Json(url.Contains("page=2")
-                    ? """{"result":[{"id":"C"},{"id":"G"}]}"""
+                    ? """{"result":[{"id":"C","articleType":"STORABLE"},{"id":"G","articleType":"STORABLE"}]}"""
                     : """{"result":[]}""");
             }
 
