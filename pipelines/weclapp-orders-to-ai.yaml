@@ -15,7 +15,10 @@ triggers:
     baseUrl: https://REPLACE-TENANT.weclapp.com/webapp/api/v1
     apiKey: ${WECLAPP_API_KEY}
     entity: salesOrder    # orderItems are part of the default response (live-verified 2026-07-04)
-    # additionalQuery: status-eq=ORDER_ENTRY_IN_PROGRESS   # real status filter TBD (Kickoff: "Im Fulfillment")
+    # Hand-over filter: only confirmed orders go to LKV. Technically forced — WeClapp
+    # allows createShipment (needed for the AR return path) only in this status
+    # (real-write-proven 2026-07-07), and the customer's stock of orders is CLOSED.
+    additionalQuery: status-eq=ORDER_CONFIRMATION_PRINTED
     pageSize: 100
     pollingIntervalSeconds: 900
 
