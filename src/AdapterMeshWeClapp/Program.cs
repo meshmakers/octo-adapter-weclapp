@@ -23,12 +23,18 @@ await adapterBuilder.RunAsync(args, builder =>
     builder.Services.AddSingleton<IAdapterService, AdapterMeshWeClappService>();
 
     // WeClapp serves gzip-compressed responses (live-verified: raw bodies start with 0x1F) —
-    // the named client for the fetch node must decompress automatically.
-    builder.Services.AddHttpClient(nameof(WeClappFetchTriggerNode))
-        .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
-        {
-            AutomaticDecompression = System.Net.DecompressionMethods.All,
-        });
+    // every named WeClapp client must decompress automatically.
+    foreach (var clientName in new[]
+             {
+                 nameof(WeClappFetchTriggerNode), nameof(WeClappArWriteNode), nameof(WeClappBeWriteNode),
+             })
+    {
+        builder.Services.AddHttpClient(clientName)
+            .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+            {
+                AutomaticDecompression = System.Net.DecompressionMethods.All,
+            });
+    }
 
     // SFTP seam for the DilosFileFetch trigger (AR/BE return path) — SSH.NET-backed in
     // production, faked in tests.
@@ -36,12 +42,14 @@ await adapterBuilder.RunAsync(args, builder =>
 
     // Add mesh adapter nodes and services to the container:
     // outbound ingestion design (WeClappFetch → WeClappToCk → DilosRender) plus the
-    // AR/BE return path trigger (DilosFileFetch).
+    // AR/BE return path (DilosFileFetch → WeClappArWrite / WeClappBeWrite).
     builder.Services.AddOctoMeshAdapter()
         .RegisterTriggerNode<WeClappFetchTriggerNode>()
         .RegisterTriggerNode<DilosFileFetchTriggerNode>()
         .RegisterNode<WeClappToCkNode>()
-        .RegisterNode<DilosRenderNode>();
+        .RegisterNode<DilosRenderNode>()
+        .RegisterNode<WeClappArWriteNode>()
+        .RegisterNode<WeClappBeWriteNode>();
 
 }, app =>
 {
