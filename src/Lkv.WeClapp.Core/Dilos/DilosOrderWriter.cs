@@ -58,7 +58,11 @@ public static class DilosOrderWriter
             var f = NewFields(PositionFieldCount);
             f[1] = "P*";
             f[2] = o.Id;                                    // Auftragsnummer1
-            f[3] = item.PositionNumber.ToString(CultureInfo.InvariantCulture); // Position
+            // DILOS requires Position to be unique per Auftragsnummer. WeClapp's
+            // positionNumber can have gaps and would collide with the appended
+            // shipping pseudo line, so both position fields use the sequential
+            // render index; return-path matching uses Artikelnummer, not Position.
+            f[3] = pos.ToString(CultureInfo.InvariantCulture);                 // Position
             f[4] = pos.ToString(CultureInfo.InvariantCulture);                 // PositionnummerAufLieferschein
             f[5] = item.ArticleId;                          // Artikelnummer (= AS-Key)
             f[11] = item.Quantity;                          // Mengeabg

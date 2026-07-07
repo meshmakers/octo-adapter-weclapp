@@ -86,4 +86,41 @@ public class DilosOrderWriterTests
         Assert.Equal("-1", Field(ship, 5));           // Versandkosten-Zeile
         Assert.Equal("4.50", Field(ship, 18));        // Versandkosten netto
     }
+
+    [Fact]
+    public void RenderPositions_NonContiguousWeClappPositionNumbers_ProducesUniqueSequentialPositions()
+    {
+        // WeClapp positionNumber can have gaps (deleted lines, manual numbering).
+        // DILOS requires "Position eindeutig pro Auftragsnummer" — a WeClapp
+        // positionNumber of 3 must not collide with the shipping pseudo line
+        // that is appended as the 3rd rendered row.
+        var o = new WeClappSalesOrder
+        {
+            Id = "5910986621265",
+            OrderNumber = "1015",
+            OrderItems =
+            {
+                new WeClappOrderItem
+                {
+                    PositionNumber = 1, ArticleId = "A1",
+                    Quantity = "1", NetAmount = "10.00", Title = "Item eins"
+                },
+                new WeClappOrderItem
+                {
+                    PositionNumber = 3, ArticleId = "A2",
+                    Quantity = "2", NetAmount = "20.00", Title = "Item zwei"
+                }
+            },
+            ShippingCostItems = { new WeClappShippingCostItem { NetAmount = "4.50", Title = "DHL Standard (DE)" } }
+        };
+
+        var lines = DilosOrderWriter.RenderPositions(o, Ctx).ToList();
+
+        Assert.Equal(3, lines.Count);
+        var positions = lines.Select(l => Field(l, 3)).ToList();
+        var deliveryNotePositions = lines.Select(l => Field(l, 4)).ToList();
+        Assert.Equal(new[] { "1", "2", "3" }, positions);
+        Assert.Equal(positions, deliveryNotePositions);
+        Assert.Equal(positions.Count, positions.Distinct().Count());
+    }
 }
