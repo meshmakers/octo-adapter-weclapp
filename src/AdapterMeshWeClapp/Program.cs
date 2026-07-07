@@ -30,10 +30,16 @@ await adapterBuilder.RunAsync(args, builder =>
             AutomaticDecompression = System.Net.DecompressionMethods.All,
         });
 
+    // SFTP seam for the DilosFileFetch trigger (AR/BE return path) — SSH.NET-backed in
+    // production, faked in tests.
+    builder.Services.AddSingleton<ISftpFileSystemFactory, SshNetSftpFileSystemFactory>();
+
     // Add mesh adapter nodes and services to the container:
-    // the three custom nodes of the ingestion design (WeClappFetch → WeClappToCk → DilosRender).
+    // outbound ingestion design (WeClappFetch → WeClappToCk → DilosRender) plus the
+    // AR/BE return path trigger (DilosFileFetch).
     builder.Services.AddOctoMeshAdapter()
         .RegisterTriggerNode<WeClappFetchTriggerNode>()
+        .RegisterTriggerNode<DilosFileFetchTriggerNode>()
         .RegisterNode<WeClappToCkNode>()
         .RegisterNode<DilosRenderNode>();
 
