@@ -54,6 +54,23 @@ public class WeClappArWriteNodeTests
     private static HttpResponseMessage DefaultResponder(HttpRequestMessage req)
     {
         var url = req.RequestUri!.ToString();
+
+        // Full shipment for the GET → mutate → full-PUT round trip (v1 validates the PUT
+        // body as a complete shipment — live-proven: "recipientPartyId is required").
+        // id GETs return the BARE object without a result wrapper (live-proven 2026-07-07).
+        if (url.Contains("/shipment/id/") && req.Method == HttpMethod.Get)
+        {
+            var id = url.Contains("/shipment/id/S9") ? "S9" : "S1";
+            var itemId = id == "S9" ? "I9" : "I1";
+            return FakeHttpMessageHandler.Json(
+                """
+                {"id":"__ID__","version":"3","status":"NEW","recipientPartyId":"4711",
+                  "salesOrderId":"400000001247987","shipmentItems":[
+                  {"id":"__ITEM__","articleId":"400000001273682","quantity":"9","note":"keep"},
+                  {"id":"I2","articleId":"999","quantity":"3"}]}
+                """.Replace("__ID__", id).Replace("__ITEM__", itemId));
+        }
+
         if (url.Contains("/salesOrder/id/400000001247987"))
         {
             return FakeHttpMessageHandler.Json("""{"result":{"id":"400000001247987"}}""");
@@ -79,7 +96,7 @@ public class WeClappArWriteNodeTests
     }
 
     [Fact]
-    public async Task Process_ExistingNewShipment_PutsDataThenStatusShipped()
+    public async Task Process_ExistingNewShipment_FullPutsDataThenStatusShipped()
     {
         Configure();
         var handler = new FakeHttpMessageHandler((req, _) => DefaultResponder(req));
@@ -87,45 +104,53 @@ public class WeClappArWriteNodeTests
 
         await sut.ProcessObjectAsync(_dataContext, _nodeContext);
 
-        Assert.Equal(4, handler.Requests.Count);
+        // GET order, GET shipments (idempotency), GET full shipment, data PUT,
+        // fresh GET, status PUT — v1 requires the complete shipment in every PUT.
+        Assert.Equal(6, handler.Requests.Count);
         Assert.Equal("GET", handler.Requests[0].Method);
         Assert.Contains("/salesOrder/id/400000001247987", handler.Requests[0].Url);
         Assert.Equal("GET", handler.Requests[1].Method);
         Assert.Contains("shipment?salesOrderId-eq=400000001247987", handler.Requests[1].Url);
+        Assert.Equal(("GET", true), (handler.Requests[2].Method, handler.Requests[2].Url.Contains("/shipment/id/S1")));
+        Assert.Equal(("GET", true), (handler.Requests[4].Method, handler.Requests[4].Url.Contains("/shipment/id/S1")));
         Assert.All(handler.Requests, r => Assert.Equal("test-key", r.AuthToken));
 
-        // Data PUT: everything except the status.
-        var (method, url, _, body) = handler.Requests[2];
+        // Data PUT: the full fetched shipment with the AR fields merged in — status untouched.
+        var (method, url, _, body) = handler.Requests[3];
         Assert.Equal("PUT", method);
         Assert.Contains("/shipment/id/S1", url);
         Assert.DoesNotContain("dryRun", url);
         var data = JsonNode.Parse(body!)!;
+        Assert.Equal("4711", data["recipientPartyId"]!.ToString()); // fetched field survives
+        Assert.Equal("3", data["version"]!.ToString()); // optimistic-locking echo
+        Assert.Equal("NEW", data["status"]!.ToString()); // SHIPPED is a separate, LAST write
         Assert.Equal("1013408501850970172035", data["packageTrackingNumber"]!.ToString());
         Assert.Null(data["packageTrackingUrl"]); // bare-number carrier: no URL
         Assert.Null(data["shippingCarrierId"]); // carrier code 9 is unmapped
-        Assert.Null(data["status"]); // SHIPPED is a separate, LAST write
         Assert.Equal(1712707200000, (long)data["shippingDate"]!);
         Assert.Equal("2.5", data["totalWeight"]!.ToString());
-        var parcel = Assert.Single(data["parcels"]!.AsArray());
-        Assert.Equal(1, (int)parcel!["positionNumber"]!);
-        Assert.Equal("1013408501850970172035", parcel["trackingId"]!.ToString());
-        Assert.Equal("2.5", parcel["weight"]!.ToString());
+        // The fetched shipment has no parcels: adding parcels is forbidden while the flat
+        // package* fields are in use (live 409) — tracking stays on the shipment level.
+        Assert.Null(data["parcels"]);
 
-        // shipmentItems: complete list — matched item updated, unmatched echoed unchanged.
+        // shipmentItems: full objects patched in place — matched quantity updated, every
+        // other field (and unmatched items) preserved.
         var items = data["shipmentItems"]!.AsArray();
         Assert.Equal(2, items.Count);
         Assert.Equal("I1", items[0]!["id"]!.ToString());
         Assert.Equal("1", items[0]!["quantity"]!.ToString());
+        Assert.Equal("400000001273682", items[0]!["articleId"]!.ToString());
+        Assert.Equal("keep", items[0]!["note"]!.ToString());
         Assert.Equal("I2", items[1]!["id"]!.ToString());
         Assert.Equal("3", items[1]!["quantity"]!.ToString());
 
-        // Status PUT: exactly {"status":"SHIPPED"}, nothing else.
-        var (statusMethod, statusUrl, _, statusBody) = handler.Requests[3];
+        // Status PUT: again the full shipment, now with status SHIPPED.
+        var (statusMethod, statusUrl, _, statusBody) = handler.Requests[5];
         Assert.Equal("PUT", statusMethod);
         Assert.Contains("/shipment/id/S1", statusUrl);
-        var status = JsonNode.Parse(statusBody!)!.AsObject();
-        Assert.Single(status);
+        var status = JsonNode.Parse(statusBody!)!;
         Assert.Equal("SHIPPED", status["status"]!.ToString());
+        Assert.Equal("4711", status["recipientPartyId"]!.ToString());
 
         A.CallTo(() => _next(_dataContext, _nodeContext)).MustHaveHappenedOnceExactly();
     }
@@ -165,9 +190,12 @@ public class WeClappArWriteNodeTests
         var puts = handler.Requests.Where(r => r.Method == "PUT").ToList();
         Assert.Equal(2, puts.Count);
         Assert.All(puts, p => Assert.Contains("/shipment/id/S9", p.Url));
-        var item = Assert.Single(JsonNode.Parse(puts[0].Body!)!["shipmentItems"]!.AsArray());
-        Assert.Equal("I9", item!["id"]!.ToString());
-        Assert.Equal("1", item["quantity"]!.ToString());
+        var data = JsonNode.Parse(puts[0].Body!)!;
+        Assert.Equal("4711", data["recipientPartyId"]!.ToString()); // full-shipment round trip
+        var item = data["shipmentItems"]!.AsArray()
+            .Single(i => i!["id"]!.ToString() == "I9");
+        Assert.Equal("1", item!["quantity"]!.ToString()); // delivered quantity patched in place
+        Assert.Equal("SHIPPED", JsonNode.Parse(puts[1].Body!)!["status"]!.ToString());
     }
 
     [Fact]
@@ -206,6 +234,68 @@ public class WeClappArWriteNodeTests
         A.CallTo(() => _nodeContext.Error(A<string>.That.Contains("400000001247987")))
             .MustHaveHappenedOnceOrMore();
         A.CallTo(() => _next(_dataContext, _nodeContext)).MustHaveHappenedOnceExactly();
+    }
+
+    [Fact]
+    public async Task Process_ShipmentWithMatchingParcels_PatchesThemInPlace()
+    {
+        Configure();
+        var handler = new FakeHttpMessageHandler((req, _) =>
+        {
+            var url = req.RequestUri!.ToString();
+            if (url.Contains("/shipment/id/S1") && req.Method == HttpMethod.Get)
+            {
+                return FakeHttpMessageHandler.Json(
+                    """
+                    {"id":"S1","version":"3","status":"NEW","recipientPartyId":"4711",
+                      "shipmentItems":[],
+                      "parcels":[{"id":"PC1","positionNumber":1,"reference":"keep-me","weight":"9.9"}]}
+                    """);
+            }
+
+            return DefaultResponder(req);
+        });
+        var sut = CreateSut(handler);
+
+        await sut.ProcessObjectAsync(_dataContext, _nodeContext);
+
+        var dataPut = handler.Requests.First(r => r.Method == "PUT");
+        var parcel = Assert.Single(JsonNode.Parse(dataPut.Body!)!["parcels"]!.AsArray());
+        Assert.Equal("PC1", parcel!["id"]!.ToString()); // same parcel object — no add/remove
+        Assert.Equal("keep-me", parcel["reference"]!.ToString()); // untouched fields survive
+        Assert.Equal("1013408501850970172035", parcel["trackingId"]!.ToString());
+        Assert.Equal("2.5", parcel["weight"]!.ToString());
+    }
+
+    [Fact]
+    public async Task Process_ParcelCountMismatch_LeavesParcelsUntouched()
+    {
+        Configure();
+        var handler = new FakeHttpMessageHandler((req, _) =>
+        {
+            var url = req.RequestUri!.ToString();
+            if (url.Contains("/shipment/id/S1") && req.Method == HttpMethod.Get)
+            {
+                return FakeHttpMessageHandler.Json(
+                    """
+                    {"id":"S1","version":"3","status":"NEW","recipientPartyId":"4711",
+                      "shipmentItems":[],
+                      "parcels":[{"id":"PC1","positionNumber":1},{"id":"PC2","positionNumber":2}]}
+                    """);
+            }
+
+            return DefaultResponder(req);
+        });
+        var sut = CreateSut(handler);
+
+        await sut.ProcessObjectAsync(_dataContext, _nodeContext); // AR has 1 parcel, WeClapp 2
+
+        var dataPut = handler.Requests.First(r => r.Method == "PUT");
+        var parcels = JsonNode.Parse(dataPut.Body!)!["parcels"]!.AsArray();
+        Assert.Equal(2, parcels.Count);
+        Assert.All(parcels, p => Assert.Null(p!["trackingId"])); // nothing guessed by index
+        A.CallTo(() => _nodeContext.Error(A<string>.That.Contains("parcel count")))
+            .MustHaveHappenedOnceOrMore();
     }
 
     [Fact]

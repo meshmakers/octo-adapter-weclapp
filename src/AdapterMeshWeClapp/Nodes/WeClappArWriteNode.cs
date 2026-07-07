@@ -23,13 +23,14 @@ public record WeClappArWriteNodeConfiguration : WeClappWriteNodeConfiguration;
 /// Writes one DILOS AR file back into WeClapp. Per AR shipment: resolve the sales order
 /// (K* Auftragsnummer1 = WeClapp salesOrder.id; 404 → dead-letter log, file is still
 /// consumed), fetch existing shipments for idempotency (plan via ArShipmentWritePlanner:
-/// replay-skip / reuse non-CANCELLED / createShipment), then apply two partial PUTs —
-/// data first, <c>{"status":"SHIPPED"}</c> last. Delivered quantities are matched by
-/// articleId, never by position; the PUT always echoes the complete shipmentItems list so
-/// any replace semantics cannot drop items. Transient HTTP errors throw after retries so
-/// the file stays on the SFTP server and is retried (safe: replayed shipments are skipped
-/// via the SHIPPED+tracking guard). The partial-PUT shape (no version echo) is validated
-/// against the trial via DryRun before go-live.
+/// replay-skip / reuse non-CANCELLED / createShipment), then write via the v1-required
+/// GET → merge → full-PUT round trip (a partial PUT body is rejected — trial-proven
+/// 2026-07-07: HTTP 400 "recipientPartyId is required"): data first with the fetched
+/// version echoed, then a fresh GET and <c>status=SHIPPED</c> as the LAST write.
+/// Delivered quantities are matched by articleId, never by position, and patched into
+/// the fetched shipmentItems in place. Transient HTTP errors throw after retries so the
+/// file stays on the SFTP server and is retried (safe: replayed shipments are skipped
+/// via the SHIPPED+tracking guard).
 /// </summary>
 [NodeConfiguration(typeof(WeClappArWriteNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
@@ -86,11 +87,11 @@ public class WeClappArWriteNode(
                 continue;
             }
 
-            // 3. Target shipment incl. its items (for quantity matching by articleId).
-            WeClappShipmentSummary target;
+            // 3. Resolve the target shipment id (create when none is reusable).
+            string shipmentId;
             if (plan.Action == ArWriteAction.UpdateExisting)
             {
-                target = existing.First(s => s.Id == plan.ExistingShipmentId);
+                shipmentId = plan.ExistingShipmentId!;
             }
             else
             {
@@ -106,9 +107,9 @@ public class WeClappArWriteNode(
                     await api.SendAsync(HttpMethod.Post, $"salesOrder/id/{ar.OrderNumber1}/createShipment",
                         new JsonObject()),
                     $"POST createShipment for order {ar.OrderNumber1}");
-                target = ParseShipment(JsonNode.Parse(createBody)?["result"])
-                         ?? throw new WeClappPipelineExecutionException(
-                             $"createShipment for order {ar.OrderNumber1} returned no shipment");
+                shipmentId = UnwrapObject(createBody)?["id"]?.ToString()
+                             ?? throw new WeClappPipelineExecutionException(
+                                 $"createShipment for order {ar.OrderNumber1} returned no shipment id");
             }
 
             // 4. Carrier reference only when the DILOS code mapped AND the entity exists
@@ -127,106 +128,140 @@ public class WeClappArWriteNode(
                 }
             }
 
-            // 5. Two partial PUTs: data first, SHIPPED last.
+            // 5. v1 validates every PUT body as a COMPLETE shipment (trial-proven:
+            //    "recipientPartyId is required" on a partial body) → GET → merge → full PUT,
+            //    then a fresh GET and status=SHIPPED as the last write.
             var dryRunSuffix = config.DryRun ? "?dryRun=true" : "";
-            var dataBody = BuildDataBody(plan.Update, target, shippingCarrierId, nodeContext);
+            var full = await GetFullShipmentAsync(api, shipmentId);
+            MergeArData(full, plan.Update, shippingCarrierId, nodeContext);
             WeClappApi.EnsureSuccess(
-                await api.SendAsync(HttpMethod.Put, $"shipment/id/{target.Id}{dryRunSuffix}", dataBody),
-                $"PUT shipment {target.Id} (data) for order {ar.OrderNumber1}");
+                await api.SendAsync(HttpMethod.Put, $"shipment/id/{shipmentId}{dryRunSuffix}", full),
+                $"PUT shipment {shipmentId} (data) for order {ar.OrderNumber1}");
+
+            var fresh = await GetFullShipmentAsync(api, shipmentId);
+            fresh["status"] = ArShipmentUpdate.TargetStatus;
             WeClappApi.EnsureSuccess(
-                await api.SendAsync(HttpMethod.Put, $"shipment/id/{target.Id}{dryRunSuffix}",
-                    new JsonObject { ["status"] = ArShipmentUpdate.TargetStatus }),
-                $"PUT shipment {target.Id} (status) for order {ar.OrderNumber1}");
+                await api.SendAsync(HttpMethod.Put, $"shipment/id/{shipmentId}{dryRunSuffix}", fresh),
+                $"PUT shipment {shipmentId} (status) for order {ar.OrderNumber1}");
 
             nodeContext.Info(
-                $"WeClappArWrite: order {ar.OrderNumber1} → shipment {target.Id} {ArShipmentUpdate.TargetStatus}"
+                $"WeClappArWrite: order {ar.OrderNumber1} → shipment {shipmentId} {ArShipmentUpdate.TargetStatus}"
                 + (config.DryRun ? " (dry-run)" : ""));
         }
 
         await next(dataContext, nodeContext);
     }
 
-    private static JsonObject BuildDataBody(ArShipmentUpdate update, WeClappShipmentSummary target,
+    /// <summary>Merges the AR field values into the fetched full shipment: scalar fields set,
+    /// parcels replaced (DILOS is the source of truth for packages), item quantities patched
+    /// in place by article id so every other item field survives the full-PUT round trip.</summary>
+    private static void MergeArData(JsonObject shipment, ArShipmentUpdate update,
         string? shippingCarrierId, INodeContext nodeContext)
     {
-        var body = new JsonObject();
         if (update.PackageTrackingNumber is not null)
         {
-            body["packageTrackingNumber"] = update.PackageTrackingNumber;
+            shipment["packageTrackingNumber"] = update.PackageTrackingNumber;
         }
 
         if (update.PackageTrackingUrl is not null)
         {
-            body["packageTrackingUrl"] = update.PackageTrackingUrl;
+            shipment["packageTrackingUrl"] = update.PackageTrackingUrl;
         }
 
         if (shippingCarrierId is not null)
         {
-            body["shippingCarrierId"] = shippingCarrierId;
+            shipment["shippingCarrierId"] = shippingCarrierId;
         }
 
         if (update.ShippingDateEpochMs is { } shippingDate)
         {
-            body["shippingDate"] = shippingDate;
+            shipment["shippingDate"] = shippingDate;
         }
 
         if (update.TotalWeight is not null)
         {
-            body["totalWeight"] = update.TotalWeight;
+            shipment["totalWeight"] = update.TotalWeight;
         }
 
-        if (update.Parcels.Count > 0)
+        // WeClapp forbids adding or removing parcels while the flat package* fields are in
+        // use (live-proven 2026-07-07: HTTP 409) — so parcels are only PATCHED in place when
+        // the shipment already has a matching count. Otherwise the tracking contract stays
+        // on the shipment-level packageTracking* fields set above (golden reality: 102/103
+        // AR shipments have exactly one parcel, so the loss is at most per-parcel weight).
+        var existingParcels = shipment["parcels"]?.AsArray();
+        if (update.Parcels.Count > 0 && existingParcels is { Count: > 0 })
         {
-            var parcels = new JsonArray();
-            foreach (var parcel in update.Parcels)
+            if (existingParcels.Count == update.Parcels.Count)
             {
-                var parcelObject = new JsonObject { ["positionNumber"] = parcel.PositionNumber };
-                if (parcel.TrackingId is not null)
+                for (var i = 0; i < update.Parcels.Count; i++)
                 {
-                    parcelObject["trackingId"] = parcel.TrackingId;
-                }
+                    if (existingParcels[i] is not JsonObject parcelObject)
+                    {
+                        continue;
+                    }
 
-                if (parcel.TrackingUrl is not null)
-                {
-                    parcelObject["trackingUrl"] = parcel.TrackingUrl;
-                }
+                    var parcel = update.Parcels[i];
+                    if (parcel.TrackingId is not null)
+                    {
+                        parcelObject["trackingId"] = parcel.TrackingId;
+                    }
 
-                if (parcel.Weight is not null)
-                {
-                    parcelObject["weight"] = parcel.Weight;
-                }
+                    if (parcel.TrackingUrl is not null)
+                    {
+                        parcelObject["trackingUrl"] = parcel.TrackingUrl;
+                    }
 
-                parcels.Add(parcelObject);
+                    if (parcel.Weight is not null)
+                    {
+                        parcelObject["weight"] = parcel.Weight;
+                    }
+                }
             }
-
-            body["parcels"] = parcels;
+            else
+            {
+                nodeContext.Error(
+                    $"WeClappArWrite: parcel count mismatch (AR {update.Parcels.Count} vs WeClapp {existingParcels.Count}) — leaving parcels untouched, tracking stays on the shipment level");
+            }
+        }
+        else if (update.Parcels.Count > 0)
+        {
+            nodeContext.Info(
+                "WeClappArWrite: shipment has no parcels — tracking stays on the shipment level (adding parcels is rejected by WeClapp)");
         }
 
-        var match = ArShipmentWritePlanner.MatchItemQuantities(update, target.ShipmentItems);
+        var itemsArray = shipment["shipmentItems"]?.AsArray();
+        var existingItems = itemsArray?.OfType<JsonNode>()
+            .Select(node => node.Deserialize<WeClappShipmentItem>(CaseInsensitive)!)
+            .ToList() ?? [];
+        var match = ArShipmentWritePlanner.MatchItemQuantities(update, existingItems);
         LogWarnings(match.Warnings, nodeContext);
 
         var quantityByItemId = match.Matches.ToDictionary(m => m.ShipmentItemId, m => m.Quantity);
-        var items = new JsonArray();
-        foreach (var item in target.ShipmentItems.Where(i => i.Id is not null))
+        foreach (var itemNode in itemsArray?.OfType<JsonObject>() ?? [])
         {
-            // Complete list: matched items get the delivered quantity, the rest echo their
-            // current one — safe regardless of WeClapp's collection replace semantics.
-            var itemObject = new JsonObject { ["id"] = item.Id };
-            var quantity = quantityByItemId.TryGetValue(item.Id!, out var delivered) ? delivered : item.Quantity;
-            if (quantity is not null)
+            if (itemNode["id"]?.ToString() is { } itemId &&
+                quantityByItemId.TryGetValue(itemId, out var delivered))
             {
-                itemObject["quantity"] = quantity;
+                itemNode["quantity"] = delivered;
             }
-
-            items.Add(itemObject);
         }
+    }
 
-        if (items.Count > 0)
-        {
-            body["shipmentItems"] = items;
-        }
+    private static async Task<JsonObject> GetFullShipmentAsync(WeClappApi api, string shipmentId)
+    {
+        var body = WeClappApi.EnsureSuccess(
+            await api.GetAsync($"shipment/id/{shipmentId}"), $"GET shipment {shipmentId}");
+        return UnwrapObject(body)
+               ?? throw new WeClappPipelineExecutionException(
+                   $"GET shipment {shipmentId} returned no shipment object");
+    }
 
-        return body;
+    /// <summary>WeClapp envelopes differ per endpoint (live-proven 2026-07-07): list GETs wrap
+    /// in <c>{"result":[…]}</c>, id GETs return the bare object — accept both shapes.</summary>
+    private static JsonObject? UnwrapObject(string body)
+    {
+        var node = JsonNode.Parse(body);
+        return node?["result"] as JsonObject ?? node as JsonObject;
     }
 
     private static async Task<List<JsonNode>> LoadCarrierEntitiesAsync(WeClappApi api)
@@ -240,13 +275,10 @@ public class WeClappArWriteNode(
         var result = JsonNode.Parse(body)?["result"]?.AsArray()
                      ?? throw new WeClappPipelineExecutionException("shipment response has no 'result' array");
         return result.OfType<JsonNode>()
-            .Select(node => ParseShipment(node)!)
+            .Select(node => node.Deserialize<WeClappShipmentSummary>(CaseInsensitive)!)
             .Where(s => s is not null)
             .ToList();
     }
-
-    private static WeClappShipmentSummary? ParseShipment(JsonNode? node) =>
-        node?.Deserialize<WeClappShipmentSummary>(CaseInsensitive);
 
     private static void LogWarnings(IReadOnlyList<string> warnings, INodeContext nodeContext)
     {
