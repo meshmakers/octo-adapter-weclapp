@@ -1,0 +1,26 @@
+# Pipeline: DILOS BE stock snapshots (LKV SFTP) → WeClapp stock movement deltas.
+# warehouseStock is GET-only in the WeClapp API (v1 and v2), so the node books
+# bookIncomingMovement / bookOutgoingMovement per BE-vs-current difference. Idempotent by
+# construction: re-processing the same file yields delta 0, so the trigger's
+# delete-after-success protocol is safe. GES (blocked) lines and unknown articles are
+# skipped loudly (golden files contain 0 GES lines; semantics not agreed yet).
+#
+# SFTP credentials come from the tenant GlobalConfiguration entry "LkvSftp" (shared with
+# the outbound SftpUpload@1 and the AR pipeline). ${WECLAPP_API_KEY} is substituted at
+# deploy time (see scripts/om_setup_lkv.ps1).
+
+triggers:
+  - type: DilosFileFetch@1
+    serverConfiguration: LkvSftp
+    remoteDirectory: "/"          # Billbee production default; per-mandate subdirectory TBD with LKV
+    filePattern: BE*txt           # golden name: BE_20240205035403463.txt
+    pollingIntervalSeconds: 3600  # Billbee parity: hourly
+    minFileAgeSeconds: 60
+
+transformations:
+  - type: WeClappBeWrite@1
+    description: Reconcile the BE stock snapshot into WeClapp via delta movement bookings
+    baseUrl: https://REPLACE-TENANT.weclapp.com/webapp/api/v1
+    apiKey: ${WECLAPP_API_KEY}
+    warehouseId: "4239"           # trial Main warehouse (default place 4244); customer id TBD
+    dryRun: true                  # movements are logged, not booked; flip for go-live

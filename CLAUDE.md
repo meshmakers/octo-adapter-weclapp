@@ -39,6 +39,24 @@ dotnet test Octo.AdapterWeClapp.slnx -c DebugL
 - BE field count is customer-specific (LKV spec/golden: 6; old Billbee variant: 7 with
   SKU) — parsers fail loud on mismatch by design.
 
+## AR/BE Return Path (SFTP → WeClapp)
+- `DilosFileFetch@1` polls the LKV SFTP (credentials via tenant GlobalConfiguration
+  entry `LkvSftp`, same JSON shape as `SftpUpload@1`) and starts ONE pipeline execution
+  per file `{fileName, content}`; the remote file is deleted only AFTER the awaited
+  execution succeeded → the downstream write MUST stay idempotent.
+- `WeClappArWrite@1`: AR K* Auftragsnummer1 = WeClapp `salesOrder.id` (404 = dead-letter
+  log, file still consumed). Idempotency: SHIPPED shipment with same tracking = skip;
+  reuse non-CANCELLED; else `createShipment`. Quantities match by **articleId, never by
+  position**; the data PUT echoes the COMPLETE shipmentItems list; `{"status":"SHIPPED"}`
+  is a separate LAST PUT. `warehouseStock`/`salesOrder.shipped` are read-only — never
+  write them for AR.
+- `WeClappBeWrite@1`: BE is an absolute snapshot → delta bookings via
+  `bookIncomingMovement`/`bookOutgoingMovement` (warehouseStock is GET-only). GES lines
+  and unknown articles are skipped loudly.
+- `DryRun` on both write nodes: PUTs run with `?dryRun=true`; createShipment/movements
+  are skipped and logged. Trial writes use `WECLAPP_TRIAL_*` env vars ONLY —
+  **`WECLAPP_CUSTOMER_*` is a productive system: GET only, never writes.**
+
 ## Conventions
 - `TreatWarningsAsErrors`, nullable enabled, `LangVersion latestmajor` (Directory.Build.props)
 - Configurations: `Debug`, `Release`, `DebugL` (local NuGet at `../nuget/`, version `999.0.0`)
