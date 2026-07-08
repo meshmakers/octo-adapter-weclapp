@@ -67,6 +67,48 @@ public class WeClappFetchTriggerNodeTests
     }
 
     [Fact]
+    public async Task FetchOnce_ArticleMode_EnrichesSupplySourceStubsWithEntities()
+    {
+        // Raw articles embed only supply-source REFERENCE STUBS ({articleSupplySourceId});
+        // prices live on the separate articleSupplySource entity (customer-verified
+        // 2026-07-08) — the trigger resolves the stubs with ONE entity fetch per poll.
+        Configure("article");
+        var handler = new FakeHttpMessageHandler((req, _) =>
+            req.RequestUri!.ToString().Contains("articleSupplySource")
+                ? FakeHttpMessageHandler.Json(
+                    """{"result":[{"id":"S1","articleNumber":"000123","articlePrices":[{"price":"12.34"}]}]}""")
+                : FakeHttpMessageHandler.Json(
+                    """
+                    {"result":[
+                      {"id":"1","supplySources":[{"id":"ref1","articleSupplySourceId":"S1"}]},
+                      {"id":"2","supplySources":[]}
+                    ]}
+                    """));
+        var sut = CreateSut(handler);
+
+        await sut.FetchOnceAsync(_context);
+
+        Assert.Single(handler.Requests, r => r.Url.Contains("articleSupplySource"));
+        Assert.Equal(2, _executedDocuments.Count);
+        var enriched = _executedDocuments[0]!["item"]!["supplySources"]!.AsArray();
+        Assert.Equal("12.34", enriched[0]!["articlePrices"]![0]!["price"]!.ToString());
+        Assert.Empty(_executedDocuments[1]!["item"]!["supplySources"]!.AsArray());
+    }
+
+    [Fact]
+    public async Task FetchOnce_ArticleMode_NoStubsSkipsSupplySourceFetch()
+    {
+        Configure("article");
+        var handler = new FakeHttpMessageHandler((req, _) =>
+            FakeHttpMessageHandler.Json("""{"result":[{"id":"1","name":"A"}]}"""));
+        var sut = CreateSut(handler);
+
+        await sut.FetchOnceAsync(_context);
+
+        Assert.DoesNotContain(handler.Requests, r => r.Url.Contains("articleSupplySource"));
+    }
+
+    [Fact]
     public async Task FetchOnce_ArticleMode_EmptyResultExecutesNothing()
     {
         Configure("article");

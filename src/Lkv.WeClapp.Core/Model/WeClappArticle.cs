@@ -12,13 +12,16 @@ public sealed record WeClappArticle
     public string ArticleType { get; init; } = "";
     public string? Ean { get; init; }
 
-    /// <summary>Embedded in the default GET /article response (confirmed at the customer
-    /// account 2026-07-07: 16 supply sources, 10 with articlePrices, field <c>price</c>).</summary>
+    /// <summary>
+    /// In the raw GET /article response these are REFERENCE STUBS ({articleSupplySourceId},
+    /// no prices — customer-verified 2026-07-08). The fetch side resolves them with the full
+    /// <c>articleSupplySource</c> entities (which carry articlePrices) before parsing.
+    /// </summary>
     public List<WeClappSupplySource> SupplySources { get; init; } = new();
 
     /// <summary>
-    /// WeClapp Einkaufspreis (EK): first parseable supplySources[].articlePrices[].price.
-    /// Null when the article has no supply-source price → DILOS EK-Preis = 0 (Jürgen 2026-06-29).
+    /// WeClapp Einkaufspreis (EK): first parseable supplySources[].articlePrices[].price of the
+    /// ENRICHED shape. Null without a supply-source price → DILOS EK-Preis = 0 (Jürgen 2026-06-29).
     /// </summary>
     public decimal? PurchasePrice => SupplySources
         .SelectMany(s => s.ArticlePrices)
@@ -28,8 +31,22 @@ public sealed record WeClappArticle
         .FirstOrDefault(p => p is not null);
 }
 
+/// <summary>One entry of article.supplySources: a reference stub (raw) or a resolved
+/// articleSupplySource entity (after fetch-side enrichment).</summary>
 public sealed record WeClappSupplySource
 {
+    /// <summary>Stub reference to the separate articleSupplySource entity (raw shape only).</summary>
+    public string ArticleSupplySourceId { get; init; } = "";
+
+    public List<WeClappArticlePrice> ArticlePrices { get; init; } = new();
+}
+
+/// <summary>The separate GET /articleSupplySource entity (carries the purchase prices;
+/// it has NO articleId — articles point at it via their supplySources stubs).</summary>
+public sealed record WeClappArticleSupplySource
+{
+    public string Id { get; init; } = "";
+
     public List<WeClappArticlePrice> ArticlePrices { get; init; } = new();
 }
 

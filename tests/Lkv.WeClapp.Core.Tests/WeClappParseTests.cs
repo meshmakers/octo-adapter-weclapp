@@ -28,10 +28,11 @@ public class WeClappParseTests
     }
 
     [Fact]
-    public void ParseArticles_ReadsPurchasePriceFromEmbeddedSupplySources()
+    public void ParseArticles_ComputesPurchasePriceFromEnrichedSupplySources()
     {
-        // EK path confirmed at the customer account 2026-07-07: supplySources are embedded
-        // in the default GET /article response; prices are strings like every WeClapp amount.
+        // Raw GET /article embeds only supply-source REFERENCE STUBS without prices
+        // (customer-verified 2026-07-08); the fetch side replaces them with the full
+        // articleSupplySource entities. This parses the ENRICHED shape.
         var arts = WeClappJson.ParseArticles(
             """
             {"result":[
@@ -44,6 +45,27 @@ public class WeClappParseTests
         Assert.Equal(12.34m, arts[0].PurchasePrice);
         Assert.Null(arts[1].PurchasePrice);
         Assert.Null(arts[2].PurchasePrice);
+    }
+
+    [Fact]
+    public void ParseArticles_ReadsSupplySourceStubReferences()
+    {
+        // The raw stub shape: {articleSupplySourceId} pointing at the separate entity.
+        var arts = WeClappJson.ParseArticles(
+            """{"result":[{"id":"1","supplySources":[{"articleSupplySourceId":"S1"}]}]}""");
+
+        Assert.Equal("S1", Assert.Single(Assert.Single(arts).SupplySources).ArticleSupplySourceId);
+    }
+
+    [Fact]
+    public void ParseArticleSupplySources_ReadsIdAndPrices()
+    {
+        var sources = WeClappJson.ParseArticleSupplySources(
+            """{"result":[{"id":"S1","articlePrices":[{"price":"12.34"}]}]}""");
+
+        var s = Assert.Single(sources);
+        Assert.Equal("S1", s.Id);
+        Assert.Equal("12.34", Assert.Single(s.ArticlePrices).Price);
     }
 
     [Fact]

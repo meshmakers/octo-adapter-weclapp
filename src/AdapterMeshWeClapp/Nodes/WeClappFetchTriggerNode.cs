@@ -150,9 +150,38 @@ public class WeClappFetchTriggerNode(
     {
         var articles = await FetchAllPagesAsync(http, config, "article", config.AdditionalQuery);
 
+        // EK enrichment: raw articles embed only supply-source REFERENCE STUBS
+        // ({articleSupplySourceId}); the purchase prices live on the separate
+        // articleSupplySource entity, which has no articleId of its own
+        // (customer-verified 2026-07-08). One entity fetch per poll resolves the stubs.
+        Dictionary<string, JsonNode>? sourcesById = null;
+        if (articles.Any(a => a["supplySources"]?.AsArray() is { Count: > 0 }))
+        {
+            var sources = await FetchAllPagesAsync(http, config, "articleSupplySource", "");
+            sourcesById = sources
+                .Where(s => s["id"] is not null)
+                .ToDictionary(s => s["id"]!.ToString(), s => s);
+        }
+
         foreach (var article in articles)
         {
-            var document = new JsonObject { ["item"] = article.DeepClone() };
+            var item = article.DeepClone();
+            if (sourcesById is not null && item["supplySources"]?.AsArray() is { Count: > 0 } stubs)
+            {
+                var resolved = new JsonArray();
+                foreach (var stub in stubs.OfType<JsonObject>())
+                {
+                    if (stub["articleSupplySourceId"]?.ToString() is { } refId &&
+                        sourcesById.TryGetValue(refId, out var source))
+                    {
+                        resolved.Add(source.DeepClone());
+                    }
+                }
+
+                item["supplySources"] = resolved;
+            }
+
+            var document = new JsonObject { ["item"] = item };
             await ExecutePipelineAsync(context, document);
         }
     }
