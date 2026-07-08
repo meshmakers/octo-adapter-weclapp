@@ -18,8 +18,8 @@ public class DilosArticleWriterTests
             ArticleNumber = "000123",
             UnitName = "kg",
             ArticleType = "STORABLE",
-            Ean = "9120103151353",
-            PurchasePrice = null
+            Ean = "9120103151353"
+            // no SupplySources → PurchasePrice null
         };
 
         var line = DilosArticleWriter.RenderLine(art, DilosArticleContext.Default);
@@ -39,7 +39,11 @@ public class DilosArticleWriterTests
     [Fact]
     public void RenderLine_EkValue_PassesThrough()
     {
-        var art = new WeClappArticle { Id = "1", ArticleType = "STORABLE", PurchasePrice = 9.99m };
+        var art = new WeClappArticle
+        {
+            Id = "1", ArticleType = "STORABLE",
+            SupplySources = { new WeClappSupplySource { ArticlePrices = { new WeClappArticlePrice { Price = "9.99" } } } }
+        };
         var line = DilosArticleWriter.RenderLine(art, DilosArticleContext.Default);
         Assert.Equal("9.99", Field(line, 20));
     }

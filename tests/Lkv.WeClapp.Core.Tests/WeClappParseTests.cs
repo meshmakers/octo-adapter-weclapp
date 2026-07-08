@@ -28,6 +28,25 @@ public class WeClappParseTests
     }
 
     [Fact]
+    public void ParseArticles_ReadsPurchasePriceFromEmbeddedSupplySources()
+    {
+        // EK path confirmed at the customer account 2026-07-07: supplySources are embedded
+        // in the default GET /article response; prices are strings like every WeClapp amount.
+        var arts = WeClappJson.ParseArticles(
+            """
+            {"result":[
+              {"id":"1","supplySources":[{"articlePrices":[{"price":"12.34"}]}]},
+              {"id":"2","supplySources":[{"articlePrices":[]}]},
+              {"id":"3"}
+            ]}
+            """);
+
+        Assert.Equal(12.34m, arts[0].PurchasePrice);
+        Assert.Null(arts[1].PurchasePrice);
+        Assert.Null(arts[2].PurchasePrice);
+    }
+
+    [Fact]
     public void ParseOrders_ReadsShipmentMethodId()
     {
         var orders = WeClappJson.ParseOrders(
