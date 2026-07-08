@@ -13,6 +13,10 @@ public sealed record WeClappSalesOrder
     public string? GrossAmount { get; init; }
     public long OrderDate { get; init; }                 // epoch ms
     public long? PlannedShippingDate { get; init; }      // epoch ms
+    /// <summary>WeClapp shipmentMethod id → DILOS K* Frächter (Jürgen wants the id, 2026-06-28).
+    /// Customer reality 2026-07-08: 0/87 orders carry it — the field stays empty then, which the
+    /// golden files prove importable ("Auswahl erfolgt bei LKV").</summary>
+    public string ShipmentMethodId { get; init; } = "";
     public WeClappAddress DeliveryAddress { get; init; } = new();
     public WeClappAddress InvoiceAddress { get; init; } = new();
     public List<WeClappOrderItem> OrderItems { get; init; } = new();

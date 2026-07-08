@@ -28,6 +28,15 @@ public class WeClappParseTests
     }
 
     [Fact]
+    public void ParseOrders_ReadsShipmentMethodId()
+    {
+        var orders = WeClappJson.ParseOrders(
+            """{"result":[{"id":"1","shipmentMethodId":"3415"}]}""");
+
+        Assert.Equal("3415", Assert.Single(orders).ShipmentMethodId);
+    }
+
+    [Fact]
     public void ParseCustomers_ReadsAnonymousDebitorSample()
     {
         var customers = WeClappJson.ParseCustomers(Fx("customer.json"));

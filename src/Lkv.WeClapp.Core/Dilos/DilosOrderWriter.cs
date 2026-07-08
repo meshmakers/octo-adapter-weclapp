@@ -14,8 +14,9 @@ public sealed record DilosOrderContext
 /// <summary>
 /// Renders a WeClapp sales order into DILOS AI records (K* header + P* positions + the -1 shipping line),
 /// field order per _specs/AI.md. Decided fields (Jürgen): ClientIdnummer=customerNumber (Warenempfänger),
-/// Submandant=Mandanten-ID, Währung=5, Druck=L, kein Rechnungsdruck (Text4=0), Warenwerte gefüllt.
-/// Deferred (runtime-gated): MwSt% (field 16, needs tax-rate resolution), Frächter (field 33, real account),
+/// Submandant=Mandanten-ID, Währung=5, Druck=L, kein Rechnungsdruck (Text4=0), Warenwerte gefüllt,
+/// Frächter (field 33) = shipmentMethod id (empty when the order carries none — golden files are empty too).
+/// Deferred (runtime-gated): MwSt% (field 16, needs tax-rate resolution; empty in all golden files),
 /// Einzelpreis brutto (field 20, needs MwSt rate).
 /// </summary>
 public static class DilosOrderWriter
@@ -43,6 +44,7 @@ public static class DilosOrderWriter
         f[27] = o.PlannedShippingDate is { } d ? Date(d) : ""; // Lieferdatum
         f[30] = o.Id;                          // Auftragsnummer1 (= Lieferscheinnr / Rechnungs-PDF-Name)
         f[31] = o.OrderNumber;                 // Auftragsnummer2
+        f[33] = o.ShipmentMethodId;            // Frächter = WeClapp shipmentMethod-ID (LKV mappt)
         f[46] = "0";                           // Text4: kein Rechnungsdruck
         f[65] = Money(o.GrossAmount);          // RechnungssummeBrutto
         return Join(f, HeaderFieldCount);

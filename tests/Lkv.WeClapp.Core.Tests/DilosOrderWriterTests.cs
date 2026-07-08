@@ -20,6 +20,7 @@ public class DilosOrderWriterTests
             CustomerNumber = "7067387625809",
             GrossAmount = "104.97",
             OrderDate = orderDate,
+            ShipmentMethodId = "3415",
             DeliveryAddress = new WeClappAddress
             {
                 Company = "TJ Lucas",
@@ -44,6 +45,7 @@ public class DilosOrderWriterTests
             Field(k, 26));                            // Auftragsdatum
         Assert.Equal("5910986621265", Field(k, 30));  // Auftragsnummer1
         Assert.Equal("74299", Field(k, 31));          // Auftragsnummer2
+        Assert.Equal("3415", Field(k, 33));           // Frächter = WeClapp shipmentMethod-ID (Jürgen 2026-06-28)
         Assert.Equal("0", Field(k, 46));              // Text4: kein Rechnungsdruck
         Assert.Equal("104.97", Field(k, 65));         // RechnungssummeBrutto
         Assert.Equal(66, k.Split('|').Length);
