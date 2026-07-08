@@ -53,6 +53,7 @@ public class ArShipmentWritePlannerTests
         Assert.Equal(Epoch20240206, u.ShippingDateEpochMs);
         Assert.Equal("0.5", u.TotalWeight);
         Assert.Equal("DPD", u.EcommerceShippingCarrier);
+        Assert.Equal("800", u.CarrierToken);
         var parcel = Assert.Single(u.Parcels);
         Assert.Equal(1, parcel.PositionNumber);
         Assert.Equal("06255052795778-Z", parcel.TrackingId);
@@ -101,15 +102,19 @@ public class ArShipmentWritePlannerTests
     }
 
     [Fact]
-    public void Plan_UnknownCarrierBareNumber_WarnsAndOmitsCarrierAndUrl()
+    public void Plan_UnmappedCarrierToken_CarriesTokenWithoutWarning()
     {
+        // Since Jürgen's 2026-07-08 answer, C* field 3 carries the carrier id as known in the
+        // shop system (for WeClapp: the shippingCarrier entity id). The planner cannot judge
+        // such a token — it carries it for the node to resolve against the live carrier list
+        // and only maps the legacy DILOS/Billbee codes as a fallback. No warning here.
         var ar = GoldenShapedShipment() with
         {
             Parcels =
             [
                 new DilosParcel
                 {
-                    OrderNumber1 = "5910986621265", Carrier = "9",
+                    OrderNumber1 = "5910986621265", Carrier = "123",
                     TrackingNumber = "1013408501850970172035"
                 }
             ]
@@ -121,7 +126,8 @@ public class ArShipmentWritePlannerTests
         Assert.Equal("1013408501850970172035", u.PackageTrackingNumber);
         Assert.Null(u.PackageTrackingUrl);
         Assert.Null(u.EcommerceShippingCarrier);
-        Assert.Contains(plan.Warnings, w => w.Contains("carrier", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal("123", u.CarrierToken);
+        Assert.DoesNotContain(plan.Warnings, w => w.Contains("carrier", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]

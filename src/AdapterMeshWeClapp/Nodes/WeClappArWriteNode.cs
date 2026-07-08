@@ -112,19 +112,31 @@ public class WeClappArWriteNode(
                                  $"createShipment for order {ar.OrderNumber1} returned no shipment id");
             }
 
-            // 4. Carrier reference only when the DILOS code mapped AND the entity exists
-            //    (V1 decision: tracking fields always, carrier id never created by us).
+            // 4. Carrier reference. Primary: C* field 3 is the carrier id as configured in the
+            //    shop system (Jürgen 2026-07-08) — for WeClapp the shippingCarrier entity id
+            //    itself. Fallback: legacy DILOS/Billbee code mapped to an ecommerce constant.
+            //    Tracking fields are always written; a carrier entity is never created by us.
             string? shippingCarrierId = null;
-            if (plan.Update!.EcommerceShippingCarrier is { } wantedCarrier)
+            if (plan.Update!.CarrierToken is not null || plan.Update.EcommerceShippingCarrier is not null)
             {
                 carrierEntities ??= await LoadCarrierEntitiesAsync(api);
-                shippingCarrierId = carrierEntities
-                    .FirstOrDefault(c => c["ecommerceShippingCarrier"]?.ToString() == wantedCarrier)?["id"]
-                    ?.ToString();
+                if (plan.Update.CarrierToken is { } token)
+                {
+                    shippingCarrierId = carrierEntities
+                        .FirstOrDefault(c => c["id"]?.ToString() == token)?["id"]?.ToString();
+                }
+
+                if (shippingCarrierId is null && plan.Update.EcommerceShippingCarrier is { } wantedCarrier)
+                {
+                    shippingCarrierId = carrierEntities
+                        .FirstOrDefault(c => c["ecommerceShippingCarrier"]?.ToString() == wantedCarrier)?["id"]
+                        ?.ToString();
+                }
+
                 if (shippingCarrierId is null)
                 {
                     nodeContext.Info(
-                        $"WeClappArWrite: no shippingCarrier entity for {wantedCarrier} — writing tracking without carrier reference");
+                        $"WeClappArWrite: no shippingCarrier entity matches token '{plan.Update.CarrierToken}' — writing tracking without carrier reference");
                 }
             }
 

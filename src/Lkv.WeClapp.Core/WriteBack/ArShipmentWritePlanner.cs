@@ -91,6 +91,7 @@ public static class ArShipmentWritePlanner
         var parcels = new List<WeClappParcelWrite>();
         string? shipmentTrackingNumber = null;
         string? shipmentTrackingUrl = null;
+        string? carrierToken = null;
         string? carrier = null;
 
         for (var i = 0; i < ar.Parcels.Count; i++)
@@ -115,13 +116,13 @@ public static class ArShipmentWritePlanner
             {
                 shipmentTrackingNumber = primary;
                 shipmentTrackingUrl = tracking.Url;
+                // The token may be a WeClapp shippingCarrier entity id (primary contract since
+                // 2026-07-08) — only the node can judge that against the live carrier list, so
+                // no warning here; the legacy code map is attached as a fallback.
+                carrierToken = p.Carrier.Trim().Length > 0 ? p.Carrier.Trim() : null;
                 if (DilosCarrierMap.TryMap(p.Carrier, out var mapped))
                 {
                     carrier = mapped;
-                }
-                else
-                {
-                    warnings.Add($"Unknown DILOS carrier code '{p.Carrier}' — writing tracking without carrier reference");
                 }
             }
         }
@@ -159,6 +160,7 @@ public static class ArShipmentWritePlanner
                 ? new DateTimeOffset(d.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero).ToUnixTimeMilliseconds()
                 : null,
             TotalWeight = Dec(ar.TotalWeight),
+            CarrierToken = carrierToken,
             EcommerceShippingCarrier = carrier,
             Parcels = parcels,
             ItemQuantities = itemQuantities

@@ -104,7 +104,8 @@ public class WeClappTrialWriteSmokeTests(ITestOutputHelper output)
         var quantity = "1";
         var today = DateTime.UtcNow.ToString("dd.MM.yyyy", CultureInfo.InvariantCulture);
 
-        // Synthetic AR for that real order (golden field counts; carrier 9 = no carrier lookup).
+        // Synthetic AR for that real order (golden field counts; carrier 9 → AUSTRIAN_POST
+        // fallback, one carrier-list GET — the trial has no shippingCarrier entities).
         var arContent =
             $"K*|1|1|SMOKE||{orderId}|SMOKE-2|0|0|0|{today}|1|1|2,5\r\n" +
             $"C*|{orderId}|9|LKVSMOKETRACK01|Karton|Standard|2,5\r\n" +

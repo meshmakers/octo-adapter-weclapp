@@ -11,7 +11,8 @@ namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Tests.Nodes;
 
 public class WeClappArWriteNodeTests
 {
-    // Golden AR00006946.TXT verbatim (order 400000001247987, carrier code 9 = unmapped,
+    // Golden AR00006946.TXT verbatim (order 400000001247987, carrier code 9 = ÖPAG legacy
+    // fallback → AUSTRIAN_POST, no matching entity in the mock carrier list,
     // bare tracking number, article 400000001273682 delivered 1, over-delivery open -1).
     private const string GoldenAr =
         "K*|1|1|400000001572890||400000001247987|TEST-123|1001801714|1400137|2|10.04.2024|1|1|2,5\r\n" +
@@ -104,22 +105,24 @@ public class WeClappArWriteNodeTests
 
         await sut.ProcessObjectAsync(_dataContext, _nodeContext);
 
-        // GET order, GET shipments (idempotency), GET full shipment, data PUT, then the
+        // GET order, GET shipments (idempotency), GET carrier list (C* field 3 token must be
+        // checked against the live entity ids), GET full shipment, data PUT, then the
         // status LADDER (trial-proven: NEW→SHIPPED directly is rejected, the transition
         // must step through DELIVERY_NOTE_PRINTED): fresh GET + PUT per rung —
         // v1 requires the complete shipment in every PUT.
-        Assert.Equal(8, handler.Requests.Count);
+        Assert.Equal(9, handler.Requests.Count);
         Assert.Equal("GET", handler.Requests[0].Method);
         Assert.Contains("/salesOrder/id/400000001247987", handler.Requests[0].Url);
         Assert.Equal("GET", handler.Requests[1].Method);
         Assert.Contains("shipment?salesOrderId-eq=400000001247987", handler.Requests[1].Url);
-        Assert.Equal(("GET", true), (handler.Requests[2].Method, handler.Requests[2].Url.Contains("/shipment/id/S1")));
-        Assert.Equal(("GET", true), (handler.Requests[4].Method, handler.Requests[4].Url.Contains("/shipment/id/S1")));
-        Assert.Equal(("GET", true), (handler.Requests[6].Method, handler.Requests[6].Url.Contains("/shipment/id/S1")));
+        Assert.Equal(("GET", true), (handler.Requests[2].Method, handler.Requests[2].Url.Contains("shippingCarrier")));
+        Assert.Equal(("GET", true), (handler.Requests[3].Method, handler.Requests[3].Url.Contains("/shipment/id/S1")));
+        Assert.Equal(("GET", true), (handler.Requests[5].Method, handler.Requests[5].Url.Contains("/shipment/id/S1")));
+        Assert.Equal(("GET", true), (handler.Requests[7].Method, handler.Requests[7].Url.Contains("/shipment/id/S1")));
         Assert.All(handler.Requests, r => Assert.Equal("test-key", r.AuthToken));
 
         // Data PUT: the full fetched shipment with the AR fields merged in — status untouched.
-        var (method, url, _, body) = handler.Requests[3];
+        var (method, url, _, body) = handler.Requests[4];
         Assert.Equal("PUT", method);
         Assert.Contains("/shipment/id/S1", url);
         Assert.DoesNotContain("dryRun", url);
@@ -129,7 +132,9 @@ public class WeClappArWriteNodeTests
         Assert.Equal("NEW", data["status"]!.ToString()); // SHIPPED is a separate, LAST write
         Assert.Equal("1013408501850970172035", data["packageTrackingNumber"]!.ToString());
         Assert.Null(data["packageTrackingUrl"]); // bare-number carrier: no URL
-        Assert.Null(data["shippingCarrierId"]); // carrier code 9 is unmapped
+        // Code 9 → AUSTRIAN_POST fallback, but the mock list has no such entity (only DHL):
+        // tracking is written without a carrier reference.
+        Assert.Null(data["shippingCarrierId"]);
         Assert.Equal(1712707200000, (long)data["shippingDate"]!);
         Assert.Equal("2.5", data["totalWeight"]!.ToString());
         // The fetched shipment has no parcels: adding parcels is forbidden while the flat
@@ -148,14 +153,14 @@ public class WeClappArWriteNodeTests
         Assert.Equal("3", items[1]!["quantity"]!.ToString());
 
         // Status ladder PUTs: full shipment each, DELIVERY_NOTE_PRINTED first, SHIPPED last.
-        var (rung1Method, rung1Url, _, rung1Body) = handler.Requests[5];
+        var (rung1Method, rung1Url, _, rung1Body) = handler.Requests[6];
         Assert.Equal("PUT", rung1Method);
         Assert.Contains("/shipment/id/S1", rung1Url);
         var rung1 = JsonNode.Parse(rung1Body!)!;
         Assert.Equal("DELIVERY_NOTE_PRINTED", rung1["status"]!.ToString());
         Assert.Equal("4711", rung1["recipientPartyId"]!.ToString());
 
-        var (rung2Method, rung2Url, _, rung2Body) = handler.Requests[7];
+        var (rung2Method, rung2Url, _, rung2Body) = handler.Requests[8];
         Assert.Equal("PUT", rung2Method);
         Assert.Contains("/shipment/id/S1", rung2Url);
         var rung2 = JsonNode.Parse(rung2Body!)!;
@@ -353,15 +358,36 @@ public class WeClappArWriteNodeTests
     }
 
     [Fact]
-    public async Task Process_UnmappedCarrier_DoesNotLookUpCarrierEntities()
+    public async Task Process_CarrierTokenMatchingEntityId_WritesThatShippingCarrierId()
     {
-        Configure(); // golden carrier code 9
+        // Jürgen 2026-07-08: LKV returns the carrier id as configured in the shop system —
+        // for WeClapp that is the shippingCarrier entity id itself. "77" is no DILOS code,
+        // but it IS the id of the mock carrier entity → direct reference, no mapping table.
+        Configure(GoldenAr.Replace("C*|400000001247987|9|", "C*|400000001247987|77|"));
         var handler = new FakeHttpMessageHandler((req, _) => DefaultResponder(req));
         var sut = CreateSut(handler);
 
         await sut.ProcessObjectAsync(_dataContext, _nodeContext);
 
-        Assert.DoesNotContain(handler.Requests, r => r.Url.Contains("shippingCarrier"));
+        var dataPut = handler.Requests.First(r => r.Method == "PUT");
+        Assert.Equal("77", JsonNode.Parse(dataPut.Body!)!["shippingCarrierId"]!.ToString());
+    }
+
+    [Fact]
+    public async Task Process_UnresolvableCarrierToken_LooksUpOnceButWritesNoCarrierId()
+    {
+        // "123" is neither a legacy DILOS/Billbee code nor an existing entity id: the node
+        // must consult the carrier list (it cannot know otherwise), then write tracking
+        // without a carrier reference.
+        Configure(GoldenAr.Replace("C*|400000001247987|9|", "C*|400000001247987|123|"));
+        var handler = new FakeHttpMessageHandler((req, _) => DefaultResponder(req));
+        var sut = CreateSut(handler);
+
+        await sut.ProcessObjectAsync(_dataContext, _nodeContext);
+
+        Assert.Contains(handler.Requests, r => r.Url.Contains("shippingCarrier"));
+        var dataPut = handler.Requests.First(r => r.Method == "PUT");
+        Assert.Null(JsonNode.Parse(dataPut.Body!)!["shippingCarrierId"]);
     }
 
     [Fact]

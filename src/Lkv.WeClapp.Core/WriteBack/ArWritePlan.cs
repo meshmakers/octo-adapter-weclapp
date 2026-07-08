@@ -45,7 +45,13 @@ public sealed record ArShipmentUpdate
     /// <summary>Total weight in kg as dot-decimal string.</summary>
     public string? TotalWeight { get; init; }
 
-    /// <summary>WeClapp ecommerceShippingCarrier constant (from <see cref="Dilos.DilosCarrierMap"/>), null when unmapped.</summary>
+    /// <summary>Raw C* field 3 of the first parcel. Primary carrier reference since 2026-07-08:
+    /// LKV returns the carrier id as configured in the shop system, i.e. the WeClapp
+    /// shippingCarrier entity id — the node resolves it against the live carrier list.</summary>
+    public string? CarrierToken { get; init; }
+
+    /// <summary>Legacy fallback: WeClapp ecommerceShippingCarrier constant mapped from a
+    /// DILOS/Billbee-era code via <see cref="Dilos.DilosCarrierMap"/>, null when unmapped.</summary>
     public string? EcommerceShippingCarrier { get; init; }
 
     public IReadOnlyList<WeClappParcelWrite> Parcels { get; init; } = [];
