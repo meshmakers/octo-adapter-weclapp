@@ -8,8 +8,9 @@ namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Nodes;
 
 /// <summary>
 /// Configuration for the DilosRender node. Reads an array of WeClapp objects from
-/// <c>Path</c> and writes the rendered DILOS file content (pipe-delimited, CRLF)
-/// to <c>TargetPath</c>.
+/// <c>Path</c> and writes the rendered DILOS file content (pipe-delimited, LF —
+/// all real Billbee-produced AS/AI files are pure LF, the DILOS-import-proven
+/// format; CRLF only occurs in files DILOS itself produces) to <c>TargetPath</c>.
 /// </summary>
 [NodeName("DilosRender", 1)]
 public record DilosRenderNodeConfiguration : SourceTargetPathNodeConfiguration
@@ -60,7 +61,7 @@ public class DilosRenderNode(NodeDelegate next) : IPipelineNode
         var lines = articles
             .Select(a => DilosArticleWriter.RenderLine(a, DilosArticleContext.Default));
 
-        return JoinCrlf(lines);
+        return JoinLf(lines);
     }
 
     private static string RenderOrders(IDataContext dataContext, DilosRenderNodeConfiguration config)
@@ -77,7 +78,7 @@ public class DilosRenderNode(NodeDelegate next) : IPipelineNode
             .SelectMany(o => new[] { DilosOrderWriter.RenderHeader(o, ctx) }
                 .Concat(DilosOrderWriter.RenderPositions(o, ctx)));
 
-        return JoinCrlf(lines);
+        return JoinLf(lines);
     }
 
     /// <summary>Reads the source as an array OR a single object — per-document pipelines
@@ -99,9 +100,9 @@ public class DilosRenderNode(NodeDelegate next) : IPipelineNode
         return many.OfType<T>().ToList();
     }
 
-    private static string JoinCrlf(IEnumerable<string> lines)
+    private static string JoinLf(IEnumerable<string> lines)
     {
-        var joined = string.Join("\r\n", lines);
-        return joined.Length == 0 ? "" : joined + "\r\n";
+        var joined = string.Join("\n", lines);
+        return joined.Length == 0 ? "" : joined + "\n";
     }
 }
