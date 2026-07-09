@@ -1,9 +1,11 @@
 using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Nodes;
 using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Services;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb.Configuration;
+using Meshmakers.Octo.Runtime.Contracts.MongoDb.Extensions;
 using Meshmakers.Octo.Sdk.Common.Adapters;
 using Meshmakers.Octo.Sdk.Common.Web.Sockets;
 using Meshmakers.Octo.Sdk.MeshAdapter.Configuration;
+using Meshmakers.Octo.Services.Observability;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -18,6 +20,11 @@ await adapterBuilder.RunAsync(args, builder =>
 
     builder.Services.Configure<MeshAdapterConfiguration>(options =>
         builder.Configuration.GetSection("Adapter").Bind(options));
+
+    // Observability: health checks + the HTTP endpoints the Helm chart probes
+    // (/healthz/live, /healthz/ready) — mapped by MapObservability below.
+    builder.AddObservability()
+        .AddSystemContextHealthCheck();
 
     // Add the adapter service to startup and shutdown the adapter
     builder.Services.AddSingleton<IAdapterService, AdapterMeshWeClappService>();
@@ -53,5 +60,6 @@ await adapterBuilder.RunAsync(args, builder =>
 
 }, app =>
 {
+    app.MapObservability();
     app.UseOctoMeshAdapter();
 });

@@ -19,6 +19,9 @@
     <ItemGroup>
         <PackageReference Include="Meshmakers.Octo.Sdk.Common.Web" Version="$(OctoCommVersion)"/>
         <PackageReference Include="Meshmakers.Octo.Sdk.MeshAdapter" Version="$(OctoCommVersion)" />
+        <!-- Maps /health, /healthz/live, /healthz/ready — the chart's httpGet probes.
+             WebAdapterBuilder alone maps no HTTP endpoints (eda/mesh-adapter pattern). -->
+        <PackageReference Include="Meshmakers.Octo.Services.Observability" Version="$(OctoCoreLibVersion)" />
         <!-- Already transitive via Sdk.MeshAdapter (SftpUploadNode) — explicit pin because the
              DilosFileFetch trigger uses it directly. -->
         <PackageReference Include="SSH.NET" Version="2025.1.0" />
