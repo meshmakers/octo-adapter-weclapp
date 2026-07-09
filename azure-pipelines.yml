@@ -44,7 +44,7 @@ variables:
   - group: ApiKeys-mm-cloud
   - group: OctoDefault
   - name: solutionFile
-    value: 'Octo.AdapterWeClapp.slnx'
+    value: 'Octo.WeClappAdapter.slnx'
   - name: artifactsFrameworkVersion
     value: 'net10.0'
   - name: buildConfiguration

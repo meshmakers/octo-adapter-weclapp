@@ -9,10 +9,10 @@ the core lib). Template: `octo-adapter-demos` (Mesh adapter / Socket).
 ## Build Commands
 ```bash
 # Local development build (uses local NuGet packages from ../nuget/)
-dotnet build Octo.AdapterWeClapp.slnx -c DebugL
+dotnet build Octo.WeClappAdapter.slnx -c DebugL
 
 # Run tests
-dotnet test Octo.AdapterWeClapp.slnx -c DebugL
+dotnet test Octo.WeClappAdapter.slnx -c DebugL
 ```
 
 ## Project Structure
@@ -64,6 +64,6 @@ dotnet test Octo.AdapterWeClapp.slnx -c DebugL
 - Commit messages: `AB#4228: <meaningful description>`
 
 ## Pre-Commit Checklist (ALL steps MUST pass)
-1. `dotnet format Octo.AdapterWeClapp.slnx --verify-no-changes`
-2. `dotnet build Octo.AdapterWeClapp.slnx -c DebugL`
-3. `dotnet test Octo.AdapterWeClapp.slnx -c DebugL`
+1. `dotnet format Octo.WeClappAdapter.slnx --verify-no-changes`
+2. `dotnet build Octo.WeClappAdapter.slnx -c DebugL`
+3. `dotnet test Octo.WeClappAdapter.slnx -c DebugL`

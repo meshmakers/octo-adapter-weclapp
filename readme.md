@@ -21,11 +21,11 @@ template. Working name — final repo name TBD (octo-plug-weclapp vs. octo-adapt
 
 ```powershell
 # Local development build (uses local NuGet packages from ../nuget/)
-dotnet build Octo.AdapterWeClapp.slnx -c DebugL
-dotnet test Octo.AdapterWeClapp.slnx -c DebugL
+dotnet build Octo.WeClappAdapter.slnx -c DebugL
+dotnet test Octo.WeClappAdapter.slnx -c DebugL
 
 # pre-commit gate
-dotnet format Octo.AdapterWeClapp.slnx --verify-no-changes; dotnet build Octo.AdapterWeClapp.slnx -c DebugL; dotnet test Octo.AdapterWeClapp.slnx -c DebugL
+dotnet format Octo.WeClappAdapter.slnx --verify-no-changes; dotnet build Octo.WeClappAdapter.slnx -c DebugL; dotnet test Octo.WeClappAdapter.slnx -c DebugL
 ```
 
 Commits: `AB#4228: <description>` (Azure Boards work item link).
