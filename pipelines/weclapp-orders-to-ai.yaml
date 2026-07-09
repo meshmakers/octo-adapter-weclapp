@@ -5,10 +5,17 @@
 # ${WECLAPP_API_KEY} is substituted at deploy time from the local environment variable
 # WECLAPP_TRIAL_API_KEY (see scripts/om_setup_lkv.ps1) — the key never enters the repo.
 #
-# NOTE (spike status): the custom-node chain below is proven end-to-end by
-# PipelineChainIntegrationTests; the built-in upsert/association/write section is prepared
-# per the node configurations but still needs validation at the tenant (association role
-# ids come from the compiled Industry.Logistics CK).
+# NOTE (spike status): the custom-node chain is proven end-to-end by
+# PipelineChainIntegrationTests. The built-in sections below are spelled out with field
+# names source-verified against octo-mesh-adapter MeshNodes.Sdk (2026-07-09):
+# GetOrCreateRtEntitiesByType@1 (CkTypeId/FieldFilters[attributePath,operator,
+# comparisonValuePath]/RtIdTargetPath/CkTypeIdTargetPath/ModOperationPath),
+# CreateUpdateInfo@1 (RtIdPath/CkTypeId/UpdateKindPath/AttributeUpdates[attributeName,
+# valuePath]/TargetPath), CreateAssociationUpdate@1 (UpdateKind Create|Delete,
+# Origin/Target RtIdPath+CkTypeId, AssociationRoleId), ApplyChanges@1 (Path = a
+# List<EntityUpdateInfo>). STILL TO CONFIRM at the first tenant run: the FieldFilter
+# operator enum literal, the write mode that collects update infos into ONE list at
+# $.updates, and the full attribute list per type (source: WECLAPP-4228-MAPPING.md).
 
 triggers:
   - type: WeClappFetch@1
@@ -30,18 +37,89 @@ transformations:
     customerPath: $.customer
     targetPath: $.ck
 
-  # --- CK persistence (built-ins; validate at tenant: association role ids from the CK) ---
-  # - type: GetOrCreateRtEntitiesByType@1   → Customer by $.ck.Customer.CustomerNumber
-  # - type: GetOrCreateRtEntitiesByType@1   → Order by $.ck.Order.OrderNumber
-  # - type: CreateAssociationUpdate@1       → Order→Customer (role id from Industry.Logistics)
-  # - type: ApplyChanges@1
+  # --- CK persistence (built-ins; see header note for verification status) ---
+  - type: GetOrCreateRtEntitiesByType@1
+    description: Upsert the Customer by its WeClapp customer number
+    ckTypeId: Industry.Logistics/Customer
+    fieldFilters:
+      - attributePath: CustomerNumber
+        operator: EqualTo                     # enum literal to confirm at the tenant
+        comparisonValuePath: $.ck.Customer.CustomerNumber
+    rtIdTargetPath: $.rt.customerRtId
+    ckTypeIdTargetPath: $.rt.customerCkTypeId
+    modOperationPath: $.rt.customerModOperation
+
+  - type: CreateUpdateInfo@1
+    description: Customer attribute values onto the upserted entity (full list → WECLAPP-4228-MAPPING.md)
+    path: $.ck.Customer
+    rtIdPath: $.rt.customerRtId
+    ckTypeId: Industry.Logistics/Customer
+    updateKindPath: $.rt.customerModOperation # Insert|Update as decided by the upsert node
+    attributeUpdates:
+      - attributeName: CustomerNumber
+        valuePath: $.ck.Customer.CustomerNumber
+      - attributeName: Name
+        valuePath: $.ck.Customer.Contact.CompanyName
+    targetPath: $.updates
+
+  - type: GetOrCreateRtEntitiesByType@1
+    description: Upsert the Order by its WeClapp id (= Auftragsnummer1)
+    ckTypeId: Industry.Logistics/Order
+    fieldFilters:
+      - attributePath: OrderNumber
+        operator: EqualTo
+        comparisonValuePath: $.ck.Order.OrderNumber
+    rtIdTargetPath: $.rt.orderRtId
+    ckTypeIdTargetPath: $.rt.orderCkTypeId
+    modOperationPath: $.rt.orderModOperation
+
+  - type: CreateUpdateInfo@1
+    description: Order attribute values (full list → WECLAPP-4228-MAPPING.md)
+    path: $.ck.Order
+    rtIdPath: $.rt.orderRtId
+    ckTypeId: Industry.Logistics/Order
+    updateKindPath: $.rt.orderModOperation
+    attributeUpdates:
+      - attributeName: OrderNumber
+        valuePath: $.ck.Order.OrderNumber
+      - attributeName: ExternalOrderNumber
+        valuePath: $.ck.Order.ExternalOrderNumber
+      - attributeName: OrderDate
+        valuePath: $.ck.Order.OrderDate
+    targetPath: $.updates
+
+  - type: CreateAssociationUpdate@1
+    description: Order → Customer (role from the imported Industry.Logistics CK)
+    updateKind: Create
+    originRtIdPath: $.rt.orderRtId
+    originCkTypeId: Industry.Logistics/Order
+    targetRtIdPath: $.rt.customerRtId
+    targetCkTypeId: Industry.Logistics/Customer
+    associationRoleId: Industry.Logistics/OrderCustomer
+    targetPath: $.updates
+
+  - type: ApplyChanges@1
+    description: Persist all collected entity/association updates in one repository call
+    path: $.updates
 
   - type: DilosRender@1
     description: Render the AI file content for this order (K* + P* + shipping -1 line)
     mode: AI
-    submandant: "51696697501"
+    submandant: "51696697501"   # REPLACE per tenant: WeClapp-Mandanten-Kennung (LKV maps it)
     path: $.item
     targetPath: $.dilosAi
 
-  # --- File delivery (built-ins; validate at tenant) ---
-  # - type: SftpUpload@1  → AI<Auftragsnummer1>.txt to the LKV SFTP (credentials via tenant secret)
+  # --- File delivery (built-in SftpUpload@1; config source-verified 2026-07-09) ---
+  # ⚠ ENCODING: SftpUploadNode writes string content as UTF-8 (SftpUploadNode.cs:272).
+  #   The golden (DILOS-import-proven) AI/AS files are ISO-8859-1 with LF. Pure-ASCII
+  #   content is identical in both encodings, but umlauts in names/addresses differ —
+  #   verify with the first LKV integration test; fallback plan: tiny DilosSftpWrite@1
+  #   on the adapter's own ISftpFileSystem (Latin-1), reusing the LkvSftp configuration.
+  # TODO: file name AI<Auftragsnummer1>.txt — have DilosRender@1 also emit the file
+  #   name (small follow-up change) or use PlaceholderReplace@1.
+  - type: SftpUpload@1
+    description: Deliver the AI file to the LKV SFTP root (delete-side handled by LKV)
+    serverConfiguration: LkvSftp        # SAME tenant GlobalConfiguration as the return path
+    remoteDirectory: /
+    fileNamePath: $.dilosAiFileName
+    path: $.dilosAi

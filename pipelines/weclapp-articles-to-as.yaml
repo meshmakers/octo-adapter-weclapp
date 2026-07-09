@@ -1,5 +1,10 @@
 # Pipeline: WeClapp articles → CK entities + DILOS AS file content (daily article sync).
-# Deployment + key handling identical to weclapp-orders-to-ai.yaml.
+# Deployment + key handling identical to weclapp-orders-to-ai.yaml (see its header for
+# the verification status of the built-in sections).
+#
+# NOTE: the trigger enriches each article's supplySources reference stubs with the full
+# articleSupplySource entities (EK prices) — one extra entity fetch per poll
+# (customer-verified 2026-07-08; commit 0f521a2).
 
 triggers:
   - type: WeClappFetch@1
@@ -16,9 +21,39 @@ transformations:
     path: $.item
     targetPath: $.ck
 
-  # --- CK persistence (built-ins; validate at tenant) ---
-  # - type: GetOrCreateRtEntitiesByType@1   → Article by $.ck.ArticleNumber
-  # - type: ApplyChanges@1
+  # --- CK persistence (built-ins; field names source-verified 2026-07-09,
+  #     first tenant run pending — see weclapp-orders-to-ai.yaml header) ---
+  - type: GetOrCreateRtEntitiesByType@1
+    description: Upsert the Article by its WeClapp id (= DILOS Artikelnummer / AS key)
+    ckTypeId: Industry.Logistics/Article
+    fieldFilters:
+      - attributePath: ArticleNumber
+        operator: EqualTo                     # enum literal to confirm at the tenant
+        comparisonValuePath: $.ck.Article.ArticleNumber
+    rtIdTargetPath: $.rt.articleRtId
+    ckTypeIdTargetPath: $.rt.articleCkTypeId
+    modOperationPath: $.rt.articleModOperation
+
+  - type: CreateUpdateInfo@1
+    description: Article attribute values (full list → WECLAPP-4228-MAPPING.md)
+    path: $.ck.Article
+    rtIdPath: $.rt.articleRtId
+    ckTypeId: Industry.Logistics/Article
+    updateKindPath: $.rt.articleModOperation
+    attributeUpdates:
+      - attributeName: ArticleNumber
+        valuePath: $.ck.Article.ArticleNumber
+      - attributeName: Name
+        valuePath: $.ck.Article.Name
+      - attributeName: Sku
+        valuePath: $.ck.Article.Sku
+      - attributeName: Ean
+        valuePath: $.ck.Article.Ean
+    targetPath: $.updates
+
+  - type: ApplyChanges@1
+    description: Persist the article upsert
+    path: $.updates
 
   - type: DilosRender@1
     description: Render the AS line for this article
@@ -26,6 +61,15 @@ transformations:
     path: $.item
     targetPath: $.dilosAs
 
-  # --- File delivery (built-ins; validate at tenant) ---
-  # - type: SftpUpload@1  → AS<timestamp>.txt (article sync collects into one file per run —
-  #   aggregation strategy to validate at tenant: per-document vs. collected)
+  # --- File delivery (built-in SftpUpload@1) ---
+  # ⚠ Same UTF-8-vs-Latin-1 encoding caveat as in weclapp-orders-to-ai.yaml.
+  # OPEN (validate at tenant): the article sync collects ALL A* lines of one poll into
+  # ONE AS<yyyyMMddHHmmss>.txt (golden precedent) — per-document pipelines execute once
+  # per article, so the aggregation strategy (collect vs. per-article upload) and the
+  # timestamped file name still need the tenant validation run.
+  - type: SftpUpload@1
+    description: Deliver the AS file to the LKV SFTP root
+    serverConfiguration: LkvSftp        # SAME tenant GlobalConfiguration as the return path
+    remoteDirectory: /
+    fileNamePath: $.dilosAsFileName
+    path: $.dilosAs
