@@ -66,7 +66,8 @@ public class WeClappArWriteNode(
                 logger.LogError("WeClappArWrite: sales order {OrderId} (file {FileName}) not found — dead-letter",
                     ar.OrderNumber1, fileName);
                 nodeContext.Error(
-                    $"WeClappArWrite: sales order '{ar.OrderNumber1}' (file {fileName}) not found in WeClapp — shipment skipped (dead-letter)");
+                    "WeClappArWrite: sales order '{0}' (file {1}) not found in WeClapp — shipment skipped (dead-letter)",
+                    ar.OrderNumber1, fileName);
                 continue;
             }
 
@@ -83,7 +84,7 @@ public class WeClappArWriteNode(
 
             if (plan.Action == ArWriteAction.Skip)
             {
-                nodeContext.Info($"WeClappArWrite: order {ar.OrderNumber1} skipped — {plan.SkipReason}");
+                nodeContext.Info("WeClappArWrite: order {0} skipped — {1}", ar.OrderNumber1, plan.SkipReason ?? "");
                 continue;
             }
 
@@ -99,7 +100,8 @@ public class WeClappArWriteNode(
                 {
                     // createShipment has no dry-run support — never create during a dry run.
                     nodeContext.Info(
-                        $"WeClappArWrite dry-run: would create a shipment for order {ar.OrderNumber1} and mark it SHIPPED");
+                        "WeClappArWrite dry-run: would create a shipment for order {0} and mark it SHIPPED",
+                        ar.OrderNumber1);
                     continue;
                 }
 
@@ -136,7 +138,8 @@ public class WeClappArWriteNode(
                 if (shippingCarrierId is null)
                 {
                     nodeContext.Info(
-                        $"WeClappArWrite: no shippingCarrier entity matches token '{plan.Update.CarrierToken}' — writing tracking without carrier reference");
+                        "WeClappArWrite: no shippingCarrier entity matches token '{0}' — writing tracking without carrier reference",
+                        plan.Update.CarrierToken ?? "");
                 }
             }
 
@@ -180,8 +183,9 @@ public class WeClappArWriteNode(
             }
 
             nodeContext.Info(
-                $"WeClappArWrite: order {ar.OrderNumber1} → shipment {shipmentId} {ArShipmentUpdate.TargetStatus}"
-                + (config.DryRun ? " (dry-run)" : ""));
+                "WeClappArWrite: order {0} → shipment {1} {2}{3}",
+                ar.OrderNumber1, shipmentId, ArShipmentUpdate.TargetStatus,
+                config.DryRun ? " (dry-run)" : "");
         }
 
         await next(dataContext, nodeContext);
@@ -255,7 +259,8 @@ public class WeClappArWriteNode(
             else
             {
                 nodeContext.Error(
-                    $"WeClappArWrite: parcel count mismatch (AR {update.Parcels.Count} vs WeClapp {existingParcels.Count}) — leaving parcels untouched, tracking stays on the shipment level");
+                    "WeClappArWrite: parcel count mismatch (AR {0} vs WeClapp {1}) — leaving parcels untouched, tracking stays on the shipment level",
+                    update.Parcels.Count, existingParcels.Count);
             }
         }
         else if (update.Parcels.Count > 0)
@@ -333,7 +338,7 @@ public class WeClappArWriteNode(
     {
         foreach (var warning in warnings)
         {
-            nodeContext.Error($"WeClappArWrite: {warning}");
+            nodeContext.Error("WeClappArWrite: {0}", warning);
         }
     }
 }

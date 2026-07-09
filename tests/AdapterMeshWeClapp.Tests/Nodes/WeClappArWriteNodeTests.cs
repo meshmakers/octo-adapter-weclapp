@@ -276,7 +276,8 @@ public class WeClappArWriteNodeTests
         await sut.ProcessObjectAsync(_dataContext, _nodeContext); // must not throw
 
         Assert.Single(handler.Requests); // only the salesOrder lookup
-        A.CallTo(() => _nodeContext.Error(A<string>.That.Contains("400000001247987")))
+        A.CallTo(() => _nodeContext.Error(A<string>.That.Contains("not found"),
+                A<object[]>.That.Matches(a => a.Contains("400000001247987"))))
             .MustHaveHappenedOnceOrMore();
         A.CallTo(() => _next(_dataContext, _nodeContext)).MustHaveHappenedOnceExactly();
     }
@@ -339,7 +340,7 @@ public class WeClappArWriteNodeTests
         var parcels = JsonNode.Parse(dataPut.Body!)!["parcels"]!.AsArray();
         Assert.Equal(2, parcels.Count);
         Assert.All(parcels, p => Assert.Null(p!["trackingId"])); // nothing guessed by index
-        A.CallTo(() => _nodeContext.Error(A<string>.That.Contains("parcel count")))
+        A.CallTo(() => _nodeContext.Error(A<string>.That.Contains("parcel count"), A<object[]>._))
             .MustHaveHappenedOnceOrMore();
     }
 

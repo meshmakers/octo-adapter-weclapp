@@ -57,10 +57,10 @@ public class WeClappTrialWriteSmokeTests(ITestOutputHelper output)
         var next = A.Fake<NodeDelegate>();
         A.CallTo(() => dataContext.Get<string>("$.fileName")).Returns(fileName);
         A.CallTo(() => dataContext.Get<string>("$.content")).Returns(content);
-        A.CallTo(() => nodeContext.Info(A<string>._)).Invokes(call =>
-            output.WriteLine($"  node: {call.Arguments[0]}"));
-        A.CallTo(() => nodeContext.Error(A<string>._)).Invokes(call =>
-            output.WriteLine($"  node ERROR: {call.Arguments[0]}"));
+        A.CallTo(() => nodeContext.Info(A<string>._, A<object[]>._)).Invokes(call =>
+            output.WriteLine($"  node: {NodeLogCapture.Format(call)}"));
+        A.CallTo(() => nodeContext.Error(A<string>._, A<object[]>._)).Invokes(call =>
+            output.WriteLine($"  node ERROR: {NodeLogCapture.Format(call)}"));
         return (dataContext, nodeContext, next);
     }
 

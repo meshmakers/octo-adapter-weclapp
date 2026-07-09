@@ -113,9 +113,12 @@ public class WeClappBeWriteNodeTests
         Assert.Equal("3", outgoingBody["quantity"]!.ToString());
         Assert.Equal("P1", outgoingBody["sourceStoragePlaceId"]!.ToString());
 
-        // Unknown article X, blocked line G and non-storable N must be reported, not booked.
-        A.CallTo(() => _nodeContext.Error(A<string>.That.Contains("X"))).MustHaveHappenedOnceOrMore();
-        A.CallTo(() => _nodeContext.Error(A<string>.That.Contains("not storable")))
+        // Unknown article X, blocked line G and non-storable N must be reported, not booked
+        // (the warning text is a template arg, so it is matched in the args array).
+        A.CallTo(() => _nodeContext.Error(A<string>._,
+                A<object[]>.That.Matches(a => a.Any(o => o.ToString()!.Contains("X")))))
+            .MustHaveHappenedOnceOrMore();
+        A.CallTo(() => _nodeContext.Error(A<string>.That.Contains("not storable"), A<object[]>._))
             .MustHaveHappenedOnceOrMore();
         A.CallTo(() => _next(_dataContext, _nodeContext)).MustHaveHappenedOnceExactly();
     }

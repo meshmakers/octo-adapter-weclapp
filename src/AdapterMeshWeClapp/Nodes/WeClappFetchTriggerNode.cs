@@ -67,7 +67,7 @@ public class WeClappFetchTriggerNode(
         _cancellationTokenSource = new CancellationTokenSource();
         var token = _cancellationTokenSource.Token;
 
-        context.NodeContext.Info($"WeClappFetch: polling '{config.Entity}' every {config.PollingIntervalSeconds}s");
+        context.NodeContext.Info("WeClappFetch: polling '{0}' every {1}s", config.Entity, config.PollingIntervalSeconds);
 
         _pollingTask = Task.Run(async () =>
         {
@@ -85,7 +85,7 @@ public class WeClappFetchTriggerNode(
                 {
                     // Log and keep polling — a single failed poll must not kill the trigger.
                     logger.LogError(ex, "WeClappFetch: poll for '{Entity}' failed", config.Entity);
-                    context.NodeContext.Error($"WeClappFetch poll failed: {ex.Message}");
+                    context.NodeContext.Error("WeClappFetch poll failed: {0}", ex.Message);
                 }
 
                 try

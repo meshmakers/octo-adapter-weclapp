@@ -99,7 +99,7 @@ public class WeClappBeWriteNode(
             if (articleIds.Contains(line.ArticleNumber) && !storableIds.Contains(line.ArticleNumber))
             {
                 nodeContext.Error(
-                    $"WeClappBeWrite: article {line.ArticleNumber} is not storable — line skipped");
+                    "WeClappBeWrite: article {0} is not storable — line skipped", line.ArticleNumber);
                 continue;
             }
 
@@ -118,7 +118,7 @@ public class WeClappBeWriteNode(
         foreach (var warning in plan.Warnings)
         {
             logger.LogWarning("WeClappBeWrite: {Warning}", warning);
-            nodeContext.Error($"WeClappBeWrite: {warning}");
+            nodeContext.Error("WeClappBeWrite: {0}", warning);
         }
 
         foreach (var movement in plan.Movements)
@@ -140,7 +140,9 @@ public class WeClappBeWriteNode(
 
             if (config.DryRun)
             {
-                nodeContext.Info($"WeClappBeWrite dry-run: would POST {path} {body.ToJsonString()}");
+                // The JSON body contains literal braces — interpolated into the message it
+                // would corrupt the structured-log template, so it travels as an arg.
+                nodeContext.Info("WeClappBeWrite dry-run: would POST {0} {1}", path, body.ToJsonString());
                 continue;
             }
 
@@ -150,9 +152,9 @@ public class WeClappBeWriteNode(
         }
 
         nodeContext.Info(
-            $"WeClappBeWrite: {fileName} — {plan.Movements.Count} movements"
-            + (config.DryRun ? " (dry-run)" : "")
-            + $", {plan.InSyncCount} in sync, {plan.Warnings.Count} warnings");
+            "WeClappBeWrite: {0} — {1} movements{2}, {3} in sync, {4} warnings",
+            fileName, plan.Movements.Count, config.DryRun ? " (dry-run)" : "",
+            plan.InSyncCount, plan.Warnings.Count);
 
         await next(dataContext, nodeContext);
     }

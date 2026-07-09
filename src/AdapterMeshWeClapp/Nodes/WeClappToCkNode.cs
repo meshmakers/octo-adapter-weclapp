@@ -71,7 +71,7 @@ public class WeClappToCkNode(NodeDelegate next) : IPipelineNode
 
         if (WeClappToDilos.IsSystemArticle(article))
         {
-            nodeContext.Info($"WeClappToCk: filtered system article '{article.Id}' ({article.ArticleType})");
+            nodeContext.Info("WeClappToCk: filtered system article '{0}' ({1})", article.Id, article.ArticleType);
             return false;
         }
 
@@ -89,7 +89,7 @@ public class WeClappToCkNode(NodeDelegate next) : IPipelineNode
 
         if (WeClappToDilos.IsSystemCustomer(order.CustomerNumber))
         {
-            nodeContext.Info($"WeClappToCk: filtered system order '{order.Id}' (customer {order.CustomerNumber})");
+            nodeContext.Info("WeClappToCk: filtered system order '{0}' (customer {1})", order.Id, order.CustomerNumber);
             return false;
         }
 

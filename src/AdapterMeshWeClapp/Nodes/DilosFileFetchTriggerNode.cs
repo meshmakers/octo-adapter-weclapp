@@ -66,7 +66,8 @@ public class DilosFileFetchTriggerNode(
         var token = _cancellationTokenSource.Token;
 
         context.NodeContext.Info(
-            $"DilosFileFetch: polling '{config.RemoteDirectory}' for '{config.FilePattern}' every {config.PollingIntervalSeconds}s");
+            "DilosFileFetch: polling '{0}' for '{1}' every {2}s",
+            config.RemoteDirectory, config.FilePattern, config.PollingIntervalSeconds);
 
         _pollingTask = Task.Run(async () =>
         {
@@ -84,7 +85,7 @@ public class DilosFileFetchTriggerNode(
                 {
                     // Log and keep polling — a single failed poll must not kill the trigger.
                     logger.LogError(ex, "DilosFileFetch: poll for '{FilePattern}' failed", config.FilePattern);
-                    context.NodeContext.Error($"DilosFileFetch poll failed: {ex.Message}");
+                    context.NodeContext.Error("DilosFileFetch poll failed: {0}", ex.Message);
                 }
 
                 try
@@ -183,7 +184,7 @@ public class DilosFileFetchTriggerNode(
             {
                 // Per-file isolation: the file stays on the server and is retried next poll.
                 logger.LogError(ex, "DilosFileFetch: processing '{FileName}' failed", file.Name);
-                context.NodeContext.Error($"DilosFileFetch: processing '{file.Name}' failed: {ex.Message}");
+                context.NodeContext.Error("DilosFileFetch: processing '{0}' failed: {1}", file.Name, ex.Message);
             }
         }
     }

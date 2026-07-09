@@ -49,7 +49,7 @@ public class DilosRenderNode(NodeDelegate next) : IPipelineNode
         dataContext.Set(config.TargetPath, content, config.DocumentMode,
             config.TargetValueKind, config.TargetValueWriteMode);
 
-        nodeContext.Info($"DilosRender: rendered {config.Mode} content ({content.Length} chars)");
+        nodeContext.Info("DilosRender: rendered {0} content ({1} chars)", config.Mode, content.Length);
 
         await next(dataContext, nodeContext);
     }

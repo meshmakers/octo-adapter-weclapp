@@ -189,8 +189,8 @@ public class LkvSftpE2eSmokeTests(ITestOutputHelper output)
                     ApiKey = apiKey,
                     DryRun = false,
                 });
-            A.CallTo(() => arNodeContext.Error(A<string>._)).Invokes(call =>
-                output.WriteLine($"  arWrite ERROR: {call.Arguments[0]}"));
+            A.CallTo(() => arNodeContext.Error(A<string>._, A<object[]>._)).Invokes(call =>
+                output.WriteLine($"  arWrite ERROR: {NodeLogCapture.Format(call)}"));
             var arWriteNode = new WeClappArWriteNode(A.Fake<NodeDelegate>(),
                 A.Fake<ILogger<WeClappArWriteNode>>(), LiveHttpClientFactory());
 
@@ -211,8 +211,8 @@ public class LkvSftpE2eSmokeTests(ITestOutputHelper output)
                     MinFileAgeSeconds = 0, // the file was uploaded seconds ago on purpose
                     PollingIntervalSeconds = 900,
                 });
-            A.CallTo(() => triggerNodeContext.Error(A<string>._)).Invokes(call =>
-                output.WriteLine($"  trigger ERROR: {call.Arguments[0]}"));
+            A.CallTo(() => triggerNodeContext.Error(A<string>._, A<object[]>._)).Invokes(call =>
+                output.WriteLine($"  trigger ERROR: {NodeLogCapture.Format(call)}"));
 
             var executed = new List<string>();
             A.CallTo(() => triggerContext.ExecuteAsync(A<ExecutePipelineOptions>._, A<object?>._))
@@ -322,8 +322,8 @@ public class LkvSftpE2eSmokeTests(ITestOutputHelper output)
                     WarehouseId = warehouseId,
                     DryRun = false, // REAL booking — trial only, triple-gated
                 });
-            A.CallTo(() => beNodeContext.Error(A<string>._)).Invokes(call =>
-                output.WriteLine($"  beWrite ERROR: {call.Arguments[0]}"));
+            A.CallTo(() => beNodeContext.Error(A<string>._, A<object[]>._)).Invokes(call =>
+                output.WriteLine($"  beWrite ERROR: {NodeLogCapture.Format(call)}"));
             var beWriteNode = new WeClappBeWriteNode(A.Fake<NodeDelegate>(),
                 A.Fake<ILogger<WeClappBeWriteNode>>(), LiveHttpClientFactory());
 
@@ -344,8 +344,8 @@ public class LkvSftpE2eSmokeTests(ITestOutputHelper output)
                     MinFileAgeSeconds = 0,
                     PollingIntervalSeconds = 3600,
                 });
-            A.CallTo(() => triggerNodeContext.Error(A<string>._)).Invokes(call =>
-                output.WriteLine($"  trigger ERROR: {call.Arguments[0]}"));
+            A.CallTo(() => triggerNodeContext.Error(A<string>._, A<object[]>._)).Invokes(call =>
+                output.WriteLine($"  trigger ERROR: {NodeLogCapture.Format(call)}"));
 
             var executed = new List<string>();
             A.CallTo(() => triggerContext.ExecuteAsync(A<ExecutePipelineOptions>._, A<object?>._))
