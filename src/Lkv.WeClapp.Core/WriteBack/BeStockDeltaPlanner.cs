@@ -20,7 +20,35 @@ public static class BeStockDeltaPlanner
         var inSync = 0;
         var note = $"LKV BE {beFileName}";
 
+        // Several BE lines (characteristic variants) can resolve to the SAME WeClapp
+        // article. Planned independently, each line would book its full delta against the
+        // same current stock — so Available lines are aggregated per resolved article id
+        // first. Blocked/unresolved lines keep their per-line warnings below.
+        var planUnits = new List<BeArticleState>();
+        var indexByArticleId = new Dictionary<string, int>(StringComparer.Ordinal);
         foreach (var article in articles)
+        {
+            if (article.Line.Status == DilosStockStatus.Blocked || article.ArticleId is null)
+            {
+                planUnits.Add(article);
+                continue;
+            }
+
+            if (indexByArticleId.TryGetValue(article.ArticleId, out var existing))
+            {
+                var merged = planUnits[existing];
+                planUnits[existing] = merged with
+                {
+                    Line = merged.Line with { Quantity = merged.Line.Quantity + article.Line.Quantity }
+                };
+                continue;
+            }
+
+            indexByArticleId[article.ArticleId] = planUnits.Count;
+            planUnits.Add(article);
+        }
+
+        foreach (var article in planUnits)
         {
             var line = article.Line;
             if (line.Status == DilosStockStatus.Blocked)

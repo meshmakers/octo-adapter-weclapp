@@ -53,6 +53,36 @@ public class BeStockDeltaPlannerTests
     }
 
     [Fact]
+    public void Plan_TwoVariantLinesSameArticle_AggregateBeforePlanning()
+    {
+        // Two BE lines (characteristic variants) can resolve to the SAME WeClapp article.
+        // Planned independently, each would book its full delta against the same current
+        // stock (4 and 6 vs 10 → bogus -6 and -4). They must aggregate first.
+        var rows = new[] { new WeClappStockRow { StoragePlaceId = "P1", Quantity = 10m } };
+        var lineA = Ver("A1", 4m) with { Characteristic2 = "red" };
+        var lineB = Ver("A1", 6m) with { Characteristic2 = "blue" };
+
+        var plan = BeStockDeltaPlanner.Plan(
+            [State(lineA, "77", rows), State(lineB, "77", rows)], "be.txt");
+
+        Assert.Empty(plan.Movements);      // 4 + 6 == 10 → in sync
+        Assert.Equal(1, plan.InSyncCount); // one ARTICLE, not two lines
+    }
+
+    [Fact]
+    public void Plan_TwoVariantLinesSameArticleWithDelta_BooksOneAggregatedMovement()
+    {
+        var rows = new[] { new WeClappStockRow { StoragePlaceId = "P1", Quantity = 10m } };
+
+        var plan = BeStockDeltaPlanner.Plan(
+            [State(Ver("A1", 4m), "77", rows), State(Ver("A1", 8m), "77", rows)], "be.txt");
+
+        var m = Assert.Single(plan.Movements);
+        Assert.Equal(StockMovementDirection.Incoming, m.Direction);
+        Assert.Equal("2", m.Quantity); // (4+8) - 10, once — not per line
+    }
+
+    [Fact]
     public void Plan_MatchingQuantity_NoMovementCountedAsInSync()
     {
         var plan = BeStockDeltaPlanner.Plan(
@@ -98,19 +128,26 @@ public class BeStockDeltaPlannerTests
     [Fact]
     public void Plan_AllGoldenBeLines_ProduceIncomingMovementsOnEmptyStock()
     {
-        var lines = Directory.GetFiles(Path.Combine(AppContext.BaseDirectory, "Fixtures"), "BE_*.txt")
-            .Select(File.ReadAllText)
-            .SelectMany(DilosBeParser.Parse)
-            .ToList();
-        Assert.True(lines.Count > 1000, $"expected >1000 golden BE lines, got {lines.Count}");
-        Assert.All(lines, l => Assert.Equal(DilosStockStatus.Available, l.Status));
+        // One plan per FILE, like production (one trigger execution per BE file). Article
+        // numbers are unique WITHIN each golden file (verified: 528/528, 528/528, 58/58) —
+        // across the three daily snapshots they repeat, which the M3 aggregation would
+        // (correctly) merge if the files were planned together.
+        var totalLines = 0;
+        foreach (var file in Directory.GetFiles(Path.Combine(AppContext.BaseDirectory, "Fixtures"), "BE_*.txt"))
+        {
+            var lines = DilosBeParser.Parse(File.ReadAllText(file));
+            totalLines += lines.Count;
+            Assert.All(lines, l => Assert.Equal(DilosStockStatus.Available, l.Status));
 
-        var states = lines.Select(l => State(l, l.ArticleNumber)).ToList();
-        var plan = BeStockDeltaPlanner.Plan(states, "be.txt");
+            var states = lines.Select(l => State(l, l.ArticleNumber)).ToList();
+            var plan = BeStockDeltaPlanner.Plan(states, Path.GetFileName(file));
 
-        Assert.Empty(plan.Warnings);
-        Assert.Equal(lines.Count(l => l.Quantity > 0), plan.Movements.Count);
-        Assert.All(plan.Movements, m => Assert.Equal(StockMovementDirection.Incoming, m.Direction));
-        Assert.Equal(lines.Count(l => l.Quantity == 0), plan.InSyncCount);
+            Assert.Empty(plan.Warnings);
+            Assert.Equal(lines.Count(l => l.Quantity > 0), plan.Movements.Count);
+            Assert.All(plan.Movements, m => Assert.Equal(StockMovementDirection.Incoming, m.Direction));
+            Assert.Equal(lines.Count(l => l.Quantity == 0), plan.InSyncCount);
+        }
+
+        Assert.True(totalLines > 1000, $"expected >1000 golden BE lines, got {totalLines}");
     }
 }
