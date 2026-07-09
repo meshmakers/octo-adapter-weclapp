@@ -41,7 +41,8 @@ public class DilosArticleWriterTests
     {
         var art = new WeClappArticle
         {
-            Id = "1", ArticleType = "STORABLE",
+            Id = "1",
+            ArticleType = "STORABLE",
             SupplySources = { new WeClappSupplySource { ArticlePrices = { new WeClappArticlePrice { Price = "9.99" } } } }
         };
         var line = DilosArticleWriter.RenderLine(art, DilosArticleContext.Default);

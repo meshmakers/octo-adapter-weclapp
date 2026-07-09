@@ -69,7 +69,8 @@ public class ArShipmentWritePlannerTests
     {
         var existing = new WeClappShipmentSummary
         {
-            Id = "777", Status = "NEW",
+            Id = "777",
+            Status = "NEW",
             ShipmentItems = { new WeClappShipmentItem { Id = "I1", ArticleId = "43222003744925" } }
         };
 
