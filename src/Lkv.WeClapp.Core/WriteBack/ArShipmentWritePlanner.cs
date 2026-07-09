@@ -34,7 +34,13 @@ public static class ArShipmentWritePlanner
             };
         }
 
-        var reusable = existingShipments.FirstOrDefault(s => s.Status != "CANCELLED");
+        // Pre-order scenario (trial-proven 2026-07-09): an ITEM-LESS shipment (createShipment
+        // without stock) can never reach SHIPPED and items are only derived at creation time —
+        // never reuse it when the AR wants item quantities; a fresh createShipment next to it
+        // derives the items once stock arrived.
+        var reusable = existingShipments.FirstOrDefault(s =>
+            s.Status != "CANCELLED" &&
+            (s.ShipmentItems.Count > 0 || update.ItemQuantities.Count == 0));
         if (reusable is not null)
         {
             return new ArWritePlan

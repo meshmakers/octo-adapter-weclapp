@@ -149,6 +149,22 @@ public class WeClappArWriteNode(
             //    surfaced this.)
             var dryRunSuffix = config.DryRun ? "?dryRun=true" : "";
             var full = await GetFullShipmentAsync(api, shipmentId);
+
+            // Pre-order guard (trial-proven 2026-07-09): without stock createShipment returns
+            // an ITEM-LESS shipment that can never reach SHIPPED ("Shipment has no items"),
+            // and WeClapp derives items only at creation time. Delete the fresh empty shipment
+            // (no NEW corpses piling up, one per retry) and throw — the AR file stays on the
+            // SFTP and the next poll retries; after the nightly BE booked the stock, a fresh
+            // createShipment derives the items (a second create next to an empty one works).
+            if (plan.Action == ArWriteAction.CreateThenUpdate &&
+                plan.Update.ItemQuantities.Count > 0 &&
+                full["shipmentItems"]?.AsArray() is not { Count: > 0 })
+            {
+                await api.SendAsync(HttpMethod.Delete, $"shipment/id/{shipmentId}", null);
+                throw new WeClappPipelineExecutionException(
+                    $"Order {ar.OrderNumber1}: createShipment produced no shipment items — no stock in WeClapp yet; file stays for retry after the next stock sync");
+            }
+
             MergeArData(full, plan.Update, shippingCarrierId, nodeContext);
             WeClappApi.EnsureSuccess(
                 await api.SendAsync(HttpMethod.Put, $"shipment/id/{shipmentId}{dryRunSuffix}", full),

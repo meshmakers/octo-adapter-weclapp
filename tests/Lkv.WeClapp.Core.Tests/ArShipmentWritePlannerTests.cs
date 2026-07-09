@@ -65,9 +65,13 @@ public class ArShipmentWritePlannerTests
     }
 
     [Fact]
-    public void Plan_ExistingNonCancelledShipment_UpdatesIt()
+    public void Plan_ExistingNonCancelledShipmentWithItems_UpdatesIt()
     {
-        var existing = new WeClappShipmentSummary { Id = "777", Status = "NEW" };
+        var existing = new WeClappShipmentSummary
+        {
+            Id = "777", Status = "NEW",
+            ShipmentItems = { new WeClappShipmentItem { Id = "I1", ArticleId = "43222003744925" } }
+        };
 
         var plan = ArShipmentWritePlanner.Plan(GoldenShapedShipment(), [existing]);
 
@@ -99,6 +103,33 @@ public class ArShipmentWritePlannerTests
         var plan = ArShipmentWritePlanner.Plan(GoldenShapedShipment(), [cancelled]);
 
         Assert.Equal(ArWriteAction.CreateThenUpdate, plan.Action);
+    }
+
+    [Fact]
+    public void Plan_EmptyShipmentButItemsWanted_CreatesInsteadOfReusing()
+    {
+        // Pre-order scenario (trial-proven 2026-07-09): createShipment without stock leaves an
+        // ITEM-LESS shipment that can never reach SHIPPED ("Shipment has no items"), and items
+        // are only derived at creation time — a SECOND createShipment next to the empty one
+        // derives them once stock arrived. So an empty shipment is never reused when the AR
+        // wants item quantities.
+        var empty = new WeClappShipmentSummary { Id = "S-empty", Status = "NEW" };
+
+        var plan = ArShipmentWritePlanner.Plan(GoldenShapedShipment(), [empty]);
+
+        Assert.Equal(ArWriteAction.CreateThenUpdate, plan.Action);
+    }
+
+    [Fact]
+    public void Plan_EmptyShipmentAndNoItemsWanted_ReusesIt()
+    {
+        var empty = new WeClappShipmentSummary { Id = "S-empty", Status = "NEW" };
+        var arWithoutItems = GoldenShapedShipment() with { Items = [] };
+
+        var plan = ArShipmentWritePlanner.Plan(arWithoutItems, [empty]);
+
+        Assert.Equal(ArWriteAction.UpdateExisting, plan.Action);
+        Assert.Equal("S-empty", plan.ExistingShipmentId);
     }
 
     [Fact]

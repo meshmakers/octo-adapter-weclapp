@@ -358,6 +358,39 @@ public class WeClappArWriteNodeTests
     }
 
     [Fact]
+    public async Task Process_CreatedShipmentHasNoItems_DeletesItAndThrowsForRetry()
+    {
+        // Pre-order scenario (trial-proven 2026-07-09): without stock, createShipment returns
+        // an ITEM-LESS shipment that can never reach SHIPPED. The node must delete the fresh
+        // empty shipment (no NEW-shipment corpses piling up per retry) and throw, so the AR
+        // file stays on the SFTP and the next poll retries — after the nightly BE booked
+        // stock, a fresh createShipment derives the items.
+        Configure();
+        var handler = new FakeHttpMessageHandler((req, _) =>
+        {
+            var url = req.RequestUri!.ToString();
+            if (url.Contains("createShipment")) // before the salesOrder check — same id in the URL
+                return FakeHttpMessageHandler.Json("""{"result":{"id":"S9"}}""");
+            if (url.Contains("/salesOrder/id/400000001247987"))
+                return FakeHttpMessageHandler.Json("""{"result":{"id":"400000001247987"}}""");
+            if (url.Contains("shipment?salesOrderId-eq="))
+                return FakeHttpMessageHandler.Json("""{"result":[]}""");
+            if (url.Contains("/shipment/id/S9") && req.Method == HttpMethod.Get)
+                return FakeHttpMessageHandler.Json(
+                    """{"id":"S9","version":"1","status":"NEW","recipientPartyId":"4711","shipmentItems":[]}""");
+            return FakeHttpMessageHandler.Json("""{}""");
+        });
+        var sut = CreateSut(handler);
+
+        var ex = await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
+            () => sut.ProcessObjectAsync(_dataContext, _nodeContext));
+
+        Assert.Contains("no shipment items", ex.Message);
+        Assert.Contains(handler.Requests, r => r.Method == "DELETE" && r.Url.Contains("/shipment/id/S9"));
+        Assert.DoesNotContain(handler.Requests, r => r.Method == "PUT");
+    }
+
+    [Fact]
     public async Task Process_CarrierTokenMatchingEntityId_WritesThatShippingCarrierId()
     {
         // Jürgen 2026-07-08: LKV returns the carrier id as configured in the shop system —
