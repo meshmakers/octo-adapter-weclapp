@@ -109,6 +109,21 @@ public class WeClappFetchTriggerNodeTests
     }
 
     [Fact]
+    public async Task FetchOnce_ZeroMaxRetries_StillTriesOnce()
+    {
+        // A misconfigured retry count of 0 must not skip the request entirely
+        // (the old loop would throw "failed after 0 attempts (null)").
+        Configure("article", maxRetries: 0);
+        var handler = new FakeHttpMessageHandler((req, _) =>
+            FakeHttpMessageHandler.Json("""{"result":[]}"""));
+        var sut = CreateSut(handler);
+
+        await sut.FetchOnceAsync(_context);
+
+        Assert.Single(handler.Requests);
+    }
+
+    [Fact]
     public async Task FetchOnce_ArticleMode_EmptyResultExecutesNothing()
     {
         Configure("article");

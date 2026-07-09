@@ -359,6 +359,18 @@ public class WeClappArWriteNodeTests
     }
 
     [Fact]
+    public async Task Process_ZeroMaxRetries_StillTriesOnce()
+    {
+        Configure(maxRetries: 0);
+        var handler = new FakeHttpMessageHandler((req, _) => DefaultResponder(req));
+        var sut = CreateSut(handler);
+
+        await sut.ProcessObjectAsync(_dataContext, _nodeContext); // must not throw
+
+        Assert.NotEmpty(handler.Requests);
+    }
+
+    [Fact]
     public async Task Process_CreatedShipmentHasNoItems_DeletesItAndThrowsForRetry()
     {
         // Pre-order scenario (trial-proven 2026-07-09): without stock, createShipment returns

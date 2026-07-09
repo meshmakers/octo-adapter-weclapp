@@ -24,14 +24,17 @@ internal sealed class WeClappApi(
         public bool IsSuccess => StatusCode is >= 200 and < 300;
     }
 
-    public Task<Result> GetAsync(string pathAndQuery) => SendAsync(HttpMethod.Get, pathAndQuery, null);
+    public Task<Result> GetAsync(string pathAndQuery, CancellationToken cancellationToken = default) =>
+        SendAsync(HttpMethod.Get, pathAndQuery, null, cancellationToken);
 
-    public async Task<Result> SendAsync(HttpMethod method, string pathAndQuery, JsonNode? body)
+    public async Task<Result> SendAsync(HttpMethod method, string pathAndQuery, JsonNode? body,
+        CancellationToken cancellationToken = default)
     {
         var url = $"{_baseUrl}/{pathAndQuery.TrimStart('/')}";
         string? lastError = null;
+        var attempts = Math.Max(1, maxRetries); // a misconfigured 0 must still try once
 
-        for (var attempt = 1; attempt <= maxRetries; attempt++)
+        for (var attempt = 1; attempt <= attempts; attempt++)
         {
             try
             {
@@ -42,8 +45,8 @@ internal sealed class WeClappApi(
                     request.Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json");
                 }
 
-                using var response = await http.SendAsync(request);
-                var responseBody = await response.Content.ReadAsStringAsync();
+                using var response = await http.SendAsync(request, cancellationToken);
+                var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
                 var status = (int)response.StatusCode;
                 var transient = status >= 500 || status == 408 || status == 429;
                 if (!transient)
@@ -58,14 +61,15 @@ internal sealed class WeClappApi(
                 lastError = ex.Message;
             }
 
-            if (attempt < maxRetries && retryBackoffBaseSeconds > 0)
+            if (attempt < attempts && retryBackoffBaseSeconds > 0)
             {
-                await Task.Delay(TimeSpan.FromSeconds(retryBackoffBaseSeconds * Math.Pow(2, attempt - 1)));
+                await Task.Delay(TimeSpan.FromSeconds(retryBackoffBaseSeconds * Math.Pow(2, attempt - 1)),
+                    cancellationToken);
             }
         }
 
         throw new WeClappPipelineExecutionException(
-            $"WeClapp request failed after {maxRetries} attempts ({lastError}) for {url}");
+            $"WeClapp request failed after {attempts} attempts ({lastError}) for {url}");
     }
 
     /// <summary>Fetches all pages of <c>{entity}?page=N&amp;pageSize=M[&amp;query]</c> until a short page.</summary>
@@ -114,6 +118,19 @@ internal sealed class WeClappApi(
         return result.Body;
     }
 
-    private static string Truncate(string value, int maxLength) =>
-        value.Length <= maxLength ? value : value[..maxLength];
+    private static string Truncate(string value, int maxLength)
+    {
+        if (value.Length <= maxLength)
+        {
+            return value;
+        }
+
+        // Never split a UTF-16 surrogate pair at the cut.
+        if (char.IsHighSurrogate(value[maxLength - 1]))
+        {
+            maxLength--;
+        }
+
+        return value[..maxLength];
+    }
 }

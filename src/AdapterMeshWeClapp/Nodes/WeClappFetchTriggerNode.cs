@@ -75,7 +75,7 @@ public class WeClappFetchTriggerNode(
             {
                 try
                 {
-                    await FetchOnceAsync(context);
+                    await FetchOnceAsync(context, token);
                 }
                 catch (OperationCanceledException)
                 {
@@ -123,8 +123,10 @@ public class WeClappFetchTriggerNode(
     }
 
     /// <summary>One poll: fetch all pages and start one pipeline execution per document.
-    /// Internal so tests can drive it directly without the polling loop.</summary>
-    internal async Task FetchOnceAsync(ITriggerContext context)
+    /// Internal so tests can drive it directly without the polling loop. The cancellation
+    /// token (the trigger's stop token) reaches every HTTP call, so a hanging request
+    /// does not block adapter shutdown.</summary>
+    internal async Task FetchOnceAsync(ITriggerContext context, CancellationToken cancellationToken = default)
     {
         var config = context.NodeContext.GetNodeConfiguration<WeClappFetchTriggerNodeConfiguration>();
         var http = httpClientFactory.CreateClient(nameof(WeClappFetchTriggerNode));
@@ -132,11 +134,11 @@ public class WeClappFetchTriggerNode(
         switch (config.Entity)
         {
             case "article":
-                await FetchArticlesAsync(http, config, context);
+                await FetchArticlesAsync(http, config, context, cancellationToken);
                 break;
 
             case "salesOrder":
-                await FetchOrdersAsync(http, config, context);
+                await FetchOrdersAsync(http, config, context, cancellationToken);
                 break;
 
             default:
@@ -146,9 +148,9 @@ public class WeClappFetchTriggerNode(
     }
 
     private static async Task FetchArticlesAsync(HttpClient http, WeClappFetchTriggerNodeConfiguration config,
-        ITriggerContext context)
+        ITriggerContext context, CancellationToken cancellationToken)
     {
-        var articles = await FetchAllPagesAsync(http, config, "article", config.AdditionalQuery);
+        var articles = await FetchAllPagesAsync(http, config, "article", config.AdditionalQuery, cancellationToken);
 
         // EK enrichment: raw articles embed only supply-source REFERENCE STUBS
         // ({articleSupplySourceId}); the purchase prices live on the separate
@@ -157,7 +159,7 @@ public class WeClappFetchTriggerNode(
         Dictionary<string, JsonNode>? sourcesById = null;
         if (articles.Any(a => a["supplySources"]?.AsArray() is { Count: > 0 }))
         {
-            var sources = await FetchAllPagesAsync(http, config, "articleSupplySource", "");
+            var sources = await FetchAllPagesAsync(http, config, "articleSupplySource", "", cancellationToken);
             sourcesById = sources
                 .Where(s => s["id"] is not null)
                 .ToDictionary(s => s["id"]!.ToString(), s => s);
@@ -187,10 +189,10 @@ public class WeClappFetchTriggerNode(
     }
 
     private static async Task FetchOrdersAsync(HttpClient http, WeClappFetchTriggerNodeConfiguration config,
-        ITriggerContext context)
+        ITriggerContext context, CancellationToken cancellationToken)
     {
         // orderItems are included in the default salesOrder response (live-verified).
-        var orders = await FetchAllPagesAsync(http, config, "salesOrder", config.AdditionalQuery);
+        var orders = await FetchAllPagesAsync(http, config, "salesOrder", config.AdditionalQuery, cancellationToken);
 
         var customerCache = new Dictionary<string, JsonNode?>();
 
@@ -202,7 +204,8 @@ public class WeClappFetchTriggerNode(
             {
                 if (!customerCache.TryGetValue(customerId, out customer))
                 {
-                    var matches = await FetchAllPagesAsync(http, config, "customer", $"id-eq={customerId}");
+                    var matches = await FetchAllPagesAsync(http, config, "customer", $"id-eq={customerId}",
+                        cancellationToken);
                     customer = matches.FirstOrDefault();
                     customerCache[customerId] = customer;
                 }
@@ -225,7 +228,8 @@ public class WeClappFetchTriggerNode(
     }
 
     private static async Task<List<JsonNode>> FetchAllPagesAsync(HttpClient http,
-        WeClappFetchTriggerNodeConfiguration config, string entity, string additionalQuery)
+        WeClappFetchTriggerNodeConfiguration config, string entity, string additionalQuery,
+        CancellationToken cancellationToken)
     {
         var results = new List<JsonNode>();
         var baseUrl = config.BaseUrl.TrimEnd('/');
@@ -236,7 +240,7 @@ public class WeClappFetchTriggerNode(
             var url = $"{baseUrl}/{entity}?page={page}&pageSize={config.PageSize}"
                       + (additionalQuery.Length > 0 ? "&" + additionalQuery : "");
 
-            var json = await GetWithRetryAsync(http, url, config);
+            var json = await GetWithRetryAsync(http, url, config, cancellationToken);
             var result = JsonNode.Parse(json)?["result"]?.AsArray()
                          ?? throw new WeClappPipelineExecutionException(
                              $"WeClapp response for '{entity}' page {page} has no 'result' array");
@@ -260,25 +264,26 @@ public class WeClappFetchTriggerNode(
     }
 
     private static async Task<string> GetWithRetryAsync(HttpClient http, string url,
-        WeClappFetchTriggerNodeConfiguration config)
+        WeClappFetchTriggerNodeConfiguration config, CancellationToken cancellationToken)
     {
         string? lastError = null;
+        var attempts = Math.Max(1, config.MaxRetries); // a misconfigured 0 must still try once
 
-        for (var attempt = 1; attempt <= config.MaxRetries; attempt++)
+        for (var attempt = 1; attempt <= attempts; attempt++)
         {
             try
             {
                 using var request = new HttpRequestMessage(HttpMethod.Get, url);
                 request.Headers.Add("AuthenticationToken", config.ApiKey);
-                using var response = await http.SendAsync(request);
+                using var response = await http.SendAsync(request, cancellationToken);
 
                 if (response.IsSuccessStatusCode)
                 {
-                    return await response.Content.ReadAsStringAsync();
+                    return await response.Content.ReadAsStringAsync(cancellationToken);
                 }
 
                 var status = (int)response.StatusCode;
-                var errorBody = Truncate(await response.Content.ReadAsStringAsync(), 300);
+                var errorBody = Truncate(await response.Content.ReadAsStringAsync(cancellationToken), 300);
                 var transient = status >= 500 || status == 408 || status == 429;
                 if (!transient)
                 {
@@ -293,17 +298,30 @@ public class WeClappFetchTriggerNode(
                 lastError = ex.Message;
             }
 
-            if (attempt < config.MaxRetries && config.RetryBackoffBaseSeconds > 0)
+            if (attempt < attempts && config.RetryBackoffBaseSeconds > 0)
             {
                 await Task.Delay(TimeSpan.FromSeconds(
-                    config.RetryBackoffBaseSeconds * Math.Pow(2, attempt - 1)));
+                    config.RetryBackoffBaseSeconds * Math.Pow(2, attempt - 1)), cancellationToken);
             }
         }
 
         throw new WeClappPipelineExecutionException(
-            $"WeClapp request failed after {config.MaxRetries} attempts ({lastError}) for {url}");
+            $"WeClapp request failed after {attempts} attempts ({lastError}) for {url}");
     }
 
-    private static string Truncate(string value, int maxLength) =>
-        value.Length <= maxLength ? value : value[..maxLength];
+    private static string Truncate(string value, int maxLength)
+    {
+        if (value.Length <= maxLength)
+        {
+            return value;
+        }
+
+        // Never split a UTF-16 surrogate pair at the cut.
+        if (char.IsHighSurrogate(value[maxLength - 1]))
+        {
+            maxLength--;
+        }
+
+        return value[..maxLength];
+    }
 }

@@ -5,7 +5,6 @@
 # Deviations from the eda template:
 #   - solutionFile is a .slnx (needs a current .NET SDK on the agents;
 #     the repo builds net10.0, so this is given).
-#   - amd64 only — this adapter runs in the cloud pool, no edge devices.
 #   - A dotnet test step IS wired in (xUnit suite of the repo runs green).
 #
 # Kept from the template:
@@ -23,7 +22,7 @@ resources:
       type: github
       name: meshmakers/octo-pipeline-templates
       endpoint: meshmakers-access-token
-      ref: refs/tags/tpl-v0.4.9
+      ref: refs/tags/tpl-v0.4.11
     - repository: helmChartBuild
       type: github
       name: meshmakers/helm-chart-build
@@ -102,9 +101,9 @@ stages:
             parameters:
               publicRegistryServiceConnection: $(DockerRegistryPublicConnection)
               privateRegistryName: $(DockerRegistryPrivateUri)
-              repository: meshmakers/octo-communication-mesh-adapter-weclapp
+              repository: meshmakers/octo-weclapp-adapter
               dockerfile: src/AdapterMeshWeClapp/Dockerfile
-              platforms: 'linux/amd64'
+              platforms: 'linux/arm64,linux/amd64'
               enableMainLatestTag: true
 
           - task: HelmDeploy@0
