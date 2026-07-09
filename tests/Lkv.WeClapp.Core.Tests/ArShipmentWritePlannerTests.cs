@@ -5,7 +5,7 @@ namespace Lkv.WeClapp.Core.Tests;
 
 public class ArShipmentWritePlannerTests
 {
-    private const long Epoch20240206 = 1707177600000L; // 2024-02-06 00:00 UTC
+    private const long Epoch20240206 = 1707174000000L; // 2024-02-06 00:00 Europe/Vienna (CET) = 2024-02-05 23:00 UTC
 
     private static DilosArShipment GoldenShapedShipment() => new()
     {

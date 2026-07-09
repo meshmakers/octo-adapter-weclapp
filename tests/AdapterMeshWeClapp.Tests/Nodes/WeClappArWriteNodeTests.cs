@@ -135,7 +135,7 @@ public class WeClappArWriteNodeTests
         // Code 9 → AUSTRIAN_POST fallback, but the mock list has no such entity (only DHL):
         // tracking is written without a carrier reference.
         Assert.Null(data["shippingCarrierId"]);
-        Assert.Equal(1712707200000, (long)data["shippingDate"]!);
+        Assert.Equal(1712700000000, (long)data["shippingDate"]!); // 2024-04-10 00:00 Europe/Vienna (CEST) = 2024-04-09 22:00 UTC
         Assert.Equal("2.5", data["totalWeight"]!.ToString());
         // The fetched shipment has no parcels: adding parcels is forbidden while the flat
         // package* fields are in use (live 409) — tracking stays on the shipment level.

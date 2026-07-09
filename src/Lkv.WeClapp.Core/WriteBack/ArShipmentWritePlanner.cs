@@ -163,7 +163,7 @@ public static class ArShipmentWritePlanner
             PackageTrackingNumber = shipmentTrackingNumber,
             PackageTrackingUrl = shipmentTrackingUrl,
             ShippingDateEpochMs = ar.ShipmentDate is { } d
-                ? new DateTimeOffset(d.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero).ToUnixTimeMilliseconds()
+                ? ViennaTime.ToEpochMsAtViennaMidnight(d)
                 : null,
             TotalWeight = Dec(ar.TotalWeight),
             CarrierToken = carrierToken,

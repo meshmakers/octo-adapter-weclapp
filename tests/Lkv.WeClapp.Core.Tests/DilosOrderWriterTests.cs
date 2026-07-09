@@ -1,4 +1,3 @@
-using System.Globalization;
 using Lkv.WeClapp.Core.Dilos;
 using Lkv.WeClapp.Core.Model;
 
@@ -41,14 +40,31 @@ public class DilosOrderWriterTests
         Assert.Equal("51503", Field(k, 9));           // EPLZ
         Assert.Equal("Im Wielputzfeld 15a", Field(k, 10)); // Estrasse_postfach
         Assert.Equal("Rösrath", Field(k, 11));        // Eort
-        Assert.Equal(DateTimeOffset.FromUnixTimeMilliseconds(orderDate).ToString("dd.MM.yyyy", CultureInfo.InvariantCulture),
-            Field(k, 26));                            // Auftragsdatum
+        Assert.Equal("06.02.2024", Field(k, 26));     // Auftragsdatum (Vienna calendar day)
         Assert.Equal("5910986621265", Field(k, 30));  // Auftragsnummer1
         Assert.Equal("74299", Field(k, 31));          // Auftragsnummer2
         Assert.Equal("3415", Field(k, 33));           // Frächter = WeClapp shipmentMethod-ID (Jürgen 2026-06-28)
         Assert.Equal("0", Field(k, 46));              // Text4: kein Rechnungsdruck
         Assert.Equal("104.97", Field(k, 65));         // RechnungssummeBrutto
         Assert.Equal(66, k.Split('|').Length);
+    }
+
+    [Fact]
+    public void RenderHeader_OrderDateAtViennaMidnight_KeepsTheAustrianCalendarDay()
+    {
+        // Real WeClapp date-picker values are account-local (Vienna) midnight:
+        // 2024-02-05T23:00Z is 06.02.2024 00:00 CET — the AI date must be 06.02., not 05.02.
+        var o = new WeClappSalesOrder
+        {
+            Id = "5910986621265",
+            OrderNumber = "74299",
+            CustomerNumber = "7067387625809",
+            OrderDate = 1707174000000L
+        };
+
+        var k = DilosOrderWriter.RenderHeader(o, Ctx);
+
+        Assert.Equal("06.02.2024", Field(k, 26));
     }
 
     [Fact]

@@ -104,7 +104,7 @@ public static class DilosOrderWriter
     private static string Join(string[] f, int count) => string.Join("|", f.Skip(1).Take(count));
 
     private static string Date(long epochMs) =>
-        DateTimeOffset.FromUnixTimeMilliseconds(epochMs).ToString("dd.MM.yyyy", CultureInfo.InvariantCulture);
+        ViennaTime.ToViennaDate(epochMs).ToString("dd.MM.yyyy", CultureInfo.InvariantCulture);
 
     private static string Money(string? amount) => WeClappToDilos.Money(ParseDec(amount));
 
