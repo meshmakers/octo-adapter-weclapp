@@ -16,10 +16,16 @@ dotnet test Octo.WeClappAdapter.slnx -c DebugL
 ```
 
 ## Project Structure
-- `src/AdapterMeshWeClapp/` - Mesh adapter host (cloud, connects directly to OctoMesh repositories)
+- `src/AdapterMeshWeClapp/` - Mesh adapter host (cloud, connects directly to OctoMesh
+  repositories) + all custom pipeline nodes (ingestion: `WeClappFetch@1`, `WeClappToCk@1`,
+  `DilosRender@1`; return path: `DilosFileFetch@1`, `WeClappArWrite@1`, `WeClappBeWrite@1`)
 - `src/Lkv.WeClapp.Core/` - plain core lib: WeClapp DTOs/JSON, WeClapp→DILOS value rules,
-  DILOS AS/AI writers, DILOS AR/BE parsers (fail-loud, golden-file verified)
+  DILOS AS/AI writers, DILOS AR/BE parsers + write-back planners (fail-loud, golden-file verified)
+- `src/charts/octo-weclapp-adapter/` - Helm chart (deployed by the Communication Operator;
+  httpGet probes on `/healthz/live|ready`)
+- `pipelines/` - tenant pipeline YAMLs; registered via `scripts/om_setup_lkv.ps1`
 - `tests/Lkv.WeClapp.Core.Tests/` - xUnit against real LKV golden fixtures
+- `tests/AdapterMeshWeClapp.Tests/` - node/pipeline tests + env-gated live smokes (gates below)
 - `docs/superpowers/` - design specs and implementation plans
 
 ## Key Patterns
@@ -29,6 +35,12 @@ dotnet test Octo.WeClappAdapter.slnx -c DebugL
   configuration via `[NodeName]` and `[NodeConfiguration]` attributes
 - Custom nodes live in THIS repo (official adapter guideline), not in octo-mesh-adapter
 - Primary constructors with DI (C# 12+)
+- Observability is mandatory: `builder.AddObservability().AddSystemContextHealthCheck()` +
+  `app.MapObservability()` — the chart's probes hit `/healthz/live|ready`; without the
+  mapping the pod never becomes ready
+- Node logs are message templates with args (`nodeContext.Info("... {0}", x)`) — NEVER
+  interpolated strings: `INodeContext` forwards to structured logging, so a literal `{...}`
+  (JSON body, URL) corrupts the template
 
 ## Domain Gotchas (golden-file verified — do not "fix" without evidence)
 - DILOS AR/BE use **comma** decimals; AI/AS use dot. Both verified against real files.
@@ -52,10 +64,15 @@ dotnet test Octo.WeClappAdapter.slnx -c DebugL
   write them for AR.
 - `WeClappBeWrite@1`: BE is an absolute snapshot → delta bookings via
   `bookIncomingMovement`/`bookOutgoingMovement` (warehouseStock is GET-only). GES lines
-  and unknown articles are skipped loudly.
+  and unknown articles are skipped loudly. BE lines are aggregated per resolved WeClapp
+  articleId BEFORE delta planning — variant lines (Characteristic1/2) can collapse to one
+  article and would otherwise double-book.
 - `DryRun` on both write nodes: PUTs run with `?dryRun=true`; createShipment/movements
   are skipped and logged. Trial writes use `WECLAPP_TRIAL_*` env vars ONLY —
   **`WECLAPP_CUSTOMER_*` is a productive system: GET only, never writes.**
+- Live smokes are multi-gated: real writes additionally require `WECLAPP_TRIAL_REAL_WRITE=1`
+  (process-scoped for ONE deliberate run — never persist it) and the SFTP E2E also needs
+  `LKV_SFTP_CREDENTIALS_FILE`; a normal `dotnet test` stays a no-op.
 
 ## Conventions
 - `TreatWarningsAsErrors`, nullable enabled, `LangVersion latestmajor` (Directory.Build.props)
