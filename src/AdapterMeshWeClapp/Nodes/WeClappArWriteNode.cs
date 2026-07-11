@@ -45,6 +45,9 @@ public class WeClappArWriteNode(
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
         var config = nodeContext.GetNodeConfiguration<WeClappArWriteNodeConfiguration>();
+        // Two dry-run signals: the standing pipeline config AND the SDK's per-execution
+        // mode (a platform-initiated dry run) — either one must suppress real writes.
+        var dryRun = config.DryRun || nodeContext.PipelineExecutionMode?.IsDryRun == true;
         var fileName = dataContext.Get<string>(config.FileNamePath) ?? "";
         var content = dataContext.Get<string>(config.ContentPath)
                       ?? throw new WeClappPipelineExecutionException(
@@ -96,7 +99,7 @@ public class WeClappArWriteNode(
             }
             else
             {
-                if (config.DryRun)
+                if (dryRun)
                 {
                     // createShipment has no dry-run support — never create during a dry run.
                     nodeContext.Info(
@@ -150,7 +153,7 @@ public class WeClappArWriteNode(
             //    DELIVERY_NOTE_PRINTED — one fresh GET + full PUT per missing rung.
             //    (The dry-run validation does NOT check transitions — only the real write
             //    surfaced this.)
-            var dryRunSuffix = config.DryRun ? "?dryRun=true" : "";
+            var dryRunSuffix = dryRun ? "?dryRun=true" : "";
             var full = await GetFullShipmentAsync(api, shipmentId);
 
             // Pre-order guard (trial-proven 2026-07-09): without stock createShipment returns
@@ -164,6 +167,22 @@ public class WeClappArWriteNode(
                 full["shipmentItems"]?.AsArray() is not { Count: > 0 })
             {
                 await api.SendAsync(HttpMethod.Delete, $"shipment/id/{shipmentId}", null);
+
+                // An order that already has a shipped shipment has nothing left to derive —
+                // no retry can ever heal that (unlike the pre-order case). Dead-letter like
+                // the unknown-order case, so the file is consumed instead of re-creating and
+                // deleting a shipment on every poll.
+                if (existing.Any(s => ArShipmentWritePlanner.IsShippedOrBeyond(s.Status)))
+                {
+                    logger.LogError(
+                        "WeClappArWrite: order {OrderId} (file {FileName}) is already shipped and createShipment derived no items — dead-letter",
+                        ar.OrderNumber1, fileName);
+                    nodeContext.Error(
+                        "WeClappArWrite: order '{0}' (file {1}) is already shipped — the AR (tracking '{2}') cannot be applied, shipment skipped (dead-letter)",
+                        ar.OrderNumber1, fileName, plan.Update.PackageTrackingNumber ?? "");
+                    continue;
+                }
+
                 throw new WeClappPipelineExecutionException(
                     $"Order {ar.OrderNumber1}: createShipment produced no shipment items — no stock in WeClapp yet; file stays for retry after the next stock sync");
             }
@@ -185,7 +204,7 @@ public class WeClappArWriteNode(
             nodeContext.Info(
                 "WeClappArWrite: order {0} → shipment {1} {2}{3}",
                 ar.OrderNumber1, shipmentId, ArShipmentUpdate.TargetStatus,
-                config.DryRun ? " (dry-run)" : "");
+                dryRun ? " (dry-run)" : "");
         }
 
         await next(dataContext, nodeContext);

@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using FakeItEasy;
 using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Nodes;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Execution;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.Common.Services;
 using Microsoft.Extensions.Logging;
@@ -440,6 +441,71 @@ public class WeClappArWriteNodeTests
     public async Task Process_DryRun_PutsWithDryRunParameter()
     {
         Configure(dryRun: true);
+        var handler = new FakeHttpMessageHandler((req, _) => DefaultResponder(req));
+        var sut = CreateSut(handler);
+
+        await sut.ProcessObjectAsync(_dataContext, _nodeContext);
+
+        var puts = handler.Requests.Where(r => r.Method == "PUT").ToList();
+        Assert.Equal(3, puts.Count); // data + both status-ladder rungs
+        Assert.All(puts, p => Assert.Contains("dryRun=true", p.Url));
+    }
+
+    [Fact]
+    public async Task Process_FullyShippedOrderWithEmptyCreate_DeadLettersInsteadOfRetrying()
+    {
+        // An AR against an order that already has a shipped shipment (different tracking)
+        // creates a fresh shipment, but createShipment derives no items when nothing is
+        // left to ship — no retry can heal that, so the shipment is dead-lettered (file
+        // consumed) instead of re-creating and deleting a shipment on every poll.
+        Configure();
+        var handler = new FakeHttpMessageHandler((req, _) =>
+        {
+            var url = req.RequestUri!.ToString();
+            if (url.Contains("shipment?salesOrderId-eq="))
+            {
+                return FakeHttpMessageHandler.Json(
+                    """
+                    {"result":[{"id":"S1","status":"SHIPPED","packageTrackingNumber":"OTHER-1",
+                      "shipmentItems":[{"id":"I1","articleId":"400000001273682","quantity":"1"}]}]}
+                    """);
+            }
+
+            if (url.Contains("createShipment"))
+            {
+                return FakeHttpMessageHandler.Json("""{"result":{"id":"S9"}}""");
+            }
+
+            if (url.Contains("/shipment/id/S9") && req.Method == HttpMethod.Get)
+            {
+                return FakeHttpMessageHandler.Json(
+                    """
+                    {"id":"S9","version":"1","status":"NEW","recipientPartyId":"4711",
+                      "salesOrderId":"400000001247987","shipmentItems":[]}
+                    """);
+            }
+
+            return DefaultResponder(req);
+        });
+        var sut = CreateSut(handler);
+
+        await sut.ProcessObjectAsync(_dataContext, _nodeContext); // must not throw
+
+        Assert.Single(handler.Requests, r => r.Method == "DELETE" && r.Url.Contains("/shipment/id/S9"));
+        Assert.DoesNotContain(handler.Requests, r => r.Method == "PUT");
+        A.CallTo(() => _nodeContext.Error(A<string>.That.Contains("dead-letter"), A<object[]>._))
+            .MustHaveHappenedOnceExactly();
+        A.CallTo(() => _next(_dataContext, _nodeContext)).MustHaveHappenedOnceExactly();
+    }
+
+    [Fact]
+    public async Task Process_PlatformDryRunPutsWithDryRunParameter()
+    {
+        // The SDK's per-execution dry-run mode must suppress real writes even when the
+        // pipeline configuration itself is not in dry-run.
+        Configure(dryRun: false);
+        A.CallTo(() => _nodeContext.PipelineExecutionMode)
+            .Returns(new DefaultPipelineExecutionMode { IsDryRun = true });
         var handler = new FakeHttpMessageHandler((req, _) => DefaultResponder(req));
         var sut = CreateSut(handler);
 
