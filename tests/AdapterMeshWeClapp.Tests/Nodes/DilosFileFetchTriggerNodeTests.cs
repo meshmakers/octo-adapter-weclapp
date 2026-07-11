@@ -40,7 +40,7 @@ public class DilosFileFetchTriggerNodeTests
     }
 
     private DilosFileFetchTriggerNodeConfiguration Configure(string pattern = "AR*TXT",
-        string serverConfiguration = "LkvSftp", int minFileAgeSeconds = 60)
+        string serverConfiguration = "LkvSftp", int minFileAgeSeconds = 60, bool deleteAfterSuccess = true)
     {
         var config = new DilosFileFetchTriggerNodeConfiguration
         {
@@ -48,6 +48,7 @@ public class DilosFileFetchTriggerNodeTests
             FilePattern = pattern,
             MinFileAgeSeconds = minFileAgeSeconds,
             PollingIntervalSeconds = 900,
+            DeleteAfterSuccess = deleteAfterSuccess,
         };
         A.CallTo(() => _nodeContext.GetNodeConfiguration<DilosFileFetchTriggerNodeConfiguration>()).Returns(config);
         return config;
@@ -160,6 +161,71 @@ public class DilosFileFetchTriggerNodeTests
 
         Assert.Single(_executedDocuments); // NOT executed a second time
         A.CallTo(() => _sftp.DeleteFile("/AR1.TXT")).MustHaveHappenedTwiceExactly(); // delete retried
+    }
+
+    [Fact]
+    public async Task FetchOnce_KeepMode_ExecutesOnceAndNeverDeletes()
+    {
+        // deleteAfterSuccess=false (dry-run pipelines): the execution succeeds without
+        // writing to WeClapp, so the file must survive on the server — and must not be
+        // re-executed on every poll while it is unchanged.
+        Configure("AR*TXT", deleteAfterSuccess: false);
+        var sut = CreateSut();
+
+        ListingReturns(RemoteFile("AR1.TXT", ageMinutes: 20));
+        A.CallTo(() => _sftp.DownloadText("/AR1.TXT")).Returns("first");
+        await sut.FetchOnceAsync(_context); // poll 1: executed, kept
+        await sut.FetchOnceAsync(_context); // poll 2: unchanged file → skipped
+
+        Assert.Single(_executedDocuments);
+
+        // A NEW file under the same name (different mtime/size) is executed again.
+        ListingReturns(RemoteFile("AR1.TXT", ageMinutes: 5, length: 222));
+        A.CallTo(() => _sftp.DownloadText("/AR1.TXT")).Returns("second");
+        await sut.FetchOnceAsync(_context);
+
+        Assert.Equal(2, _executedDocuments.Count);
+        Assert.Equal("second", _executedDocuments[1]!["content"]!.ToString());
+        A.CallTo(() => _sftp.DeleteFile(A<string>._)).MustNotHaveHappened();
+    }
+
+    [Fact]
+    public async Task FetchOnce_FlipToDeleteMode_ReexecutesKeptFiles()
+    {
+        // Files executed during the keep-mode (dry-run) phase must be REALLY processed and
+        // consumed after the go-live flip — stale keep-keys must not suppress them.
+        Configure("AR*TXT", deleteAfterSuccess: false);
+        ListingReturns(RemoteFile("AR1.TXT", ageMinutes: 20));
+        A.CallTo(() => _sftp.DownloadText("/AR1.TXT")).Returns("content");
+        var sut = CreateSut();
+        await sut.FetchOnceAsync(_context); // validation phase: executed, kept
+
+        Configure("AR*TXT", deleteAfterSuccess: true); // go-live flip on the same instance
+        await sut.FetchOnceAsync(_context);
+
+        Assert.Equal(2, _executedDocuments.Count);
+        A.CallTo(() => _sftp.DeleteFile("/AR1.TXT")).MustHaveHappenedOnceExactly();
+    }
+
+    [Fact]
+    public async Task FetchOnce_FlipToKeepMode_NeverFiresStaleDeleteRetry()
+    {
+        // A pending delete-retry key from the delete-mode phase must not delete files
+        // after the trigger switched to keep mode (e.g. a rollback to validation).
+        Configure("AR*TXT", deleteAfterSuccess: true);
+        ListingReturns(RemoteFile("AR1.TXT", ageMinutes: 20));
+        A.CallTo(() => _sftp.DownloadText("/AR1.TXT")).Returns("content");
+        A.CallTo(() => _sftp.DeleteFile("/AR1.TXT"))
+            .Throws(new IOException("permission denied")).Once();
+        var sut = CreateSut();
+        await sut.FetchOnceAsync(_context); // executed, delete failed → retry key pending
+
+        Configure("AR*TXT", deleteAfterSuccess: false); // rollback to validation mode
+        await sut.FetchOnceAsync(_context);
+
+        // Re-executed under keep semantics (downstream is idempotent) instead of deleting.
+        Assert.Equal(2, _executedDocuments.Count);
+        A.CallTo(() => _sftp.DeleteFile("/AR1.TXT")).MustHaveHappenedOnceExactly();
     }
 
     [Fact]

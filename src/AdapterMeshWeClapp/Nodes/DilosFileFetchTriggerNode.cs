@@ -35,6 +35,14 @@ public record DilosFileFetchTriggerNodeConfiguration : TriggerNodeConfiguration
     /// <summary>Skip files whose last write is younger than this (partial-file guard DILOS-side;
     /// Billbee lacked one).</summary>
     public int MinFileAgeSeconds { get; set; } = 60;
+
+    /// <summary>Delete the remote file once its pipeline execution succeeded (the normal
+    /// consume protocol for go-live). The default is the SAFE side (false): a dry-run
+    /// execution succeeds without writing anything to WeClapp, so deleting would consume
+    /// the LKV file with no effect — flip to true together with the write node's
+    /// <c>dryRun: false</c>. While false, each file is executed once per trigger lifetime
+    /// (again after a restart or when the file changes) and left on the server.</summary>
+    public bool DeleteAfterSuccess { get; set; }
 }
 
 /// <summary>
@@ -44,6 +52,8 @@ public record DilosFileFetchTriggerNodeConfiguration : TriggerNodeConfiguration
 /// pipeline and rethrows failures) — unlike Billbee, which deleted before processing and relied
 /// on a PVC copy. A failed file stays on the server and is retried next poll, so the WeClapp
 /// write-back downstream must be idempotent. One bad file does not block the others.
+/// With <c>DeleteAfterSuccess=false</c> (dry-run validation: the execution succeeds without
+/// writing to WeClapp) files are executed once and left on the server instead.
 /// </summary>
 [NodeConfiguration(typeof(DilosFileFetchTriggerNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
@@ -58,6 +68,10 @@ public class DilosFileFetchTriggerNode(
     // retry the delete. Touched only from the sequential polling loop — no locking needed.
     private readonly HashSet<string> _executedButNotDeleted = new();
 
+    // Files already executed in keep mode (DeleteAfterSuccess=false): stay on the server,
+    // must not be re-executed every poll. A changed file gets a new key and runs again.
+    private readonly HashSet<string> _executedKeptOnServer = new();
+
     /// <inheritdoc />
     public Task StartAsync(ITriggerContext context)
     {
@@ -66,8 +80,9 @@ public class DilosFileFetchTriggerNode(
         var token = _cancellationTokenSource.Token;
 
         context.NodeContext.Info(
-            "DilosFileFetch: polling '{0}' for '{1}' every {2}s",
-            config.RemoteDirectory, config.FilePattern, config.PollingIntervalSeconds);
+            "DilosFileFetch: polling '{0}' for '{1}' every {2}s (deleteAfterSuccess={3})",
+            config.RemoteDirectory, config.FilePattern, config.PollingIntervalSeconds,
+            config.DeleteAfterSuccess);
 
         _pollingTask = Task.Run(async () =>
         {
@@ -148,8 +163,10 @@ public class DilosFileFetchTriggerNode(
             .OrderBy(f => f.Name, StringComparer.Ordinal)
             .ToList();
 
-        // Forget keys of files that vanished from the server, so the set stays bounded.
-        _executedButNotDeleted.IntersectWith(files.Select(FileKey));
+        // Forget keys of files that vanished from the server, so the sets stay bounded.
+        var currentKeys = files.Select(FileKey).ToList();
+        _executedButNotDeleted.IntersectWith(currentKeys);
+        _executedKeptOnServer.IntersectWith(currentKeys);
 
         var now = DateTime.UtcNow;
 
@@ -158,7 +175,16 @@ public class DilosFileFetchTriggerNode(
             var key = FileKey(file);
             try
             {
-                if (_executedButNotDeleted.Contains(key))
+                // Both memory sets are gated on the CURRENT mode: after a config flip the
+                // other mode's stale keys must neither suppress a real write (keep-set
+                // surviving a switch to delete mode) nor delete a file in keep mode
+                // (stale delete-retry key) — downstream idempotency covers re-executions.
+                if (!config.DeleteAfterSuccess && _executedKeptOnServer.Contains(key))
+                {
+                    continue; // keep mode: already executed, stays on the server unchanged
+                }
+
+                if (config.DeleteAfterSuccess && _executedButNotDeleted.Contains(key))
                 {
                     // Executed in an earlier poll, only the delete failed — retry just the delete.
                     sftp.DeleteFile(file.FullPath);
@@ -175,6 +201,14 @@ public class DilosFileFetchTriggerNode(
                 await context.ExecuteAsync(
                     new ExecutePipelineOptions(DateTime.UtcNow) { ExternalReceivedDateTime = file.LastWriteTimeUtc },
                     new JsonObject { ["fileName"] = file.Name, ["content"] = content });
+
+                if (!config.DeleteAfterSuccess)
+                {
+                    _executedKeptOnServer.Add(key);
+                    context.NodeContext.Info(
+                        "DilosFileFetch: '{0}' processed, kept on server (deleteAfterSuccess=false)", file.Name);
+                    continue;
+                }
 
                 _executedButNotDeleted.Add(key);
                 sftp.DeleteFile(file.FullPath);
