@@ -1,9 +1,10 @@
 # Pipeline: DILOS AR shipment confirmations (LKV SFTP) → WeClapp shipments (tracking, parcels,
 # delivered quantities, status SHIPPED last). One pipeline execution per fetched file
-# ({fileName, content}); the trigger deletes the remote file only after this pipeline
-# completed successfully — safe because the write is idempotent (replay-skip on an already
-# SHIPPED shipment with the same tracking number; unknown orders are dead-letter-logged and
-# do not block the file).
+# ({fileName, content}); with deleteAfterSuccess: true the trigger deletes the remote file
+# only after this pipeline completed successfully — safe because the write is idempotent
+# (replay-skip on an already SHIPPED shipment with the same tracking number; unknown orders
+# are dead-letter-logged and do not block the file). During the dry-run phase the delete
+# stays off: a dry-run succeeds without writing, deleting would consume the file for nothing.
 #
 # SFTP credentials come from the tenant GlobalConfiguration entry "LkvSftp" (same JSON shape
 # as SftpUpload@1: {host, port, username, password|privateKey, ...}) — never from this YAML.
@@ -16,6 +17,8 @@ triggers:
     filePattern: AR*TXT           # golden names: AR00006946.TXT, AR20240205143134947.TXT
     pollingIntervalSeconds: 900   # Billbee parity: */15 min
     minFileAgeSeconds: 60
+    deleteAfterSuccess: false     # dry-run below writes nothing — deleting would consume the
+                                  # LKV file with no effect; flip to true TOGETHER with dryRun
 
 transformations:
   - type: WeClappArWrite@1

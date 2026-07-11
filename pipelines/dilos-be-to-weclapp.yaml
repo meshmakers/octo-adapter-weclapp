@@ -2,8 +2,9 @@
 # warehouseStock is GET-only in the WeClapp API (v1 and v2), so the node books
 # bookIncomingMovement / bookOutgoingMovement per BE-vs-current difference. Idempotent by
 # construction: re-processing the same file yields delta 0, so the trigger's
-# delete-after-success protocol is safe. GES (blocked) lines and unknown articles are
-# skipped loudly (golden files contain 0 GES lines; semantics not agreed yet).
+# delete-after-success protocol is safe once enabled. During the dry-run phase the delete
+# stays off (a dry-run succeeds without writing). GES (blocked) lines and unknown articles
+# are skipped loudly (golden files contain 0 GES lines; semantics not agreed yet).
 #
 # SFTP credentials come from the tenant GlobalConfiguration entry "LkvSftp" (shared with
 # the outbound SftpUpload@1 and the AR pipeline). ${WECLAPP_API_KEY} is substituted at
@@ -16,6 +17,8 @@ triggers:
     filePattern: BE*txt           # golden name: BE_20240205035403463.txt
     pollingIntervalSeconds: 3600  # Billbee parity: hourly
     minFileAgeSeconds: 60
+    deleteAfterSuccess: false     # dry-run below writes nothing — deleting would consume the
+                                  # LKV file with no effect; flip to true TOGETHER with dryRun
 
 transformations:
   - type: WeClappBeWrite@1

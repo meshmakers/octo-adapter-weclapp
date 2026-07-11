@@ -54,8 +54,14 @@ dotnet test Octo.WeClappAdapter.slnx -c DebugL
 ## AR/BE Return Path (SFTP → WeClapp)
 - `DilosFileFetch@1` polls the LKV SFTP (credentials via tenant GlobalConfiguration
   entry `LkvSftp`, same JSON shape as `SftpUpload@1`) and starts ONE pipeline execution
-  per file `{fileName, content}`; the remote file is deleted only AFTER the awaited
-  execution succeeded → the downstream write MUST stay idempotent.
+  per file `{fileName, content}`; with `deleteAfterSuccess: true` the remote file is
+  deleted only AFTER the awaited execution succeeded → the downstream write MUST stay
+  idempotent. The DEFAULT is the safe side (false = keep files): a dry-run execution
+  succeeds without writing, deleting would consume the LKV file with no effect — flip
+  `deleteAfterSuccess: true` together with `dryRun: false` for go-live. Importing a
+  pipeline YAML that uses a config key the DEPLOYED image does not know yet fails the
+  pipeline registration (the SDK YAML deserializer rejects unknown properties) → deploy
+  the new image before importing updated YAMLs.
 - `WeClappArWrite@1`: AR K* Auftragsnummer1 = WeClapp `salesOrder.id` (404 = dead-letter
   log, file still consumed). Idempotency: SHIPPED shipment with same tracking = skip;
   reuse non-CANCELLED; else `createShipment`. Quantities match by **articleId, never by
