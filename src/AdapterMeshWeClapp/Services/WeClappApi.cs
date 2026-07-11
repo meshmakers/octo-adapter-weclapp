@@ -73,7 +73,8 @@ internal sealed class WeClappApi(
     }
 
     /// <summary>Fetches all pages of <c>{entity}?page=N&amp;pageSize=M[&amp;query]</c> until a short page.</summary>
-    public async Task<List<JsonNode>> GetPagedAsync(string entity, string query, int pageSize)
+    public async Task<List<JsonNode>> GetPagedAsync(string entity, string query, int pageSize,
+        CancellationToken cancellationToken = default)
     {
         var results = new List<JsonNode>();
         var page = 1;
@@ -82,7 +83,7 @@ internal sealed class WeClappApi(
         {
             var pathAndQuery = $"{entity}?page={page}&pageSize={pageSize}"
                                + (query.Length > 0 ? "&" + query : "");
-            var body = EnsureSuccess(await GetAsync(pathAndQuery), $"GET {entity} page {page}");
+            var body = EnsureSuccess(await GetAsync(pathAndQuery, cancellationToken), $"GET {entity} page {page}");
             var result = JsonNode.Parse(body)?["result"]?.AsArray()
                          ?? throw new WeClappPipelineExecutionException(
                              $"WeClapp response for '{entity}' page {page} has no 'result' array");

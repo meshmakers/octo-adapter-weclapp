@@ -14,7 +14,19 @@ public class SshNetSftpFileSystemFactory : ISftpFileSystemFactory
     public ISftpFileSystem Connect(SftpConnectionSettings settings)
     {
         var client = CreateSftpClient(settings);
-        client.Connect();
+        try
+        {
+            client.Connect();
+        }
+        catch
+        {
+            // The disposing wrapper only exists after a successful connect — a failed
+            // Connect() (unreachable host, bad credentials) must not leak the client
+            // and its socket on every poll.
+            client.Dispose();
+            throw;
+        }
+
         return new SshNetSftpFileSystem(client);
     }
 
@@ -58,11 +70,21 @@ internal sealed class SshNetSftpFileSystem(SftpClient client) : ISftpFileSystem
 
     public void Dispose()
     {
-        if (client.IsConnected)
+        try
         {
-            client.Disconnect();
+            if (client.IsConnected)
+            {
+                client.Disconnect();
+            }
         }
-
-        client.Dispose();
+        catch
+        {
+            // Cleanup must not throw: a half-dead session failing Disconnect() (or a second
+            // Dispose reaching the already-disposed client) still needs the Dispose below.
+        }
+        finally
+        {
+            client.Dispose();
+        }
     }
 }
