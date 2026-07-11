@@ -45,6 +45,9 @@ public class WeClappBeWriteNode(
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
         var config = nodeContext.GetNodeConfiguration<WeClappBeWriteNodeConfiguration>();
+        // Two dry-run signals: the standing pipeline config AND the SDK's per-execution
+        // mode (a platform-initiated dry run) — either one must suppress real bookings.
+        var dryRun = config.DryRun || nodeContext.PipelineExecutionMode?.IsDryRun == true;
         var fileName = dataContext.Get<string>(config.FileNamePath) ?? "";
         var content = dataContext.Get<string>(config.ContentPath)
                       ?? throw new WeClappPipelineExecutionException(
@@ -81,7 +84,30 @@ public class WeClappBeWriteNode(
 
         var stockRows = await api.GetPagedAsync("warehouseStock",
             $"warehouseId-eq={config.WarehouseId}", config.PageSize);
+
+        // The -eq filter is applied server-side (customer-live-verified 2026-07-10:
+        // warehouseId-eq on the second warehouse returns 0 of 22 rows) — re-checked
+        // locally so a foreign-warehouse row can never inflate an outgoing delta.
+        // A row WITHOUT the warehouseId field is a response-contract violation and fails
+        // loud: dropping it silently would read existing stock as 0 and re-book the full
+        // BE quantities on top (stock inflation) on every run.
+        var missingWarehouseField = stockRows.Count(row => row["warehouseId"] is null);
+        if (missingWarehouseField > 0)
+        {
+            throw new WeClappPipelineExecutionException(
+                $"WeClappBeWrite: {missingWarehouseField} of {stockRows.Count} warehouseStock rows carry no warehouseId field — refusing to plan deltas against unattributable stock");
+        }
+
+        var foreignRows = stockRows.Count(row => row["warehouseId"]!.ToString() != config.WarehouseId);
+        if (foreignRows > 0)
+        {
+            nodeContext.Error(
+                "WeClappBeWrite: {0} warehouseStock rows belong to other warehouses although the request filtered on warehouseId-eq={1} — rows excluded",
+                foreignRows, config.WarehouseId);
+        }
+
         var rowsByArticle = stockRows
+            .Where(row => row["warehouseId"]!.ToString() == config.WarehouseId)
             .Select(row => (
                 ArticleId: row["articleId"]?.ToString() ?? "",
                 Row: new WeClappStockRow
@@ -121,6 +147,12 @@ public class WeClappBeWriteNode(
             nodeContext.Error("WeClappBeWrite: {0}", warning);
         }
 
+        // One PERSISTENTLY rejected booking (non-transient HTTP status) must not block the
+        // remaining movements: bookings already applied are delta 0 on the retry run, so
+        // only the failed lines are re-attempted. Transient failures (5xx/408/429/network,
+        // thrown by SendAsync after its retries) still abort the file immediately — during
+        // an outage every movement would otherwise burn its own retry ladder for nothing.
+        var failures = new List<string>();
         foreach (var movement in plan.Movements)
         {
             var (path, placeField) = movement.Direction == StockMovementDirection.Incoming
@@ -138,7 +170,7 @@ public class WeClappBeWriteNode(
                 body[placeField] = movement.StoragePlaceId;
             }
 
-            if (config.DryRun)
+            if (dryRun)
             {
                 // The JSON body contains literal braces — interpolated into the message it
                 // would corrupt the structured-log template, so it travels as an arg.
@@ -146,15 +178,29 @@ public class WeClappBeWriteNode(
                 continue;
             }
 
-            WeClappApi.EnsureSuccess(
-                await api.SendAsync(HttpMethod.Post, path, body),
-                $"POST {path} for article {movement.ArticleId}");
+            var result = await api.SendAsync(HttpMethod.Post, path, body);
+            if (!result.IsSuccess)
+            {
+                var failure = $"POST {path} for article {movement.ArticleId} failed with HTTP {result.StatusCode}";
+                failures.Add(failure);
+                nodeContext.Error("WeClappBeWrite: {0}: {1}", failure, result.Body);
+                logger.LogError("WeClappBeWrite: {Failure}: {Body}", failure, result.Body);
+            }
         }
 
         nodeContext.Info(
-            "WeClappBeWrite: {0} — {1} movements{2}, {3} in sync, {4} warnings",
-            fileName, plan.Movements.Count, config.DryRun ? " (dry-run)" : "",
-            plan.InSyncCount, plan.Warnings.Count);
+            "WeClappBeWrite: {0} — {1} movements{2}, {3} in sync, {4} warnings, {5} failed",
+            fileName, plan.Movements.Count, dryRun ? " (dry-run)" : "",
+            plan.InSyncCount, plan.Warnings.Count, failures.Count);
+
+        if (failures.Count > 0)
+        {
+            // Rethrow AFTER the loop so the file stays on the SFTP server for retry while
+            // every bookable movement of this run has already been applied. The response
+            // bodies are already logged per movement — the exception stays bounded.
+            throw new WeClappPipelineExecutionException(
+                $"WeClappBeWrite: {failures.Count} of {plan.Movements.Count} movements failed for {fileName}: {string.Join("; ", failures.Take(5))}{(failures.Count > 5 ? $"; … and {failures.Count - 5} more" : "")}");
+        }
 
         await next(dataContext, nodeContext);
     }
