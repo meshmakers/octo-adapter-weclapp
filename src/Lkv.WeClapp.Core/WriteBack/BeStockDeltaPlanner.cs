@@ -73,6 +73,17 @@ public static class BeStockDeltaPlanner
 
             if (delta > 0)
             {
+                if (article.DefaultStoragePlaceId is null)
+                {
+                    // A booking without targetStoragePlaceId is rejected or lands on an
+                    // unpredictable place — and a persistently rejected movement would keep
+                    // the whole file in the retry loop, re-applying an aging stock snapshot.
+                    // Skip loudly; once the warehouse is configured, the next BE heals the gap.
+                    warnings.Add(
+                        $"Article {line.ArticleNumber}: incoming movement skipped — the warehouse has no default storage place");
+                    continue;
+                }
+
                 movements.Add(new StockMovementPlan
                 {
                     Direction = StockMovementDirection.Incoming,

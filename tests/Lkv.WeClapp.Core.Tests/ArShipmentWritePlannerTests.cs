@@ -207,6 +207,208 @@ public class ArShipmentWritePlannerTests
     }
 
     [Fact]
+    public void Plan_DuplicateArticleLines_AggregatesQuantitiesPerArticle()
+    {
+        // WeClapp allows several order positions with the same article, and a position can
+        // be split across parcels — either way the AR may echo one article on multiple
+        // lines. Downstream keys quantities by articleId, so the planner must emit exactly
+        // one entry per article.
+        var ar = GoldenShapedShipment() with
+        {
+            Items =
+            [
+                new DilosArItem { OrderNumber1 = "5910986621265", ArticleNumber = "A1", DeliveredQuantity = 1m },
+                new DilosArItem { OrderNumber1 = "5910986621265", ArticleNumber = "A1", DeliveredQuantity = 2m },
+                new DilosArItem { OrderNumber1 = "5910986621265", ArticleNumber = "B2", DeliveredQuantity = 5m }
+            ]
+        };
+
+        var plan = ArShipmentWritePlanner.Plan(ar, []);
+
+        Assert.Equal(2, plan.Update!.ItemQuantities.Count);
+        Assert.Equal("A1", plan.Update.ItemQuantities[0].ArticleId);
+        Assert.Equal("3", plan.Update.ItemQuantities[0].Quantity);
+        Assert.Equal("B2", plan.Update.ItemQuantities[1].ArticleId);
+        Assert.Equal("5", plan.Update.ItemQuantities[1].Quantity);
+        Assert.Single(plan.Warnings, w => w.Contains("delivered quantities summed"));
+    }
+
+    [Fact]
+    public void MatchItemQuantities_DuplicateArticleEntries_MatchEachShipmentItemAtMostOnce()
+    {
+        // Callers key the matches by ShipmentItemId — a duplicate match would throw there
+        // and poison the file's retry loop. Even for a hand-built update that bypasses the
+        // planner aggregation, every shipment item is matched at most once.
+        var update = new ArShipmentUpdate
+        {
+            ItemQuantities =
+            [
+                new ArItemQuantity { ArticleId = "A1", Quantity = "1" },
+                new ArItemQuantity { ArticleId = "A1", Quantity = "2" }
+            ]
+        };
+        var shipmentItems = new List<WeClappShipmentItem> { new() { Id = "si1", ArticleId = "A1", Quantity = "0" } };
+
+        var result = ArShipmentWritePlanner.MatchItemQuantities(update, shipmentItems);
+
+        var match = Assert.Single(result.Matches);
+        Assert.Equal("si1", match.ShipmentItemId);
+        Assert.Equal("1", match.Quantity);
+        Assert.Contains(result.Warnings, w => w.Contains("already matched"));
+        _ = result.Matches.ToDictionary(m => m.ShipmentItemId, m => m.Quantity); // the write node's exact shape
+    }
+
+    [Fact]
+    public void Plan_UntrackedArWithUntrackedShippedShipment_SkipsAsReplay()
+    {
+        // The replay signature of an untracked AR is a shipped shipment WITHOUT tracking —
+        // that pairing is never overwritten or re-created on retries.
+        var ar = GoldenShapedShipment() with { Parcels = [] };
+        var shipped = new WeClappShipmentSummary { Id = "777", Status = "SHIPPED" };
+
+        var plan = ArShipmentWritePlanner.Plan(ar, [shipped]);
+
+        Assert.Equal(ArWriteAction.Skip, plan.Action);
+        Assert.Contains("without a tracking number", plan.SkipReason);
+    }
+
+    [Fact]
+    public void Plan_UntrackedArButShippedShipmentHasTracking_CreatesNewShipment()
+    {
+        // A shipped shipment WITH tracking cannot be the echo of this untracked AR — the
+        // AR is a genuinely new delivery and must not be consumed silently as a replay.
+        var ar = GoldenShapedShipment() with { Parcels = [] };
+        var shipped = new WeClappShipmentSummary
+        {
+            Id = "777",
+            Status = "SHIPPED",
+            PackageTrackingNumber = "X1",
+            ShipmentItems = { new WeClappShipmentItem { Id = "I1", ArticleId = "43222003744925" } }
+        };
+
+        var plan = ArShipmentWritePlanner.Plan(ar, [shipped]);
+
+        Assert.Equal(ArWriteAction.CreateThenUpdate, plan.Action);
+    }
+
+    [Fact]
+    public void Plan_ShippedShipmentWithDifferentTracking_CreatesSecondShipment()
+    {
+        // A completed delivery is never reused as the write target: an AR with a NEW
+        // tracking number is a second delivery and gets its own shipment instead of
+        // overwriting the finished one.
+        var shipped = new WeClappShipmentSummary
+        {
+            Id = "777",
+            Status = "SHIPPED",
+            PackageTrackingNumber = "OTHER-1",
+            ShipmentItems = { new WeClappShipmentItem { Id = "I1", ArticleId = "43222003744925" } }
+        };
+
+        var plan = ArShipmentWritePlanner.Plan(GoldenShapedShipment(), [shipped]);
+
+        Assert.Equal(ArWriteAction.CreateThenUpdate, plan.Action);
+    }
+
+    [Fact]
+    public void Plan_EmptyStatusShipment_IsNotTreatedAsShipped()
+    {
+        // A shipment row without a status field deserializes to "" — that means "has not
+        // shipped", never "shipped": an untracked AR must not be consumed as a replay of it.
+        var ar = GoldenShapedShipment() with { Parcels = [] };
+        var statusless = new WeClappShipmentSummary
+        {
+            Id = "777",
+            ShipmentItems = { new WeClappShipmentItem { Id = "I1", ArticleId = "43222003744925" } }
+        };
+
+        var plan = ArShipmentWritePlanner.Plan(ar, [statusless]);
+
+        Assert.Equal(ArWriteAction.UpdateExisting, plan.Action);
+        Assert.Equal("777", plan.ExistingShipmentId);
+    }
+
+    [Fact]
+    public void Plan_DeliveredShipmentWithSameTracking_SkipsAsReplay()
+    {
+        // WeClapp advances shipments past SHIPPED — a replay arriving after that advance
+        // must still be recognized.
+        var delivered = new WeClappShipmentSummary
+        {
+            Id = "777",
+            Status = "DELIVERED",
+            PackageTrackingNumber = "06255052795778-Z"
+        };
+
+        var plan = ArShipmentWritePlanner.Plan(GoldenShapedShipment(), [delivered]);
+
+        Assert.Equal(ArWriteAction.Skip, plan.Action);
+        Assert.Contains("DELIVERED", plan.SkipReason);
+    }
+
+    [Fact]
+    public void Plan_FirstParcelUntracked_TakesShipmentTrackingFromSecondParcel()
+    {
+        // An untracked first parcel must not blank the shipment-level tracking fields —
+        // the replay guards key on them.
+        var ar = GoldenShapedShipment() with
+        {
+            Parcels =
+            [
+                new DilosParcel { OrderNumber1 = "5910986621265", Carrier = "", TrackingNumber = "" },
+                new DilosParcel { OrderNumber1 = "5910986621265", Carrier = "800", TrackingNumber = "B123" }
+            ]
+        };
+
+        var plan = ArShipmentWritePlanner.Plan(ar, []);
+
+        Assert.Equal("B123", plan.Update!.PackageTrackingNumber);
+        Assert.Equal("800", plan.Update.CarrierToken);
+        Assert.Null(plan.Update.Parcels[0].TrackingId);
+        Assert.Equal("B123", plan.Update.Parcels[1].TrackingId);
+    }
+
+    [Fact]
+    public void MatchItemQuantities_MultipleSameArticleItems_WarnsAboutSingleTarget()
+    {
+        // The AR states one delivered total per article — how it splits across duplicate-
+        // article shipment items is unknowable, so the total lands on the first item and
+        // the decision is warned loudly.
+        var update = new ArShipmentUpdate
+        {
+            ItemQuantities = [new ArItemQuantity { ArticleId = "A1", Quantity = "3" }]
+        };
+        var shipmentItems = new List<WeClappShipmentItem>
+        {
+            new() { Id = "si1", ArticleId = "A1", Quantity = "1" },
+            new() { Id = "si2", ArticleId = "A1", Quantity = "2" }
+        };
+
+        var result = ArShipmentWritePlanner.MatchItemQuantities(update, shipmentItems);
+
+        var match = Assert.Single(result.Matches);
+        Assert.Equal("si1", match.ShipmentItemId);
+        Assert.Contains(result.Warnings, w => w.Contains("multiple items"));
+    }
+
+    [Fact]
+    public void Plan_NoTrackingAndNoShippedShipment_StillWrites()
+    {
+        var ar = GoldenShapedShipment() with { Parcels = [] };
+        var existing = new WeClappShipmentSummary
+        {
+            Id = "778",
+            Status = "NEW",
+            ShipmentItems = { new WeClappShipmentItem { Id = "I1", ArticleId = "43222003744925" } }
+        };
+
+        var plan = ArShipmentWritePlanner.Plan(ar, [existing]);
+
+        Assert.Equal(ArWriteAction.UpdateExisting, plan.Action);
+        Assert.Equal("778", plan.ExistingShipmentId);
+    }
+
+    [Fact]
     public void MatchItemQuantities_ByArticleId_ReportsUnmatchedBothWays()
     {
         var update = new ArShipmentUpdate

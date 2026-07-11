@@ -38,6 +38,24 @@ public class BeStockDeltaPlannerTests
     }
 
     [Fact]
+    public void Plan_IncomingWithoutDefaultStoragePlace_SkipsLoudly()
+    {
+        // A booking without targetStoragePlaceId is rejected or lands unpredictably, and a
+        // persistently rejected movement would wedge the file in retry — skip loudly; the
+        // next BE heals the gap once the warehouse is configured.
+        var state = State(Ver("A1", 10m), "A1",
+            new WeClappStockRow { StoragePlaceId = "P1", Quantity = 4m }) with
+        {
+            DefaultStoragePlaceId = null
+        };
+
+        var plan = BeStockDeltaPlanner.Plan([state], "be.txt");
+
+        Assert.Empty(plan.Movements);
+        Assert.Contains(plan.Warnings, w => w.Contains("skipped") && w.Contains("no default storage place"));
+    }
+
+    [Fact]
     public void Plan_LowerBeQuantity_BooksOutgoingPerStoragePlaceRow()
     {
         var plan = BeStockDeltaPlanner.Plan(
