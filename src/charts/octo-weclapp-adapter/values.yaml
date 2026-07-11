@@ -43,7 +43,7 @@ clusterDependencies:
   streamDataEnabled: false
 
 image:
-  repository: meshmakers/octo-communication-mesh-adapter-weclapp
+  repository: meshmakers/octo-weclapp-adapter
   pullPolicy: IfNotPresent
   # private registry to pull images from
   privateRegistry: ""

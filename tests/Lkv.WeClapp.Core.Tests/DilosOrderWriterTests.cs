@@ -1,4 +1,3 @@
-using System.Globalization;
 using Lkv.WeClapp.Core.Dilos;
 using Lkv.WeClapp.Core.Model;
 
@@ -20,6 +19,7 @@ public class DilosOrderWriterTests
             CustomerNumber = "7067387625809",
             GrossAmount = "104.97",
             OrderDate = orderDate,
+            ShipmentMethodId = "3415",
             DeliveryAddress = new WeClappAddress
             {
                 Company = "TJ Lucas",
@@ -40,13 +40,31 @@ public class DilosOrderWriterTests
         Assert.Equal("51503", Field(k, 9));           // EPLZ
         Assert.Equal("Im Wielputzfeld 15a", Field(k, 10)); // Estrasse_postfach
         Assert.Equal("Rösrath", Field(k, 11));        // Eort
-        Assert.Equal(DateTimeOffset.FromUnixTimeMilliseconds(orderDate).ToString("dd.MM.yyyy", CultureInfo.InvariantCulture),
-            Field(k, 26));                            // Auftragsdatum
+        Assert.Equal("06.02.2024", Field(k, 26));     // Auftragsdatum (Vienna calendar day)
         Assert.Equal("5910986621265", Field(k, 30));  // Auftragsnummer1
         Assert.Equal("74299", Field(k, 31));          // Auftragsnummer2
+        Assert.Equal("3415", Field(k, 33));           // Frächter = WeClapp shipmentMethod-ID (Jürgen 2026-06-28)
         Assert.Equal("0", Field(k, 46));              // Text4: kein Rechnungsdruck
         Assert.Equal("104.97", Field(k, 65));         // RechnungssummeBrutto
         Assert.Equal(66, k.Split('|').Length);
+    }
+
+    [Fact]
+    public void RenderHeader_OrderDateAtViennaMidnight_KeepsTheAustrianCalendarDay()
+    {
+        // Real WeClapp date-picker values are account-local (Vienna) midnight:
+        // 2024-02-05T23:00Z is 06.02.2024 00:00 CET — the AI date must be 06.02., not 05.02.
+        var o = new WeClappSalesOrder
+        {
+            Id = "5910986621265",
+            OrderNumber = "74299",
+            CustomerNumber = "7067387625809",
+            OrderDate = 1707174000000L
+        };
+
+        var k = DilosOrderWriter.RenderHeader(o, Ctx);
+
+        Assert.Equal("06.02.2024", Field(k, 26));
     }
 
     [Fact]
@@ -85,5 +103,42 @@ public class DilosOrderWriterTests
         var ship = lines[1];
         Assert.Equal("-1", Field(ship, 5));           // Versandkosten-Zeile
         Assert.Equal("4.50", Field(ship, 18));        // Versandkosten netto
+    }
+
+    [Fact]
+    public void RenderPositions_NonContiguousWeClappPositionNumbers_ProducesUniqueSequentialPositions()
+    {
+        // WeClapp positionNumber can have gaps (deleted lines, manual numbering).
+        // DILOS requires "Position eindeutig pro Auftragsnummer" — a WeClapp
+        // positionNumber of 3 must not collide with the shipping pseudo line
+        // that is appended as the 3rd rendered row.
+        var o = new WeClappSalesOrder
+        {
+            Id = "5910986621265",
+            OrderNumber = "1015",
+            OrderItems =
+            {
+                new WeClappOrderItem
+                {
+                    PositionNumber = 1, ArticleId = "A1",
+                    Quantity = "1", NetAmount = "10.00", Title = "Item eins"
+                },
+                new WeClappOrderItem
+                {
+                    PositionNumber = 3, ArticleId = "A2",
+                    Quantity = "2", NetAmount = "20.00", Title = "Item zwei"
+                }
+            },
+            ShippingCostItems = { new WeClappShippingCostItem { NetAmount = "4.50", Title = "DHL Standard (DE)" } }
+        };
+
+        var lines = DilosOrderWriter.RenderPositions(o, Ctx).ToList();
+
+        Assert.Equal(3, lines.Count);
+        var positions = lines.Select(l => Field(l, 3)).ToList();
+        var deliveryNotePositions = lines.Select(l => Field(l, 4)).ToList();
+        Assert.Equal(new[] { "1", "2", "3" }, positions);
+        Assert.Equal(positions, deliveryNotePositions);
+        Assert.Equal(positions.Count, positions.Distinct().Count());
     }
 }

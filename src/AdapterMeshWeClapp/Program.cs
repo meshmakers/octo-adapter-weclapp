@@ -1,9 +1,11 @@
 using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Nodes;
 using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Services;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb.Configuration;
+using Meshmakers.Octo.Runtime.Contracts.MongoDb.Extensions;
 using Meshmakers.Octo.Sdk.Common.Adapters;
 using Meshmakers.Octo.Sdk.Common.Web.Sockets;
 using Meshmakers.Octo.Sdk.MeshAdapter.Configuration;
+using Meshmakers.Octo.Services.Observability;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -19,25 +21,45 @@ await adapterBuilder.RunAsync(args, builder =>
     builder.Services.Configure<MeshAdapterConfiguration>(options =>
         builder.Configuration.GetSection("Adapter").Bind(options));
 
+    // Observability: health checks + the HTTP endpoints the Helm chart probes
+    // (/healthz/live, /healthz/ready) — mapped by MapObservability below.
+    builder.AddObservability()
+        .AddSystemContextHealthCheck();
+
     // Add the adapter service to startup and shutdown the adapter
     builder.Services.AddSingleton<IAdapterService, AdapterMeshWeClappService>();
 
     // WeClapp serves gzip-compressed responses (live-verified: raw bodies start with 0x1F) —
-    // the named client for the fetch node must decompress automatically.
-    builder.Services.AddHttpClient(nameof(WeClappFetchTriggerNode))
-        .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
-        {
-            AutomaticDecompression = System.Net.DecompressionMethods.All,
-        });
+    // every named WeClapp client must decompress automatically.
+    foreach (var clientName in new[]
+             {
+                 nameof(WeClappFetchTriggerNode), nameof(WeClappArWriteNode), nameof(WeClappBeWriteNode),
+             })
+    {
+        builder.Services.AddHttpClient(clientName)
+            .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+            {
+                AutomaticDecompression = System.Net.DecompressionMethods.All,
+            });
+    }
+
+    // SFTP seam for the DilosFileFetch trigger (AR/BE return path) — SSH.NET-backed in
+    // production, faked in tests.
+    builder.Services.AddSingleton<ISftpFileSystemFactory, SshNetSftpFileSystemFactory>();
 
     // Add mesh adapter nodes and services to the container:
-    // the three custom nodes of the ingestion design (WeClappFetch → WeClappToCk → DilosRender).
+    // outbound ingestion design (WeClappFetch → WeClappToCk → DilosRender) plus the
+    // AR/BE return path (DilosFileFetch → WeClappArWrite / WeClappBeWrite).
     builder.Services.AddOctoMeshAdapter()
         .RegisterTriggerNode<WeClappFetchTriggerNode>()
+        .RegisterTriggerNode<DilosFileFetchTriggerNode>()
         .RegisterNode<WeClappToCkNode>()
-        .RegisterNode<DilosRenderNode>();
+        .RegisterNode<DilosRenderNode>()
+        .RegisterNode<WeClappArWriteNode>()
+        .RegisterNode<WeClappBeWriteNode>();
 
 }, app =>
 {
+    app.MapObservability();
     app.UseOctoMeshAdapter();
 });

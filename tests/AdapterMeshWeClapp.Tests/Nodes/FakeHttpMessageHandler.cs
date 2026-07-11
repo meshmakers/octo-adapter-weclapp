@@ -6,14 +6,15 @@ namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Tests.Nodes;
 internal sealed class FakeHttpMessageHandler(Func<HttpRequestMessage, int, HttpResponseMessage> responder)
     : HttpMessageHandler
 {
-    public List<(string Url, string? AuthToken)> Requests { get; } = new();
+    public List<(string Method, string Url, string? AuthToken, string? Body)> Requests { get; } = new();
 
-    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
         CancellationToken cancellationToken)
     {
         request.Headers.TryGetValues("AuthenticationToken", out var tokens);
-        Requests.Add((request.RequestUri!.ToString(), tokens?.FirstOrDefault()));
-        return Task.FromResult(responder(request, Requests.Count));
+        var body = request.Content is null ? null : await request.Content.ReadAsStringAsync(cancellationToken);
+        Requests.Add((request.Method.Method, request.RequestUri!.ToString(), tokens?.FirstOrDefault(), body));
+        return responder(request, Requests.Count);
     }
 
     public static HttpResponseMessage Json(string content) =>

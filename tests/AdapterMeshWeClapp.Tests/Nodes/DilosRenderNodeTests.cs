@@ -34,7 +34,7 @@ public class DilosRenderNodeTests
     }
 
     [Fact]
-    public async Task ProcessObjectAsync_AsMode_RendersArticleLinesCrlfTerminated()
+    public async Task ProcessObjectAsync_AsMode_RendersArticleLinesLfTerminated()
     {
         var config = Configure("AS");
         var articles = new List<WeClappArticle?>
@@ -47,9 +47,11 @@ public class DilosRenderNodeTests
         await _sut.ProcessObjectAsync(_dataContext, _nodeContext);
 
         // The node orchestrates; line content is the writer's contract (already golden-tested).
+        // Line ending = LF: all real Billbee-produced AS/AI files are pure LF (CR count 0) —
+        // the DILOS-import-proven format; CRLF only exists in files DILOS itself produces.
         var expected =
-            DilosArticleWriter.RenderLine(articles[0]!, DilosArticleContext.Default) + "\r\n" +
-            DilosArticleWriter.RenderLine(articles[1]!, DilosArticleContext.Default) + "\r\n";
+            DilosArticleWriter.RenderLine(articles[0]!, DilosArticleContext.Default) + "\n" +
+            DilosArticleWriter.RenderLine(articles[1]!, DilosArticleContext.Default) + "\n";
         A.CallTo(() => _dataContext.Set(config.TargetPath, expected, config.DocumentMode,
             config.TargetValueKind, config.TargetValueWriteMode)).MustHaveHappenedOnceExactly();
         A.CallTo(() => _next(_dataContext, _nodeContext)).MustHaveHappenedOnceExactly();
@@ -83,8 +85,8 @@ public class DilosRenderNodeTests
         await _sut.ProcessObjectAsync(_dataContext, _nodeContext);
 
         var ctx = new DilosOrderContext { Submandant = "51696697501" };
-        var expected = DilosOrderWriter.RenderHeader(order, ctx) + "\r\n" +
-                       string.Join("\r\n", DilosOrderWriter.RenderPositions(order, ctx)) + "\r\n";
+        var expected = DilosOrderWriter.RenderHeader(order, ctx) + "\n" +
+                       string.Join("\n", DilosOrderWriter.RenderPositions(order, ctx)) + "\n";
         A.CallTo(() => _dataContext.Set(config.TargetPath, expected, config.DocumentMode,
             config.TargetValueKind, config.TargetValueWriteMode)).MustHaveHappenedOnceExactly();
     }
@@ -114,8 +116,8 @@ public class DilosRenderNodeTests
         await _sut.ProcessObjectAsync(_dataContext, _nodeContext);
 
         var ctx = new DilosOrderContext { Submandant = "51696697501" };
-        var expected = DilosOrderWriter.RenderHeader(order, ctx) + "\r\n" +
-                       string.Join("\r\n", DilosOrderWriter.RenderPositions(order, ctx)) + "\r\n";
+        var expected = DilosOrderWriter.RenderHeader(order, ctx) + "\n" +
+                       string.Join("\n", DilosOrderWriter.RenderPositions(order, ctx)) + "\n";
         A.CallTo(() => _dataContext.Set(config.TargetPath, expected, config.DocumentMode,
             config.TargetValueKind, config.TargetValueWriteMode)).MustHaveHappenedOnceExactly();
     }

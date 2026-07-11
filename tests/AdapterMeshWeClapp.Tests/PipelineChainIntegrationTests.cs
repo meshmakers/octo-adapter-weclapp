@@ -103,7 +103,7 @@ public class PipelineChainIntegrationTests
         // --- DILOS branch: one AI file content for this order (K* + item P* + shipping P*) ---
         var dilos = dataContext.Get<string>("$.dilos");
         Assert.NotNull(dilos);
-        var lines = dilos.TrimEnd('\r', '\n').Split("\r\n");
+        var lines = dilos.TrimEnd('\n').Split("\n"); // golden AI files are pure LF
         Assert.Equal(3, lines.Length);
 
         var k = lines[0].Split('|');
