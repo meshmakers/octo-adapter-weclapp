@@ -36,6 +36,12 @@ public record WeClappFetchTriggerNodeConfiguration : TriggerNodeConfiguration
     /// <summary>Seconds between polls (design: articles daily, orders every 15 min — configure per pipeline).</summary>
     public int PollingIntervalSeconds { get; set; } = 900;
 
+    /// <summary>How fetched documents start pipeline executions: "PerItem" (default — one
+    /// execution per document, the AI/CK shape) or "Batch" (one execution per poll shaped
+    /// <c>{ "items": [ … ] }</c> — the AS collector shape; golden precedent is ONE AS file
+    /// per run with all articles). Batch is only valid for entity "article".</summary>
+    public string EmitMode { get; set; } = "PerItem";
+
     /// <summary>Retry attempts for transient HTTP failures (5xx/408/429/network), exponential backoff.</summary>
     public int MaxRetries { get; set; } = 4;
 
@@ -129,6 +135,20 @@ public class WeClappFetchTriggerNode(
     internal async Task FetchOnceAsync(ITriggerContext context, CancellationToken cancellationToken = default)
     {
         var config = context.NodeContext.GetNodeConfiguration<WeClappFetchTriggerNodeConfiguration>();
+
+        if (config.EmitMode is not ("PerItem" or "Batch"))
+        {
+            throw new WeClappPipelineExecutionException(
+                $"Unknown WeClappFetch emitMode '{config.EmitMode}' (expected 'PerItem' or 'Batch')");
+        }
+
+        if (config.EmitMode == "Batch" && config.Entity != "article")
+        {
+            throw new WeClappPipelineExecutionException(
+                "WeClappFetch emitMode 'Batch' is only supported for entity 'article' — " +
+                "orders stay per-item (one golden AI file per order)");
+        }
+
         var http = httpClientFactory.CreateClient(nameof(WeClappFetchTriggerNode));
 
         switch (config.Entity)
@@ -165,6 +185,7 @@ public class WeClappFetchTriggerNode(
                 .ToDictionary(s => s["id"]!.ToString(), s => s);
         }
 
+        var enrichedItems = new List<JsonNode>();
         foreach (var article in articles)
         {
             var item = article.DeepClone();
@@ -183,6 +204,31 @@ public class WeClappFetchTriggerNode(
                 item["supplySources"] = resolved;
             }
 
+            enrichedItems.Add(item);
+        }
+
+        if (config.EmitMode == "Batch")
+        {
+            // One execution per poll carrying ALL articles — the AS collector shape
+            // (golden precedent: one AS file per run). Zero articles → no execution,
+            // an empty AS upload would be a false "no articles exist" snapshot.
+            if (enrichedItems.Count == 0)
+            {
+                return;
+            }
+
+            var items = new JsonArray();
+            foreach (var item in enrichedItems)
+            {
+                items.Add(item);
+            }
+
+            await ExecutePipelineAsync(context, new JsonObject { ["items"] = items });
+            return;
+        }
+
+        foreach (var item in enrichedItems)
+        {
             var document = new JsonObject { ["item"] = item };
             await ExecutePipelineAsync(context, document);
         }
