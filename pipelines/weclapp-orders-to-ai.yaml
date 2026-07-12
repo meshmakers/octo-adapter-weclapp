@@ -125,7 +125,8 @@ transformations:
     submandant: "51696697501"   # REPLACE per tenant: WeClapp-Mandanten-Kennung (LKV maps it)
     path: $.item
     targetPath: $.dilosAi
-    fileNameTargetPath: $.dilosAiFileName   # AI<OrderNumber>.txt (golden precedent)
+    fileNameTargetPath: $.dilosAiFileName   # AI<Auftragsnummer1>.txt = the WeClapp id, the
+                                            # SAME number as the K* line — NOT the shop orderNumber
 
   # --- File delivery (own DilosSftpWrite@1 — ISO-8859-1, golden format) ---
   # The golden (DILOS-import-proven) AI/AS files are ISO-8859-1 with LF; the built-in

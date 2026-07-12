@@ -1,8 +1,10 @@
 using System.Text;
+using Lkv.WeClapp.Core.Dilos;
 using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Services;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+using Meshmakers.Octo.Sdk.MeshAdapter;
 
 namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Nodes;
 
@@ -27,16 +29,17 @@ public record DilosSftpWriteNodeConfiguration : PathNodeConfiguration
 }
 
 /// <summary>
-/// Uploads rendered DILOS file content to the LKV SFTP as ISO-8859-1 bytes. Exists because
-/// the golden (DILOS-import-proven) AS/AI files are Latin-1 while the built-in SftpUpload@1
-/// writes UTF-8 — with non-ASCII in most articles/customers that corrupts umlauts from day
-/// one. Characters outside Latin-1 are replaced with '?' and reported loudly, never silently.
+/// Uploads rendered DILOS file content to the LKV SFTP as ISO-8859-1 bytes
+/// (<see cref="DilosFile.Encoding"/>). Exists because the golden (DILOS-import-proven)
+/// AS/AI files are Latin-1 while the built-in SftpUpload@1 writes UTF-8 — with non-ASCII
+/// in most articles/customers that corrupts umlauts from day one. Characters outside
+/// Latin-1 are replaced with '?' and reported loudly (also in dry-run), never silently.
 /// </summary>
 [NodeConfiguration(typeof(DilosSftpWriteNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
 public class DilosSftpWriteNode(
     NodeDelegate next,
-    IEtlContext etlContext,
+    IMeshEtlContext etlContext,
     ISftpFileSystemFactory sftpFileSystemFactory) : IPipelineNode
 {
     /// <inheritdoc />
@@ -51,6 +54,14 @@ public class DilosSftpWriteNode(
                 $"No file name found at '{config.FileNamePath}' — refusing to upload a nameless DILOS file");
         }
 
+        // A legitimate DILOS name never contains a path separator or dot segment — reject
+        // instead of resolving, so a poisoned upstream value cannot escape remoteDirectory.
+        if (fileName.Contains('/') || fileName.Contains('\\') || fileName.Contains(".."))
+        {
+            throw new WeClappPipelineExecutionException(
+                $"File name '{fileName}' contains a path separator or dot segment — refusing to upload");
+        }
+
         var content = dataContext.Get<string>(config.Path);
         if (string.IsNullOrEmpty(content))
         {
@@ -60,25 +71,21 @@ public class DilosSftpWriteNode(
                 $"No content found at '{config.Path}' — refusing to upload an empty DILOS file");
         }
 
-        if (!etlContext.GlobalConfiguration.IsDefined(config.ServerConfiguration))
-        {
-            throw new WeClappPipelineExecutionException(
-                $"GlobalConfiguration '{config.ServerConfiguration}' is not defined for this " +
-                "pipeline — link the configuration entity to the pipeline (Uses association)");
-        }
-
         var remotePath = config.RemoteDirectory.TrimEnd('/') + "/" + fileName;
+
+        // Encode (and thereby run the non-Latin-1 detection) BEFORE the dry-run gate: the
+        // dry-run is the pre-go-live validation pass and must surface encoding loss too.
+        var bytes = EncodeLatin1(content, remotePath, nodeContext);
 
         if (nodeContext.PipelineExecutionMode?.IsDryRun == true)
         {
-            nodeContext.Info("DilosSftpWrite dry-run: would upload '{0}' ({1} chars, ISO-8859-1)",
-                remotePath, content.Length);
+            nodeContext.Info("DilosSftpWrite dry-run: would upload '{0}' ({1} bytes, ISO-8859-1)",
+                remotePath, bytes.Length);
             await next(dataContext, nodeContext);
             return;
         }
 
-        var bytes = EncodeLatin1(content, remotePath, nodeContext);
-        var settings = etlContext.GlobalConfiguration.GetValue<SftpConnectionSettings>(config.ServerConfiguration);
+        var settings = etlContext.GlobalConfiguration.ResolveSftpSettings(config.ServerConfiguration);
 
         using (var sftp = sftpFileSystemFactory.Connect(settings))
         {
@@ -90,21 +97,46 @@ public class DilosSftpWriteNode(
         await next(dataContext, nodeContext);
     }
 
-    /// <summary>ISO-8859-1 covers exactly U+0000–U+00FF; anything above is replaced with '?'
-    /// and reported — silent corruption is the failure mode this node exists to prevent.</summary>
+    /// <summary>ISO-8859-1 covers exactly U+0000–U+00FF; anything above becomes ONE '?' per
+    /// Unicode scalar (a surrogate pair counts once — the framework fallback would emit two)
+    /// and is reported loudly — silent corruption is the failure mode this node exists to
+    /// prevent. Clean content takes the fast path without any extra allocation.</summary>
     private static byte[] EncodeLatin1(string content, string remotePath, INodeContext nodeContext)
     {
-        var offenders = content.Where(ch => ch > 'ÿ').ToArray();
-        if (offenders.Length > 0)
+        var replaced = 0;
+        HashSet<string>? offenders = null;
+        StringBuilder? sanitized = null;
+        for (var i = 0; i < content.Length; i++)
         {
-            var distinct = string.Join(" ", offenders.Distinct().Select(o => $"U+{(int)o:X4}"));
-            nodeContext.Warning(
-                "DilosSftpWrite: {0} non-ISO-8859-1 character(s) in '{1}' replaced with '?' (distinct: {2})",
-                offenders.Length, remotePath, distinct);
+            var ch = content[i];
+            if (ch <= 'ÿ')
+            {
+                sanitized?.Append(ch);
+                continue;
+            }
+
+            replaced++;
+            offenders ??= new HashSet<string>();
+            sanitized ??= new StringBuilder(content.Length).Append(content, 0, i);
+            sanitized.Append('?');
+            if (char.IsHighSurrogate(ch) && i + 1 < content.Length && char.IsLowSurrogate(content[i + 1]))
+            {
+                offenders.Add($"U+{char.ConvertToUtf32(ch, content[i + 1]):X4}");
+                i++; // the pair is ONE scalar → ONE '?'
+            }
+            else
+            {
+                offenders.Add($"U+{(int)ch:X4}");
+            }
         }
 
-        var latin1 = Encoding.GetEncoding("ISO-8859-1",
-            new EncoderReplacementFallback("?"), DecoderFallback.ReplacementFallback);
-        return latin1.GetBytes(content);
+        if (replaced > 0)
+        {
+            nodeContext.Warning(
+                "DilosSftpWrite: {0} non-ISO-8859-1 character(s) in '{1}' replaced with '?' (distinct: {2})",
+                replaced, remotePath, string.Join(" ", offenders!));
+        }
+
+        return DilosFile.Encoding.GetBytes(sanitized?.ToString() ?? content);
     }
 }

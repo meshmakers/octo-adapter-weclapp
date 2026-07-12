@@ -5,15 +5,16 @@
 # weclapp-orders-to-ai.yaml (see its header for the source-verification status of the
 # built-in sections).
 #
-# NOTE: the trigger enriches each article's supplySources reference stubs with the full
-# articleSupplySource entities (EK prices) — one extra entity fetch per poll
-# (customer-verified 2026-07-08; commit 0f521a2).
+# NOTE: supply-source enrichment is OFF here — this pipeline maps no purchase prices
+# into CK, so the (expensive) full articleSupplySource pull would be discarded. The AS
+# delivery pipeline keeps it on (EK-Preis field).
 
 triggers:
   - type: WeClappFetch@1
     baseUrl: https://REPLACE-TENANT.weclapp.com/webapp/api/v1
     apiKey: ${WECLAPP_API_KEY}
     entity: article
+    enrichSupplySources: false    # CK maps no EK prices — skip the heaviest fetch
     pageSize: 100
     pollingIntervalSeconds: 86400
 

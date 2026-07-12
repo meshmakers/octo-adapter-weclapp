@@ -7,7 +7,9 @@
 # and the double poll is irrelevant at a daily interval.
 #
 # File name: DilosRender emits AS<yyyyMMddHHmmss>.txt (Vienna local time, Billbee
-# precedent) into $.dilosAsFileName; SftpUpload reads it via fileNamePath.
+# precedent) into $.dilosAsFileName; DilosSftpWrite reads it via fileNamePath.
+# System articles (LOADING_EQUIPMENT) are excluded by the AS render itself — this
+# pipeline has no WeClappToCk stage that would otherwise drop them.
 #
 # NOTE: the trigger enriches each article's supplySources reference stubs with the full
 # articleSupplySource entities (EK prices) — one extra entity fetch per poll

@@ -280,9 +280,37 @@ public class DilosRenderNodeTests
             A<ValueKinds>._, A<TargetValueWriteModes>._)).MustHaveHappenedOnceExactly();
     }
 
-    /// <summary>Fixed clock for deterministic AS file-name tests.</summary>
-    private sealed class FixedTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    // The dedicated AS delivery pipeline has no WeClappToCk stage (which used to end the
+    // pipeline for system articles) — the AS render must exclude them itself, or loading
+    // equipment (pallets) leaks into the DILOS article master file.
+    [Fact]
+    public async Task ProcessObjectAsync_AsMode_ExcludesSystemArticles()
     {
-        public override DateTimeOffset GetUtcNow() => utcNow;
+        var config = Configure("AS");
+        var articles = new List<WeClappArticle?>
+        {
+            new() { Id = "1", Name = "Ersatzglas VOLT", ArticleNumber = "VOLT-EG" },
+            new() { Id = "2", Name = "Europalette", ArticleNumber = "PAL-1", ArticleType = "LOADING_EQUIPMENT" },
+        };
+        A.CallTo(() => _dataContext.GetArray<WeClappArticle>("$.items")).Returns(articles);
+
+        await _sut.ProcessObjectAsync(_dataContext, _nodeContext);
+
+        var expected = DilosArticleWriter.RenderLine(articles[0]!, DilosArticleContext.Default) + "\n";
+        A.CallTo(() => _dataContext.Set(config.TargetPath, expected, config.DocumentMode,
+            config.TargetValueKind, config.TargetValueWriteMode)).MustHaveHappenedOnceExactly();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_AiModeFileNameWithNullId_ThrowsInsteadOfNre()
+    {
+        // STJ overwrites the "" default with null when the JSON carries "id": null —
+        // the guard must answer with the domain exception, not a NullReferenceException.
+        Configure("AI", submandant: "51696697501", fileNameTargetPath: "$.dilosAiFileName");
+        A.CallTo(() => _dataContext.GetArray<WeClappSalesOrder>("$.items"))
+            .Returns(new List<WeClappSalesOrder?> { new() { Id = null!, OrderNumber = "74299", CustomerNumber = "1" } });
+
+        await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
+            () => _sut.ProcessObjectAsync(_dataContext, _nodeContext));
     }
 }

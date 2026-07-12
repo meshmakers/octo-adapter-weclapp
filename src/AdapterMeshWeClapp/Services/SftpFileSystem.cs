@@ -56,3 +56,33 @@ public interface ISftpFileSystemFactory
     /// <summary>Opens a connected session; the caller disposes it after the poll.</summary>
     ISftpFileSystem Connect(SftpConnectionSettings settings);
 }
+
+/// <summary>
+/// Shared resolution of a tenant SFTP GlobalConfiguration entry — one validation for both
+/// transfer directions (DilosFileFetch@1 and DilosSftpWrite@1), so a half-configured entry
+/// fails with the same clear message everywhere instead of reaching SSH.NET with empty
+/// credentials.
+/// </summary>
+public static class SftpConnectionSettingsResolver
+{
+    public static SftpConnectionSettings ResolveSftpSettings(
+        this Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.IGlobalConfiguration globalConfiguration,
+        string serverConfiguration)
+    {
+        if (!globalConfiguration.IsDefined(serverConfiguration))
+        {
+            throw new WeClappPipelineExecutionException(
+                $"Global configuration '{serverConfiguration}' is not defined for this pipeline " +
+                "— link the configuration entity to the pipeline (Uses association)");
+        }
+
+        var settings = globalConfiguration.GetValue<SftpConnectionSettings>(serverConfiguration);
+        if (string.IsNullOrWhiteSpace(settings.Password) && string.IsNullOrWhiteSpace(settings.PrivateKey))
+        {
+            throw new WeClappPipelineExecutionException(
+                $"Global configuration '{serverConfiguration}' has neither password nor private key");
+        }
+
+        return settings;
+    }
+}

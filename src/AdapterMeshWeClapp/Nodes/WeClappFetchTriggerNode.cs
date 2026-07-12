@@ -42,6 +42,11 @@ public record WeClappFetchTriggerNodeConfiguration : TriggerNodeConfiguration
     /// per run with all articles). Batch is only valid for entity "article".</summary>
     public string EmitMode { get; set; } = "PerItem";
 
+    /// <summary>Resolve supply-source reference stubs into full articleSupplySource entities
+    /// (EK prices; one extra entity fetch per poll). The AS delivery needs them (EK-Preis
+    /// field); pipelines that do not read prices (CK sync) set false and skip the fetch.</summary>
+    public bool EnrichSupplySources { get; set; } = true;
+
     /// <summary>Retry attempts for transient HTTP failures (5xx/408/429/network), exponential backoff.</summary>
     public int MaxRetries { get; set; } = 4;
 
@@ -177,7 +182,7 @@ public class WeClappFetchTriggerNode(
         // articleSupplySource entity, which has no articleId of its own
         // (customer-verified 2026-07-08). One entity fetch per poll resolves the stubs.
         Dictionary<string, JsonNode>? sourcesById = null;
-        if (articles.Any(a => a["supplySources"]?.AsArray() is { Count: > 0 }))
+        if (config.EnrichSupplySources && articles.Any(a => a["supplySources"]?.AsArray() is { Count: > 0 }))
         {
             var sources = await FetchAllPagesAsync(http, config, "articleSupplySource", "", cancellationToken);
             sourcesById = sources
@@ -185,8 +190,7 @@ public class WeClappFetchTriggerNode(
                 .ToDictionary(s => s["id"]!.ToString(), s => s);
         }
 
-        var enrichedItems = new List<JsonNode>();
-        foreach (var article in articles)
+        JsonNode Enrich(JsonNode article)
         {
             var item = article.DeepClone();
             if (sourcesById is not null && item["supplySources"]?.AsArray() is { Count: > 0 } stubs)
@@ -204,7 +208,7 @@ public class WeClappFetchTriggerNode(
                 item["supplySources"] = resolved;
             }
 
-            enrichedItems.Add(item);
+            return item;
         }
 
         if (config.EmitMode == "Batch")
@@ -212,24 +216,24 @@ public class WeClappFetchTriggerNode(
             // One execution per poll carrying ALL articles — the AS collector shape
             // (golden precedent: one AS file per run). Zero articles → no execution,
             // an empty AS upload would be a false "no articles exist" snapshot.
-            if (enrichedItems.Count == 0)
+            if (articles.Count == 0)
             {
                 return;
             }
 
             var items = new JsonArray();
-            foreach (var item in enrichedItems)
+            foreach (var article in articles)
             {
-                items.Add(item);
+                items.Add(Enrich(article));
             }
 
             await ExecutePipelineAsync(context, new JsonObject { ["items"] = items });
             return;
         }
 
-        foreach (var item in enrichedItems)
+        foreach (var article in articles)
         {
-            var document = new JsonObject { ["item"] = item };
+            var document = new JsonObject { ["item"] = Enrich(article) };
             await ExecutePipelineAsync(context, document);
         }
     }

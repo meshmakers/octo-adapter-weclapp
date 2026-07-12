@@ -28,7 +28,8 @@ public class WeClappFetchTriggerNodeTests
     }
 
     private WeClappFetchTriggerNodeConfiguration Configure(string entity, int pageSize = 100,
-        string additionalQuery = "", int maxRetries = 4, string emitMode = "PerItem")
+        string additionalQuery = "", int maxRetries = 4, string emitMode = "PerItem",
+        bool enrichSupplySources = true)
     {
         var config = new WeClappFetchTriggerNodeConfiguration
         {
@@ -40,6 +41,7 @@ public class WeClappFetchTriggerNodeTests
             MaxRetries = maxRetries,
             RetryBackoffBaseSeconds = 0,
             EmitMode = emitMode,
+            EnrichSupplySources = enrichSupplySources,
         };
         A.CallTo(() => _nodeContext.GetNodeConfiguration<WeClappFetchTriggerNodeConfiguration>()).Returns(config);
         return config;
@@ -94,6 +96,24 @@ public class WeClappFetchTriggerNodeTests
         var enriched = _executedDocuments[0]!["item"]!["supplySources"]!.AsArray();
         Assert.Equal("12.34", enriched[0]!["articlePrices"]![0]!["price"]!.ToString());
         Assert.Empty(_executedDocuments[1]!["item"]!["supplySources"]!.AsArray());
+    }
+
+    [Fact]
+    public async Task FetchOnce_EnrichmentDisabled_SkipsSupplySourceFetchDespiteStubs()
+    {
+        // Pipelines that never read prices (CK sync) opt out — the full articleSupplySource
+        // pull is the most expensive call of the poll and would be discarded entirely.
+        Configure("article", enrichSupplySources: false);
+        var handler = new FakeHttpMessageHandler((req, _) =>
+            FakeHttpMessageHandler.Json(
+                """{"result":[{"id":"1","supplySources":[{"id":"ref1","articleSupplySourceId":"S1"}]}]}"""));
+        var sut = CreateSut(handler);
+
+        await sut.FetchOnceAsync(_context);
+
+        Assert.DoesNotContain(handler.Requests, r => r.Url.Contains("articleSupplySource"));
+        var document = Assert.Single(_executedDocuments);
+        Assert.Single(document!["item"]!["supplySources"]!.AsArray()); // stubs pass through untouched
     }
 
     [Fact]

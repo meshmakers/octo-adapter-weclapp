@@ -155,7 +155,9 @@ public class PipelineChainIntegrationTests
         var handler = new FakeHttpMessageHandler((_, _) => FakeHttpMessageHandler.Json("""
             {"result":[
               {"id":"43222003744925","name":"Ersatzglas VOLT","articleNumber":"VOLT-EG","unitName":"pc."},
-              {"id":"43222003744999","name":"Brille NOVA Größe L","articleNumber":"NOVA-01","unitName":"pc."}
+              {"id":"43222003744999","name":"Brille NOVA Größe L","articleNumber":"NOVA-01","unitName":"pc."},
+              {"id":"43222003745000","name":"Europalette","articleNumber":"PAL-1","unitName":"pc.",
+               "articleType":"LOADING_EQUIPMENT"}
             ]}
             """));
         var httpClientFactory = A.Fake<IHttpClientFactory>();
@@ -197,7 +199,7 @@ public class PipelineChainIntegrationTests
 
         // --- Phase 3: Latin-1 delivery — the umlaut in "Größe" must land as ONE
         //     ISO-8859-1 byte (0xF6), exactly like the golden Billbee-produced files ---
-        var etlContext = A.Fake<IEtlContext>();
+        var etlContext = A.Fake<Meshmakers.Octo.Sdk.MeshAdapter.IMeshEtlContext>();
         var globalConfiguration = A.Fake<IGlobalConfiguration>();
         A.CallTo(() => etlContext.GlobalConfiguration).Returns(globalConfiguration);
         A.CallTo(() => globalConfiguration.IsDefined("LkvSftp")).Returns(true);
@@ -230,11 +232,5 @@ public class PipelineChainIntegrationTests
         Assert.Equal("/AS20260205143134.txt", uploadedPath);
         Assert.Equal(Encoding.Latin1.GetBytes(dilos), uploadedBytes);
         Assert.Contains((byte)0xF6, uploadedBytes!); // ö as a single Latin-1 byte, not UTF-8 0xC3 0xB6
-    }
-
-    /// <summary>Fixed clock for the deterministic AS file-name assertion.</summary>
-    private sealed class FixedTimeProvider(DateTimeOffset utcNow) : TimeProvider
-    {
-        public override DateTimeOffset GetUtcNow() => utcNow;
     }
 }

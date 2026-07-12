@@ -1,5 +1,5 @@
-using Lkv.WeClapp.Core;
 using Lkv.WeClapp.Core.Dilos;
+using Lkv.WeClapp.Core.Mapping;
 using Lkv.WeClapp.Core.Model;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
@@ -24,10 +24,10 @@ public record DilosRenderNodeConfiguration : SourceTargetPathNodeConfiguration
     /// Required for mode AI, unused for AS.</summary>
     public string Submandant { get; set; } = "";
 
-    /// <summary>Optional JSONPath to receive the golden DILOS file name (for SftpUpload's
-    /// <c>fileNamePath</c>): AI → "AI{Auftragsnummer1}.txt" (= the WeClapp id, matching
-    /// K* field 29; exactly one order required), AS → "AS{yyyyMMddHHmmss}.txt" in Vienna
-    /// local time. Empty = no name is written.</summary>
+    /// <summary>Optional JSONPath to receive the golden DILOS file name (consumed by
+    /// DilosSftpWrite's <c>fileNamePath</c>): AI → "AI{Auftragsnummer1}.txt" (= the WeClapp
+    /// id, matching the K* line; exactly one order required), AS → "AS{yyyyMMddHHmmss}.txt"
+    /// in Vienna local time. Empty = no name is written.</summary>
     public string FileNameTargetPath { get; set; } = "";
 }
 
@@ -53,10 +53,10 @@ public class DilosRenderNode(NodeDelegate next, TimeProvider? timeProvider = nul
         switch (config.Mode)
         {
             case "AS":
-                content = RenderArticles(dataContext, config);
+                content = RenderArticles(dataContext, config, nodeContext);
                 if (config.FileNameTargetPath.Length > 0)
                 {
-                    fileName = BuildAsFileName();
+                    fileName = DilosFile.AsFileName(_timeProvider.GetUtcNow());
                 }
 
                 break;
@@ -85,22 +85,30 @@ public class DilosRenderNode(NodeDelegate next, TimeProvider? timeProvider = nul
         {
             dataContext.Set(config.FileNameTargetPath, fileName, config.DocumentMode,
                 ValueKinds.Simple, TargetValueWriteModes.Overwrite);
-            nodeContext.Info("DilosRender: rendered {0} content ({1} chars) as '{2}'",
-                config.Mode, content.Length, fileName);
         }
-        else
-        {
-            nodeContext.Info("DilosRender: rendered {0} content ({1} chars)", config.Mode, content.Length);
-        }
+
+        nodeContext.Info("DilosRender: rendered {0} content ({1} chars){2}",
+            config.Mode, content.Length, fileName.Length > 0 ? $" as '{fileName}'" : "");
 
         await next(dataContext, nodeContext);
     }
 
-    private static string RenderArticles(IDataContext dataContext, DilosRenderNodeConfiguration config)
+    private static string RenderArticles(IDataContext dataContext, DilosRenderNodeConfiguration config,
+        INodeContext nodeContext)
     {
         var articles = ReadOneOrMany<WeClappArticle>(dataContext, config.Path, "article");
 
-        var lines = articles
+        // System articles (loading equipment such as pallets) never belong in the AS master
+        // data file. The combined pipeline used to drop them via the upstream WeClappToCk
+        // node; the dedicated AS delivery pipeline has no CK stage, so the render owns it.
+        var deliverable = articles.Where(a => !WeClappToDilos.IsSystemArticle(a)).ToList();
+        if (deliverable.Count < articles.Count)
+        {
+            nodeContext.Info("DilosRender: skipped {0} system article(s) (loading equipment)",
+                articles.Count - deliverable.Count);
+        }
+
+        var lines = deliverable
             .Select(a => DilosArticleWriter.RenderLine(a, DilosArticleContext.Default));
 
         return JoinLf(lines);
@@ -121,19 +129,9 @@ public class DilosRenderNode(NodeDelegate next, TimeProvider? timeProvider = nul
         return JoinLf(lines);
     }
 
-    /// <summary>Golden AS name: "AS" + Vienna-local yyyyMMddHHmmss + ".txt" (Billbee precedent
-    /// AS20240206020204.txt; Vienna because DILOS runs Austrian local time — a UTC stamp would
-    /// date late-evening polls to the previous day).</summary>
-    private string BuildAsFileName()
-    {
-        var vienna = TimeZoneInfo.ConvertTime(_timeProvider.GetUtcNow(), ViennaTime.Zone);
-        return $"AS{vienna:yyyyMMddHHmmss}.txt";
-    }
-
-    /// <summary>Golden AI name: "AI" + Auftragsnummer1 + ".txt" (Billbee precedent
-    /// AI5910748889425.txt). Auftragsnummer1 is the WeClapp id — the SAME number the
-    /// K* line carries in field 29; the shop orderNumber is Auftragsnummer2 and must
-    /// not name the file. Defined per single order, so a batch here is a config error.</summary>
+    /// <summary>The AI name is defined per single order (golden: one file per order), so a
+    /// batch here is a config error; the name format itself lives in Core (DilosFile) next
+    /// to the writers, keeping it in lockstep with the K* line's Auftragsnummer1.</summary>
     private static string BuildAiFileName(List<WeClappSalesOrder> orders)
     {
         if (orders.Count != 1)
@@ -144,13 +142,13 @@ public class DilosRenderNode(NodeDelegate next, TimeProvider? timeProvider = nul
         }
 
         var auftragsnummer1 = orders[0].Id;
-        if (auftragsnummer1.Length == 0)
+        if (string.IsNullOrEmpty(auftragsnummer1))
         {
             throw new WeClappPipelineExecutionException(
                 "Order has no id (Auftragsnummer1) — cannot build the AI file name");
         }
 
-        return $"AI{auftragsnummer1}.txt";
+        return DilosFile.AiFileName(auftragsnummer1);
     }
 
     /// <summary>Reads the source as an array OR a single object — per-document pipelines

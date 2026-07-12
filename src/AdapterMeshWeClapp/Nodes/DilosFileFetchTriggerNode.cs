@@ -143,18 +143,7 @@ public class DilosFileFetchTriggerNode(
     {
         var config = context.NodeContext.GetNodeConfiguration<DilosFileFetchTriggerNodeConfiguration>();
 
-        if (!context.GlobalConfiguration.IsDefined(config.ServerConfiguration))
-        {
-            throw new WeClappPipelineExecutionException(
-                $"DilosFileFetch: global configuration '{config.ServerConfiguration}' is not defined for the tenant");
-        }
-
-        var settings = context.GlobalConfiguration.GetValue<SftpConnectionSettings>(config.ServerConfiguration);
-        if (string.IsNullOrWhiteSpace(settings.Password) && string.IsNullOrWhiteSpace(settings.PrivateKey))
-        {
-            throw new WeClappPipelineExecutionException(
-                $"DilosFileFetch: global configuration '{config.ServerConfiguration}' has neither password nor private key");
-        }
+        var settings = context.GlobalConfiguration.ResolveSftpSettings(config.ServerConfiguration);
 
         using var sftp = sftpFileSystemFactory.Connect(settings);
 
