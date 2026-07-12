@@ -1,3 +1,4 @@
+using Lkv.WeClapp.Core;
 using Lkv.WeClapp.Core.Dilos;
 using Lkv.WeClapp.Core.Model;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
@@ -22,6 +23,11 @@ public record DilosRenderNodeConfiguration : SourceTargetPathNodeConfiguration
     /// <summary>WeClapp Mandanten-ID → DILOS "Submandant" (constant per tenant; LKV maps it).
     /// Required for mode AI, unused for AS.</summary>
     public string Submandant { get; set; } = "";
+
+    /// <summary>Optional JSONPath to receive the golden DILOS file name (for SftpUpload's
+    /// <c>fileNamePath</c>): AI → "AI{OrderNumber}.txt" (exactly one order required),
+    /// AS → "AS{yyyyMMddHHmmss}.txt" in Vienna local time. Empty = no name is written.</summary>
+    public string FileNameTargetPath { get; set; } = "";
 }
 
 /// <summary>
@@ -31,25 +37,60 @@ public record DilosRenderNodeConfiguration : SourceTargetPathNodeConfiguration
 /// </summary>
 [NodeConfiguration(typeof(DilosRenderNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
-public class DilosRenderNode(NodeDelegate next) : IPipelineNode
+public class DilosRenderNode(NodeDelegate next, TimeProvider? timeProvider = null) : IPipelineNode
 {
+    private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
+
     /// <inheritdoc />
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
         var config = nodeContext.GetNodeConfiguration<DilosRenderNodeConfiguration>();
 
-        var content = config.Mode switch
+        string content;
+        var fileName = "";
+
+        switch (config.Mode)
         {
-            "AS" => RenderArticles(dataContext, config),
-            "AI" => RenderOrders(dataContext, config),
-            _ => throw new WeClappPipelineExecutionException(
-                $"Unknown DilosRender mode '{config.Mode}' (expected 'AS' or 'AI')"),
-        };
+            case "AS":
+                content = RenderArticles(dataContext, config);
+                if (config.FileNameTargetPath.Length > 0)
+                {
+                    fileName = BuildAsFileName();
+                }
+
+                break;
+
+            case "AI":
+            {
+                var orders = ReadOneOrMany<WeClappSalesOrder>(dataContext, config.Path, "order");
+                content = RenderOrders(orders, config);
+                if (config.FileNameTargetPath.Length > 0)
+                {
+                    fileName = BuildAiFileName(orders);
+                }
+
+                break;
+            }
+
+            default:
+                throw new WeClappPipelineExecutionException(
+                    $"Unknown DilosRender mode '{config.Mode}' (expected 'AS' or 'AI')");
+        }
 
         dataContext.Set(config.TargetPath, content, config.DocumentMode,
             config.TargetValueKind, config.TargetValueWriteMode);
 
-        nodeContext.Info("DilosRender: rendered {0} content ({1} chars)", config.Mode, content.Length);
+        if (fileName.Length > 0)
+        {
+            dataContext.Set(config.FileNameTargetPath, fileName, config.DocumentMode,
+                ValueKinds.Simple, TargetValueWriteModes.Overwrite);
+            nodeContext.Info("DilosRender: rendered {0} content ({1} chars) as '{2}'",
+                config.Mode, content.Length, fileName);
+        }
+        else
+        {
+            nodeContext.Info("DilosRender: rendered {0} content ({1} chars)", config.Mode, content.Length);
+        }
 
         await next(dataContext, nodeContext);
     }
@@ -64,14 +105,12 @@ public class DilosRenderNode(NodeDelegate next) : IPipelineNode
         return JoinLf(lines);
     }
 
-    private static string RenderOrders(IDataContext dataContext, DilosRenderNodeConfiguration config)
+    private static string RenderOrders(List<WeClappSalesOrder> orders, DilosRenderNodeConfiguration config)
     {
         if (config.Submandant.Length == 0)
         {
             throw new WeClappPipelineExecutionException("DilosRender mode 'AI' requires Submandant");
         }
-
-        var orders = ReadOneOrMany<WeClappSalesOrder>(dataContext, config.Path, "order");
 
         var ctx = new DilosOrderContext { Submandant = config.Submandant };
         var lines = orders
@@ -79,6 +118,36 @@ public class DilosRenderNode(NodeDelegate next) : IPipelineNode
                 .Concat(DilosOrderWriter.RenderPositions(o, ctx)));
 
         return JoinLf(lines);
+    }
+
+    /// <summary>Golden AS name: "AS" + Vienna-local yyyyMMddHHmmss + ".txt" (Billbee precedent
+    /// AS20240206020204.txt; Vienna because DILOS runs Austrian local time — a UTC stamp would
+    /// date late-evening polls to the previous day).</summary>
+    private string BuildAsFileName()
+    {
+        var vienna = TimeZoneInfo.ConvertTime(_timeProvider.GetUtcNow(), ViennaTime.Zone);
+        return $"AS{vienna:yyyyMMddHHmmss}.txt";
+    }
+
+    /// <summary>Golden AI name: "AI" + OrderNumber + ".txt" (Billbee precedent
+    /// AI5910748889425.txt) — defined per single order, so a batch here is a config error.</summary>
+    private static string BuildAiFileName(List<WeClappSalesOrder> orders)
+    {
+        if (orders.Count != 1)
+        {
+            throw new WeClappPipelineExecutionException(
+                $"AI file name requires exactly one order per execution, got {orders.Count} " +
+                "(golden precedent: one AI file per order)");
+        }
+
+        var orderNumber = orders[0].OrderNumber;
+        if (orderNumber.Length == 0)
+        {
+            throw new WeClappPipelineExecutionException(
+                $"Order '{orders[0].Id}' has no orderNumber — cannot build the AI file name");
+        }
+
+        return $"AI{orderNumber}.txt";
     }
 
     /// <summary>Reads the source as an array OR a single object — per-document pipelines
