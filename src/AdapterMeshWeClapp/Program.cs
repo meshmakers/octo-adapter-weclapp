@@ -48,13 +48,15 @@ await adapterBuilder.RunAsync(args, builder =>
     builder.Services.AddSingleton<ISftpFileSystemFactory, SshNetSftpFileSystemFactory>();
 
     // Add mesh adapter nodes and services to the container:
-    // outbound ingestion design (WeClappFetch → WeClappToCk → DilosRender) plus the
-    // AR/BE return path (DilosFileFetch → WeClappArWrite / WeClappBeWrite).
+    // outbound ingestion design (WeClappFetch → WeClappToCk → DilosRender →
+    // DilosSftpWrite) plus the AR/BE return path (DilosFileFetch → WeClappArWrite /
+    // WeClappBeWrite).
     builder.Services.AddOctoMeshAdapter()
         .RegisterTriggerNode<WeClappFetchTriggerNode>()
         .RegisterTriggerNode<DilosFileFetchTriggerNode>()
         .RegisterNode<WeClappToCkNode>()
         .RegisterNode<DilosRenderNode>()
+        .RegisterNode<DilosSftpWriteNode>()
         .RegisterNode<WeClappArWriteNode>()
         .RegisterNode<WeClappBeWriteNode>();
 

@@ -12,9 +12,8 @@
 # NOTE: the trigger enriches each article's supplySources reference stubs with the full
 # articleSupplySource entities (EK prices) — one extra entity fetch per poll
 # (customer-verified 2026-07-08; commit 0f521a2).
-# ⚠ ENCODING: SftpUploadNode writes UTF-8; the golden (DILOS-import-proven) files are
-# ISO-8859-1 (see weclapp-orders-to-ai.yaml header) — DilosSftpWrite@1 (Latin-1) is the
-# planned follow-up; 32/48 customer articles carry non-ASCII in AS-relevant fields.
+# Encoding: delivered via DilosSftpWrite@1 as ISO-8859-1 (golden format; 32/48 customer
+# articles carry non-ASCII — the built-in SftpUpload@1 would write UTF-8 and corrupt them).
 
 triggers:
   - type: WeClappFetch@1
@@ -33,9 +32,9 @@ transformations:
     targetPath: $.dilosAs
     fileNameTargetPath: $.dilosAsFileName   # AS<yyyyMMddHHmmss>.txt, Vienna local time
 
-  # --- File delivery (built-in SftpUpload@1) ---
-  - type: SftpUpload@1
-    description: Deliver the AS file to the LKV SFTP root
+  # --- File delivery (own DilosSftpWrite@1 — ISO-8859-1, golden format) ---
+  - type: DilosSftpWrite@1
+    description: Deliver the AS file to the LKV SFTP root as ISO-8859-1
     serverConfiguration: LkvSftp        # SAME tenant GlobalConfiguration as the return path
     remoteDirectory: /
     fileNamePath: $.dilosAsFileName

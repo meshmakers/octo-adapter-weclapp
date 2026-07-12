@@ -42,6 +42,10 @@ public interface ISftpFileSystem : IDisposable
     /// <summary>Downloads a remote file as text (DILOS AR/BE files are pure ASCII — golden-verified).</summary>
     string DownloadText(string fullPath);
 
+    /// <summary>Uploads raw bytes to a remote path, overwriting an existing file — encoding
+    /// is the CALLER's contract (DILOS delivery writes ISO-8859-1).</summary>
+    void UploadBytes(string fullPath, byte[] content);
+
     /// <summary>Deletes a remote file.</summary>
     void DeleteFile(string fullPath);
 }

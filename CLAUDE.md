@@ -17,8 +17,9 @@ dotnet test Octo.WeClappAdapter.slnx -c DebugL
 
 ## Project Structure
 - `src/AdapterMeshWeClapp/` - Mesh adapter host (cloud, connects directly to OctoMesh
-  repositories) + all custom pipeline nodes (ingestion: `WeClappFetch@1`, `WeClappToCk@1`,
-  `DilosRender@1`; return path: `DilosFileFetch@1`, `WeClappArWrite@1`, `WeClappBeWrite@1`)
+  repositories) + all custom pipeline nodes (outbound: `WeClappFetch@1`, `WeClappToCk@1`,
+  `DilosRender@1`, `DilosSftpWrite@1` [ISO-8859-1 delivery]; return path: `DilosFileFetch@1`,
+  `WeClappArWrite@1`, `WeClappBeWrite@1`)
 - `src/Lkv.WeClapp.Core/` - plain core lib: WeClapp DTOs/JSON, WeClapp→DILOS value rules,
   DILOS AS/AI writers, DILOS AR/BE parsers + write-back planners (fail-loud, golden-file verified)
 - `src/charts/octo-weclapp-adapter/` - Helm chart (deployed by the Communication Operator;

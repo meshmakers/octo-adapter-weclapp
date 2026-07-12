@@ -63,6 +63,12 @@ internal sealed class SshNetSftpFileSystem(SftpClient client) : ISftpFileSystem
         return Encoding.UTF8.GetString(stream.ToArray());
     }
 
+    public void UploadBytes(string fullPath, byte[] content)
+    {
+        using var stream = new MemoryStream(content);
+        client.UploadFile(stream, fullPath, canOverride: true);
+    }
+
     public void DeleteFile(string fullPath)
     {
         client.DeleteFile(fullPath);

@@ -127,14 +127,12 @@ transformations:
     targetPath: $.dilosAi
     fileNameTargetPath: $.dilosAiFileName   # AI<OrderNumber>.txt (golden precedent)
 
-  # --- File delivery (built-in SftpUpload@1; config source-verified 2026-07-09) ---
-  # ⚠ ENCODING: SftpUploadNode writes string content as UTF-8 (SftpUploadNode.cs:272).
-  #   The golden (DILOS-import-proven) AI/AS files are ISO-8859-1 with LF. Pure-ASCII
-  #   content is identical in both encodings, but umlauts in names/addresses differ —
-  #   verify with the first LKV integration test; fallback plan: tiny DilosSftpWrite@1
-  #   on the adapter's own ISftpFileSystem (Latin-1), reusing the LkvSftp configuration.
-  - type: SftpUpload@1
-    description: Deliver the AI file to the LKV SFTP root (delete-side handled by LKV)
+  # --- File delivery (own DilosSftpWrite@1 — ISO-8859-1, golden format) ---
+  # The golden (DILOS-import-proven) AI/AS files are ISO-8859-1 with LF; the built-in
+  # SftpUpload@1 writes UTF-8, which corrupts umlauts (45/89 customers carry non-ASCII).
+  # Non-Latin-1 characters are replaced with '?' and reported loudly by the node.
+  - type: DilosSftpWrite@1
+    description: Deliver the AI file to the LKV SFTP root as ISO-8859-1 (delete-side handled by LKV)
     serverConfiguration: LkvSftp        # SAME tenant GlobalConfiguration as the return path
     remoteDirectory: /
     fileNamePath: $.dilosAiFileName

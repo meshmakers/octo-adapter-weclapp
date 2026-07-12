@@ -1,7 +1,9 @@
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using FakeItEasy;
 using Lkv.WeClapp.Core.Model;
+using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Services;
 using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Nodes;
 using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Tests.Nodes;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
@@ -153,7 +155,7 @@ public class PipelineChainIntegrationTests
         var handler = new FakeHttpMessageHandler((_, _) => FakeHttpMessageHandler.Json("""
             {"result":[
               {"id":"43222003744925","name":"Ersatzglas VOLT","articleNumber":"VOLT-EG","unitName":"pc."},
-              {"id":"43222003744999","name":"Brille NOVA","articleNumber":"NOVA-01","unitName":"pc."}
+              {"id":"43222003744999","name":"Brille NOVA Größe L","articleNumber":"NOVA-01","unitName":"pc."}
             ]}
             """));
         var httpClientFactory = A.Fake<IHttpClientFactory>();
@@ -192,6 +194,42 @@ public class PipelineChainIntegrationTests
         Assert.Equal("43222003744999", lines[1].Split('|')[2]);
 
         Assert.Equal("AS20260205143134.txt", dataContext.Get<string>("$.dilosAsFileName"));
+
+        // --- Phase 3: Latin-1 delivery — the umlaut in "Größe" must land as ONE
+        //     ISO-8859-1 byte (0xF6), exactly like the golden Billbee-produced files ---
+        var etlContext = A.Fake<IEtlContext>();
+        var globalConfiguration = A.Fake<IGlobalConfiguration>();
+        A.CallTo(() => etlContext.GlobalConfiguration).Returns(globalConfiguration);
+        A.CallTo(() => globalConfiguration.IsDefined("LkvSftp")).Returns(true);
+        var settings = new SftpConnectionSettings { Host = "h", Username = "u", Password = "p" };
+        A.CallTo(() => globalConfiguration.GetValue<SftpConnectionSettings>("LkvSftp")).Returns(settings);
+        var sftpFactory = A.Fake<ISftpFileSystemFactory>();
+        var sftp = A.Fake<ISftpFileSystem>();
+        A.CallTo(() => sftpFactory.Connect(settings)).Returns(sftp);
+        string? uploadedPath = null;
+        byte[]? uploadedBytes = null;
+        A.CallTo(() => sftp.UploadBytes(A<string>._, A<byte[]>._))
+            .Invokes(call =>
+            {
+                uploadedPath = (string?)call.Arguments[0];
+                uploadedBytes = (byte[]?)call.Arguments[1];
+            });
+
+        A.CallTo(() => nodeContext.GetNodeConfiguration<DilosSftpWriteNodeConfiguration>())
+            .Returns(new DilosSftpWriteNodeConfiguration
+            {
+                ServerConfiguration = "LkvSftp",
+                RemoteDirectory = "/",
+                FileNamePath = "$.dilosAsFileName",
+                Path = "$.dilosAs",
+            });
+
+        var write = new DilosSftpWriteNode((_, _) => Task.CompletedTask, etlContext, sftpFactory);
+        await write.ProcessObjectAsync(dataContext, nodeContext);
+
+        Assert.Equal("/AS20260205143134.txt", uploadedPath);
+        Assert.Equal(Encoding.Latin1.GetBytes(dilos), uploadedBytes);
+        Assert.Contains((byte)0xF6, uploadedBytes!); // ö as a single Latin-1 byte, not UTF-8 0xC3 0xB6
     }
 
     /// <summary>Fixed clock for the deterministic AS file-name assertion.</summary>

@@ -8,7 +8,8 @@ template.
 
 - `src/AdapterMeshWeClapp` — the adapter host (`WebAdapterBuilder`, `IAdapterService`,
   observability/health endpoints, pipeline registration) plus the custom pipeline nodes:
-  - ingestion: `WeClappFetch@1` (trigger), `WeClappToCk@1`, `DilosRender@1`
+  - outbound: `WeClappFetch@1` (trigger, per-item or batch), `WeClappToCk@1`,
+    `DilosRender@1` (content + golden file names), `DilosSftpWrite@1` (ISO-8859-1 delivery)
   - return path: `DilosFileFetch@1` (SFTP trigger), `WeClappArWrite@1`, `WeClappBeWrite@1`
 - `src/Lkv.WeClapp.Core` — plain .NET core library, no platform dependencies:
   - **WeClapp → DILOS (outbound)**: `WeClappJson`, `WeClappToDilos` value rules,
