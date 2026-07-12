@@ -23,7 +23,9 @@ dotnet test Octo.WeClappAdapter.slnx -c DebugL
   DILOS AS/AI writers, DILOS AR/BE parsers + write-back planners (fail-loud, golden-file verified)
 - `src/charts/octo-weclapp-adapter/` - Helm chart (deployed by the Communication Operator;
   httpGet probes on `/healthz/live|ready`)
-- `pipelines/` - tenant pipeline YAMLs; registered via `scripts/om_setup_lkv.ps1`
+- `pipelines/` - tenant pipeline YAMLs (orders→AI per order; articles split into per-item
+  CK sync + batched AS delivery [`emitMode: Batch`, one file per poll]; AR/BE return path);
+  `scripts/om_setup_lkv.ps1` substitutes `${WECLAPP_API_KEY}` + `REPLACE-TENANT` baseUrl
 - `tests/Lkv.WeClapp.Core.Tests/` - xUnit against real LKV golden fixtures
 - `tests/AdapterMeshWeClapp.Tests/` - node/pipeline tests + env-gated live smokes (gates below)
 - `docs/superpowers/` - design specs and implementation plans
