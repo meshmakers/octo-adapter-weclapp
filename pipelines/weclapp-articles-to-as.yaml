@@ -1,73 +1,39 @@
-# Pipeline: WeClapp articles → CK entities + DILOS AS file content (daily article sync).
-# Deployment + key handling identical to weclapp-orders-to-ai.yaml (see its header for
-# the verification status of the built-in sections).
+# Pipeline: WeClapp articles → ONE DILOS AS file per poll (daily article master delivery).
+# The trigger runs in emitMode: Batch and emits a single execution shaped
+# { "items": [ …all articles… ] } — golden precedent is ONE AS file per run
+# (AS20240206020204.txt, 46 lines); per-item execution would produce N single-line
+# files per poll. CK persistence of articles lives in weclapp-articles-to-ck.yaml
+# (per-item) — split on purpose: two simple pipelines instead of one nested one,
+# and the double poll is irrelevant at a daily interval.
+#
+# File name: DilosRender emits AS<yyyyMMddHHmmss>.txt (Vienna local time, Billbee
+# precedent) into $.dilosAsFileName; SftpUpload reads it via fileNamePath.
 #
 # NOTE: the trigger enriches each article's supplySources reference stubs with the full
 # articleSupplySource entities (EK prices) — one extra entity fetch per poll
 # (customer-verified 2026-07-08; commit 0f521a2).
+# ⚠ ENCODING: SftpUploadNode writes UTF-8; the golden (DILOS-import-proven) files are
+# ISO-8859-1 (see weclapp-orders-to-ai.yaml header) — DilosSftpWrite@1 (Latin-1) is the
+# planned follow-up; 32/48 customer articles carry non-ASCII in AS-relevant fields.
 
 triggers:
   - type: WeClappFetch@1
     baseUrl: https://REPLACE-TENANT.weclapp.com/webapp/api/v1
     apiKey: ${WECLAPP_API_KEY}
     entity: article
+    emitMode: Batch               # one execution per poll: { items: [ all articles ] }
     pageSize: 100
     pollingIntervalSeconds: 86400
 
 transformations:
-  - type: WeClappToCk@1
-    description: WeClapp article → CK-shaped document (system articles filtered)
-    mode: Article
-    path: $.item
-    targetPath: $.ck
-
-  # --- CK persistence (built-ins; field names source-verified 2026-07-09,
-  #     first tenant run pending — see weclapp-orders-to-ai.yaml header) ---
-  - type: GetOrCreateRtEntitiesByType@1
-    description: Upsert the Article by its WeClapp id (= DILOS Artikelnummer / AS key)
-    ckTypeId: Industry.Logistics/Article
-    fieldFilters:
-      - attributePath: ArticleNumber
-        operator: Equals                      # FieldFilterOperatorDto member (source-verified)
-        comparisonValuePath: $.ck.Article.ArticleNumber
-    rtIdTargetPath: $.rt.articleRtId
-    ckTypeIdTargetPath: $.rt.articleCkTypeId
-    modOperationPath: $.rt.articleModOperation
-
-  - type: CreateUpdateInfo@1
-    description: Article attribute values (full list → WECLAPP-4228-MAPPING.md)
-    path: $.ck.Article
-    rtIdPath: $.rt.articleRtId
-    ckTypeId: Industry.Logistics/Article
-    updateKindPath: $.rt.articleModOperation
-    attributeUpdates:
-      - attributeName: ArticleNumber
-        valuePath: $.ck.Article.ArticleNumber
-      - attributeName: Name
-        valuePath: $.ck.Article.Name
-      - attributeName: Sku
-        valuePath: $.ck.Article.Sku
-      - attributeName: Ean
-        valuePath: $.ck.Article.Ean
-    targetPath: $.updates
-    targetValueWriteMode: Append      # collect into ONE list — the Overwrite default keeps only the last update
-
-  - type: ApplyChanges@1
-    description: Persist the article upsert
-    path: $.updates
-
   - type: DilosRender@1
-    description: Render the AS line for this article
+    description: Render ALL article lines into one AS file (golden precedent, one file per run)
     mode: AS
-    path: $.item
+    path: $.items
     targetPath: $.dilosAs
+    fileNameTargetPath: $.dilosAsFileName   # AS<yyyyMMddHHmmss>.txt, Vienna local time
 
   # --- File delivery (built-in SftpUpload@1) ---
-  # ⚠ Same UTF-8-vs-Latin-1 encoding caveat as in weclapp-orders-to-ai.yaml.
-  # OPEN (validate at tenant): the article sync collects ALL A* lines of one poll into
-  # ONE AS<yyyyMMddHHmmss>.txt (golden precedent) — per-document pipelines execute once
-  # per article, so the aggregation strategy (collect vs. per-article upload) and the
-  # timestamped file name still need the tenant validation run.
   - type: SftpUpload@1
     description: Deliver the AS file to the LKV SFTP root
     serverConfiguration: LkvSftp        # SAME tenant GlobalConfiguration as the return path

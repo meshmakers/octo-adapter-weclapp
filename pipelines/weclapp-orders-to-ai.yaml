@@ -125,6 +125,7 @@ transformations:
     submandant: "51696697501"   # REPLACE per tenant: WeClapp-Mandanten-Kennung (LKV maps it)
     path: $.item
     targetPath: $.dilosAi
+    fileNameTargetPath: $.dilosAiFileName   # AI<OrderNumber>.txt (golden precedent)
 
   # --- File delivery (built-in SftpUpload@1; config source-verified 2026-07-09) ---
   # ⚠ ENCODING: SftpUploadNode writes string content as UTF-8 (SftpUploadNode.cs:272).
@@ -132,8 +133,6 @@ transformations:
   #   content is identical in both encodings, but umlauts in names/addresses differ —
   #   verify with the first LKV integration test; fallback plan: tiny DilosSftpWrite@1
   #   on the adapter's own ISftpFileSystem (Latin-1), reusing the LkvSftp configuration.
-  # TODO: file name AI<Auftragsnummer1>.txt — have DilosRender@1 also emit the file
-  #   name (small follow-up change) or use PlaceholderReplace@1.
   - type: SftpUpload@1
     description: Deliver the AI file to the LKV SFTP root (delete-side handled by LKV)
     serverConfiguration: LkvSftp        # SAME tenant GlobalConfiguration as the return path

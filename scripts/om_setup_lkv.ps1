@@ -15,6 +15,11 @@ $ErrorActionPreference = "Stop"
 if (-not $env:WECLAPP_TRIAL_API_KEY) {
     throw "WECLAPP_TRIAL_API_KEY is not set. Get the token from WeClapp (Mein Profil → API-Token) and run: setx WECLAPP_TRIAL_API_KEY `"<token>`""
 }
+if (-not $env:WECLAPP_TRIAL_BASEURL) {
+    # The pipeline YAMLs carry a REPLACE-TENANT placeholder in baseUrl — substituting
+    # only the key would leave a nonexistent host in the deployed pipeline.
+    throw "WECLAPP_TRIAL_BASEURL is not set (expected https://<tenant>.weclapp.com/webapp/api/v1)."
+}
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Definition
 
@@ -27,9 +32,11 @@ $pipelineDir = Join-Path $scriptRoot "../pipelines"
 $outDir = Join-Path $env:TEMP "weclapp-pipelines"
 New-Item -ItemType Directory -Force $outDir | Out-Null
 Get-ChildItem $pipelineDir -Filter "*.yaml" | ForEach-Object {
-    (Get-Content $_.FullName -Raw).Replace('${WECLAPP_API_KEY}', $env:WECLAPP_TRIAL_API_KEY) |
+    (Get-Content $_.FullName -Raw).
+        Replace('${WECLAPP_API_KEY}', $env:WECLAPP_TRIAL_API_KEY).
+        Replace('https://REPLACE-TENANT.weclapp.com/webapp/api/v1', $env:WECLAPP_TRIAL_BASEURL.TrimEnd('/')) |
         Set-Content (Join-Path $outDir $_.Name) -NoNewline
-    Write-Host "Prepared $($_.Name) -> $outDir (key substituted, do NOT commit)"
+    Write-Host "Prepared $($_.Name) -> $outDir (key + baseUrl substituted, do NOT commit)"
 }
 
 Write-Host ""
