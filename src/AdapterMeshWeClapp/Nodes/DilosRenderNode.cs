@@ -33,8 +33,9 @@ public record DilosRenderNodeConfiguration : SourceTargetPathNodeConfiguration
 
 /// <summary>
 /// Renders WeClapp objects from the pipeline data context into DILOS file content
-/// (custom node #3 of the ingestion design). Filtering of system records is the
-/// upstream WeClappToCk node's responsibility — this node renders what it receives.
+/// (custom node #3 of the ingestion design). In AS mode this node drops system articles
+/// (loading equipment) itself — the dedicated AS delivery pipeline has no WeClappToCk
+/// stage; in AI mode it renders what it receives.
 /// </summary>
 [NodeConfiguration(typeof(DilosRenderNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global

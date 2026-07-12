@@ -73,9 +73,12 @@ public class DilosSftpWriteNode(
 
         var remotePath = config.RemoteDirectory.TrimEnd('/') + "/" + fileName;
 
-        // Encode (and thereby run the non-Latin-1 detection) BEFORE the dry-run gate: the
-        // dry-run is the pre-go-live validation pass and must surface encoding loss too.
+        // Encode (non-Latin-1 detection) and resolve the SFTP settings BEFORE the dry-run
+        // gate: the dry-run is the pre-go-live validation pass and must surface encoding
+        // loss and a half-configured LkvSftp entry too — only the network upload is skipped.
+        // Encode first so a config error still leaves the encoding warning in the log.
         var bytes = EncodeLatin1(content, remotePath, nodeContext);
+        var settings = etlContext.GlobalConfiguration.ResolveSftpSettings(config.ServerConfiguration);
 
         if (nodeContext.PipelineExecutionMode?.IsDryRun == true)
         {
@@ -84,8 +87,6 @@ public class DilosSftpWriteNode(
             await next(dataContext, nodeContext);
             return;
         }
-
-        var settings = etlContext.GlobalConfiguration.ResolveSftpSettings(config.ServerConfiguration);
 
         using (var sftp = sftpFileSystemFactory.Connect(settings))
         {

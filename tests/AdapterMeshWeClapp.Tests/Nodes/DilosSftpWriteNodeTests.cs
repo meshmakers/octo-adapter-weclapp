@@ -183,6 +183,24 @@ public class DilosSftpWriteNodeTests
         A.CallTo(() => _sftpFactory.Connect(A<SftpConnectionSettings>._)).MustNotHaveHappened();
     }
 
+    [Fact]
+    public async Task ProcessObjectAsync_SdkDryRun_ConfigurationWithoutCredentials_StillThrows()
+    {
+        // The dry-run is the pre-go-live validation pass — a half-configured LkvSftp entry
+        // must surface there too, not on the first real run after flipping dryRun off.
+        Configure();
+        SetDocument("AI1.txt", "K*|x\n");
+        A.CallTo(() => _globalConfiguration.GetValue<SftpConnectionSettings>("LkvSftp"))
+            .Returns(new SftpConnectionSettings { Host = "h", Username = "u" });
+        A.CallTo(() => _nodeContext.PipelineExecutionMode)
+            .Returns(new DefaultPipelineExecutionMode { IsDryRun = true });
+
+        await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
+            () => _sut.ProcessObjectAsync(_dataContext, _nodeContext));
+
+        A.CallTo(() => _sftpFactory.Connect(A<SftpConnectionSettings>._)).MustNotHaveHappened();
+    }
+
     [Theory]
     [InlineData("../AI1.txt")]
     [InlineData("sub/AI1.txt")]
