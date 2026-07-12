@@ -25,8 +25,9 @@ public record DilosRenderNodeConfiguration : SourceTargetPathNodeConfiguration
     public string Submandant { get; set; } = "";
 
     /// <summary>Optional JSONPath to receive the golden DILOS file name (for SftpUpload's
-    /// <c>fileNamePath</c>): AI → "AI{OrderNumber}.txt" (exactly one order required),
-    /// AS → "AS{yyyyMMddHHmmss}.txt" in Vienna local time. Empty = no name is written.</summary>
+    /// <c>fileNamePath</c>): AI → "AI{Auftragsnummer1}.txt" (= the WeClapp id, matching
+    /// K* field 29; exactly one order required), AS → "AS{yyyyMMddHHmmss}.txt" in Vienna
+    /// local time. Empty = no name is written.</summary>
     public string FileNameTargetPath { get; set; } = "";
 }
 
@@ -61,16 +62,16 @@ public class DilosRenderNode(NodeDelegate next, TimeProvider? timeProvider = nul
                 break;
 
             case "AI":
-            {
-                var orders = ReadOneOrMany<WeClappSalesOrder>(dataContext, config.Path, "order");
-                content = RenderOrders(orders, config);
-                if (config.FileNameTargetPath.Length > 0)
                 {
-                    fileName = BuildAiFileName(orders);
-                }
+                    var orders = ReadOneOrMany<WeClappSalesOrder>(dataContext, config.Path, "order");
+                    content = RenderOrders(orders, config);
+                    if (config.FileNameTargetPath.Length > 0)
+                    {
+                        fileName = BuildAiFileName(orders);
+                    }
 
-                break;
-            }
+                    break;
+                }
 
             default:
                 throw new WeClappPipelineExecutionException(
@@ -129,8 +130,10 @@ public class DilosRenderNode(NodeDelegate next, TimeProvider? timeProvider = nul
         return $"AS{vienna:yyyyMMddHHmmss}.txt";
     }
 
-    /// <summary>Golden AI name: "AI" + OrderNumber + ".txt" (Billbee precedent
-    /// AI5910748889425.txt) — defined per single order, so a batch here is a config error.</summary>
+    /// <summary>Golden AI name: "AI" + Auftragsnummer1 + ".txt" (Billbee precedent
+    /// AI5910748889425.txt). Auftragsnummer1 is the WeClapp id — the SAME number the
+    /// K* line carries in field 29; the shop orderNumber is Auftragsnummer2 and must
+    /// not name the file. Defined per single order, so a batch here is a config error.</summary>
     private static string BuildAiFileName(List<WeClappSalesOrder> orders)
     {
         if (orders.Count != 1)
@@ -140,14 +143,14 @@ public class DilosRenderNode(NodeDelegate next, TimeProvider? timeProvider = nul
                 "(golden precedent: one AI file per order)");
         }
 
-        var orderNumber = orders[0].OrderNumber;
-        if (orderNumber.Length == 0)
+        var auftragsnummer1 = orders[0].Id;
+        if (auftragsnummer1.Length == 0)
         {
             throw new WeClappPipelineExecutionException(
-                $"Order '{orders[0].Id}' has no orderNumber — cannot build the AI file name");
+                "Order has no id (Auftragsnummer1) — cannot build the AI file name");
         }
 
-        return $"AI{orderNumber}.txt";
+        return $"AI{auftragsnummer1}.txt";
     }
 
     /// <summary>Reads the source as an array OR a single object — per-document pipelines

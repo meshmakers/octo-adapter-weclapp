@@ -85,6 +85,7 @@ public class PipelineChainIntegrationTests
                 Submandant = "51696697501",
                 Path = "$.item",
                 TargetPath = "$.dilos",
+                FileNameTargetPath = "$.dilosFileName",
             });
 
         var render = new DilosRenderNode((_, _) => Task.CompletedTask);
@@ -121,5 +122,81 @@ public class PipelineChainIntegrationTests
         var shipping = lines[2].Split('|');
         Assert.Equal("-1", shipping[4]);          // shipping cost line marker
         Assert.Equal("4.50", shipping[17]);
+
+        // --- File name: AI + Auftragsnummer1 (= WeClapp id, the SAME number as K* field
+        //     29 above) — golden precedent AI5910748889425.txt. NOT the shop orderNumber.
+        Assert.Equal("AI5910986621265.txt", dataContext.Get<string>("$.dilosFileName"));
+    }
+
+    /// <summary>
+    /// AS collector chain: WeClappFetch in Batch mode emits ONE execution with ALL
+    /// articles; DilosRender renders them into ONE AS content and stamps the golden
+    /// Vienna-local file name (golden precedent: one AS file per run, AS20240206020204.txt).
+    /// </summary>
+    [Fact]
+    public async Task WeClappArticles_BatchFlowRendersOneAsFileWithViennaName()
+    {
+        // --- Phase 1: real fetch node in Batch mode against scripted HTTP ---
+        var triggerContext = A.Fake<ITriggerContext>();
+        var nodeContext = A.Fake<INodeContext>();
+        A.CallTo(() => triggerContext.NodeContext).Returns(nodeContext);
+        A.CallTo(() => nodeContext.GetNodeConfiguration<WeClappFetchTriggerNodeConfiguration>())
+            .Returns(new WeClappFetchTriggerNodeConfiguration
+            {
+                BaseUrl = "https://demo.weclapp.com/webapp/api/v1",
+                ApiKey = "test-key",
+                Entity = "article",
+                EmitMode = "Batch",
+                RetryBackoffBaseSeconds = 0,
+            });
+
+        var handler = new FakeHttpMessageHandler((_, _) => FakeHttpMessageHandler.Json("""
+            {"result":[
+              {"id":"43222003744925","name":"Ersatzglas VOLT","articleNumber":"VOLT-EG","unitName":"pc."},
+              {"id":"43222003744999","name":"Brille NOVA","articleNumber":"NOVA-01","unitName":"pc."}
+            ]}
+            """));
+        var httpClientFactory = A.Fake<IHttpClientFactory>();
+        A.CallTo(() => httpClientFactory.CreateClient(A<string>._)).Returns(new HttpClient(handler));
+
+        JsonNode? document = null;
+        A.CallTo(() => triggerContext.ExecuteAsync(A<ExecutePipelineOptions>._, A<object?>._))
+            .Invokes(call => document = (JsonNode?)call.Arguments[1])
+            .Returns(Task.FromResult<object?>(null));
+
+        var fetch = new WeClappFetchTriggerNode(A.Fake<ILogger<WeClappFetchTriggerNode>>(), httpClientFactory);
+        await fetch.FetchOnceAsync(triggerContext);
+        Assert.NotNull(document);
+
+        // --- Phase 2: real data context + render (fixed clock: 2026-02-05 13:31:34 UTC
+        //     = 14:31:34 Vienna/CET) ---
+        using var dataContext = new DataContextImpl(JsonDocument.Parse(document.ToJsonString()));
+        A.CallTo(() => nodeContext.GetNodeConfiguration<DilosRenderNodeConfiguration>())
+            .Returns(new DilosRenderNodeConfiguration
+            {
+                Mode = "AS",
+                Path = "$.items",
+                TargetPath = "$.dilosAs",
+                FileNameTargetPath = "$.dilosAsFileName",
+            });
+
+        var render = new DilosRenderNode((_, _) => Task.CompletedTask,
+            new FixedTimeProvider(new DateTimeOffset(2026, 2, 5, 13, 31, 34, TimeSpan.Zero)));
+        await render.ProcessObjectAsync(dataContext, nodeContext);
+
+        var dilos = dataContext.Get<string>("$.dilosAs");
+        Assert.NotNull(dilos);
+        var lines = dilos.TrimEnd('\n').Split("\n");
+        Assert.Equal(2, lines.Length);            // ONE content with ALL articles
+        Assert.Equal("43222003744925", lines[0].Split('|')[2]); // f[3] Artikelnummer = WeClapp id
+        Assert.Equal("43222003744999", lines[1].Split('|')[2]);
+
+        Assert.Equal("AS20260205143134.txt", dataContext.Get<string>("$.dilosAsFileName"));
+    }
+
+    /// <summary>Fixed clock for the deterministic AS file-name assertion.</summary>
+    private sealed class FixedTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => utcNow;
     }
 }

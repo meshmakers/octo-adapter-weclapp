@@ -172,18 +172,20 @@ public class DilosRenderNodeTests
     // --- fileNameTargetPath: golden DILOS file naming ------------------------------------
     // Billbee ground truth: SyncOrdersCommand builds "AI" + Auftragsnummer1 + ".txt",
     // SyncProductsCommand builds "AS" + local timestamp + ".txt". Golden samples:
-    // AI5910748889425.txt, AS20240206020204.txt (14-digit yyyyMMddHHmmss). The timestamp
-    // is Vienna-local (DILOS operates Austrian local time; UTC would shift late-evening
-    // polls to the previous day).
+    // AI5910748889425.txt, AS20240206020204.txt (14-digit yyyyMMddHHmmss).
+    // Auftragsnummer1 = the WeClapp id (K* field 29, see the chain test) — NOT the shop
+    // orderNumber (that is Auftragsnummer2): file name and K* line must carry the SAME
+    // number. The AS timestamp is Vienna-local (DILOS operates Austrian local time; UTC
+    // would shift late-evening polls to the previous day).
 
     [Fact]
-    public async Task ProcessObjectAsync_AiModeWithFileNameTargetPath_WritesGoldenOrderFileName()
+    public async Task ProcessObjectAsync_AiModeWithFileNameTargetPath_NamesFileByAuftragsnummer1()
     {
         var config = Configure("AI", submandant: "51696697501", fileNameTargetPath: "$.dilosAiFileName");
         var order = new WeClappSalesOrder
         {
             Id = "5910986621265",
-            OrderNumber = "622075",
+            OrderNumber = "74299",   // Auftragsnummer2 (shop number) — must NOT name the file
             CustomerNumber = "7067387625809",
             OrderItems =
             {
@@ -199,7 +201,7 @@ public class DilosRenderNodeTests
 
         await _sut.ProcessObjectAsync(_dataContext, _nodeContext);
 
-        A.CallTo(() => _dataContext.Set("$.dilosAiFileName", "AI622075.txt", config.DocumentMode,
+        A.CallTo(() => _dataContext.Set("$.dilosAiFileName", "AI5910986621265.txt", config.DocumentMode,
             ValueKinds.Simple, TargetValueWriteModes.Overwrite)).MustHaveHappenedOnceExactly();
         A.CallTo(() => _next(_dataContext, _nodeContext)).MustHaveHappenedOnceExactly();
     }
@@ -222,11 +224,11 @@ public class DilosRenderNodeTests
     }
 
     [Fact]
-    public async Task ProcessObjectAsync_AiModeFileNameWithEmptyOrderNumber_Throws()
+    public async Task ProcessObjectAsync_AiModeFileNameWithEmptyId_Throws()
     {
         Configure("AI", submandant: "51696697501", fileNameTargetPath: "$.dilosAiFileName");
         A.CallTo(() => _dataContext.GetArray<WeClappSalesOrder>("$.items"))
-            .Returns(new List<WeClappSalesOrder?> { new() { Id = "1", OrderNumber = "", CustomerNumber = "1" } });
+            .Returns(new List<WeClappSalesOrder?> { new() { Id = "", OrderNumber = "74299", CustomerNumber = "1" } });
 
         await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
             () => _sut.ProcessObjectAsync(_dataContext, _nodeContext));
