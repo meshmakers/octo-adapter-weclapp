@@ -123,17 +123,21 @@ public class DilosRenderNodeTests
             config.TargetValueKind, config.TargetValueWriteMode)).MustHaveHappenedOnceExactly();
     }
 
+    // Defensive twin of the only-system-articles case below: the Batch trigger never emits
+    // an empty poll, but if an empty array ever reaches the render, emitting an empty AS
+    // file would be a false snapshot (and the write node refuses it) — end the pipeline.
     [Fact]
-    public async Task ProcessObjectAsync_EmptyArray_WritesEmptyContent()
+    public async Task ProcessObjectAsync_EmptyArray_EndsPipelineWithoutOutput()
     {
-        var config = Configure("AS");
+        Configure("AS");
         A.CallTo(() => _dataContext.GetArray<WeClappArticle>("$.items"))
             .Returns(new List<WeClappArticle?>());
 
         await _sut.ProcessObjectAsync(_dataContext, _nodeContext);
 
-        A.CallTo(() => _dataContext.Set(config.TargetPath, "", config.DocumentMode,
-            config.TargetValueKind, config.TargetValueWriteMode)).MustHaveHappenedOnceExactly();
+        A.CallTo(() => _dataContext.Set(A<string>._, A<string>._, A<DocumentModes>._,
+            A<ValueKinds>._, A<TargetValueWriteModes>._)).MustNotHaveHappened();
+        A.CallTo(() => _next(_dataContext, _nodeContext)).MustNotHaveHappened();
     }
 
     [Fact]
@@ -299,6 +303,27 @@ public class DilosRenderNodeTests
         var expected = DilosArticleWriter.RenderLine(articles[0]!, DilosArticleContext.Default) + "\n";
         A.CallTo(() => _dataContext.Set(config.TargetPath, expected, config.DocumentMode,
             config.TargetValueKind, config.TargetValueWriteMode)).MustHaveHappenedOnceExactly();
+    }
+
+    // A batch can consist entirely of loading equipment (e.g. tenant bootstrap before
+    // regular articles exist). Emitting empty content would make the write node throw on
+    // every poll — the render must end the pipeline instead.
+    [Fact]
+    public async Task ProcessObjectAsync_AsMode_BatchWithOnlySystemArticles_EndsPipelineWithoutOutput()
+    {
+        Configure("AS", fileNameTargetPath: "$.dilosAsFileName");
+        var articles = new List<WeClappArticle?>
+        {
+            new() { Id = "1", Name = "Europalette", ArticleNumber = "PAL-1", ArticleType = "LOADING_EQUIPMENT" },
+            new() { Id = "2", Name = "Gitterbox", ArticleNumber = "GIT-1", ArticleType = "LOADING_EQUIPMENT" },
+        };
+        A.CallTo(() => _dataContext.GetArray<WeClappArticle>("$.items")).Returns(articles);
+
+        await _sut.ProcessObjectAsync(_dataContext, _nodeContext);
+
+        A.CallTo(() => _dataContext.Set(A<string>._, A<string>._, A<DocumentModes>._,
+            A<ValueKinds>._, A<TargetValueWriteModes>._)).MustNotHaveHappened();
+        A.CallTo(() => _next(_dataContext, _nodeContext)).MustNotHaveHappened();
     }
 
     [Fact]
