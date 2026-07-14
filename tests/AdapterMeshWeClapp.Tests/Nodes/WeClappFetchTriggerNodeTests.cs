@@ -28,7 +28,8 @@ public class WeClappFetchTriggerNodeTests
     }
 
     private WeClappFetchTriggerNodeConfiguration Configure(string entity, int pageSize = 100,
-        string additionalQuery = "", int maxRetries = 4)
+        string additionalQuery = "", int maxRetries = 4, string emitMode = "PerItem",
+        bool enrichSupplySources = true)
     {
         var config = new WeClappFetchTriggerNodeConfiguration
         {
@@ -39,6 +40,8 @@ public class WeClappFetchTriggerNodeTests
             AdditionalQuery = additionalQuery,
             MaxRetries = maxRetries,
             RetryBackoffBaseSeconds = 0,
+            EmitMode = emitMode,
+            EnrichSupplySources = enrichSupplySources,
         };
         A.CallTo(() => _nodeContext.GetNodeConfiguration<WeClappFetchTriggerNodeConfiguration>()).Returns(config);
         return config;
@@ -93,6 +96,24 @@ public class WeClappFetchTriggerNodeTests
         var enriched = _executedDocuments[0]!["item"]!["supplySources"]!.AsArray();
         Assert.Equal("12.34", enriched[0]!["articlePrices"]![0]!["price"]!.ToString());
         Assert.Empty(_executedDocuments[1]!["item"]!["supplySources"]!.AsArray());
+    }
+
+    [Fact]
+    public async Task FetchOnce_EnrichmentDisabled_SkipsSupplySourceFetchDespiteStubs()
+    {
+        // Pipelines that never read prices (CK sync) opt out — the full articleSupplySource
+        // pull is the most expensive call of the poll and would be discarded entirely.
+        Configure("article", enrichSupplySources: false);
+        var handler = new FakeHttpMessageHandler((req, _) =>
+            FakeHttpMessageHandler.Json(
+                """{"result":[{"id":"1","supplySources":[{"id":"ref1","articleSupplySourceId":"S1"}]}]}"""));
+        var sut = CreateSut(handler);
+
+        await sut.FetchOnceAsync(_context);
+
+        Assert.DoesNotContain(handler.Requests, r => r.Url.Contains("articleSupplySource"));
+        var document = Assert.Single(_executedDocuments);
+        Assert.Single(document!["item"]!["supplySources"]!.AsArray()); // stubs pass through untouched
     }
 
     [Fact]
@@ -220,6 +241,91 @@ public class WeClappFetchTriggerNodeTests
         var sut = CreateSut(new FakeHttpMessageHandler((_, _) => FakeHttpMessageHandler.Json("{}")));
 
         await Assert.ThrowsAsync<WeClappPipelineExecutionException>(() => sut.FetchOnceAsync(_context));
+    }
+
+    // --- emitMode: Batch (AS collector) ---------------------------------------------------
+    // Golden precedent: Billbee delivers ONE AS file per run containing ALL articles
+    // (AS20240206020204.txt, 46 lines) — per-item execution would produce N files per poll.
+    // Batch mode emits a single execution shaped { "items": [ … ] } for the AS pipeline;
+    // the AI/order pipeline stays per-item (one golden AI file per order).
+
+    [Fact]
+    public async Task FetchOnce_ArticleBatchMode_ExecutesOnceWithAllItems()
+    {
+        Configure("article", pageSize: 2, emitMode: "Batch");
+        var handler = new FakeHttpMessageHandler((req, n) => n switch
+        {
+            1 => FakeHttpMessageHandler.Json("""{"result":[{"id":"1","name":"A"},{"id":"2","name":"B"}]}"""),
+            _ => FakeHttpMessageHandler.Json("""{"result":[{"id":"3","name":"C"}]}"""),
+        });
+        var sut = CreateSut(handler);
+
+        await sut.FetchOnceAsync(_context);
+
+        var document = Assert.Single(_executedDocuments);
+        var items = document!["items"]!.AsArray();
+        Assert.Equal(3, items.Count);
+        Assert.Equal("1", items[0]!["id"]!.ToString());
+        Assert.Equal("3", items[2]!["id"]!.ToString());
+        Assert.Null(document["item"]); // batch shape only — no stray per-item key
+    }
+
+    [Fact]
+    public async Task FetchOnce_ArticleBatchMode_StillEnrichesSupplySources()
+    {
+        Configure("article", emitMode: "Batch");
+        var handler = new FakeHttpMessageHandler((req, _) =>
+            req.RequestUri!.ToString().Contains("articleSupplySource")
+                ? FakeHttpMessageHandler.Json(
+                    """{"result":[{"id":"S1","articleNumber":"000123","articlePrices":[{"price":"12.34"}]}]}""")
+                : FakeHttpMessageHandler.Json(
+                    """{"result":[{"id":"1","supplySources":[{"id":"ref1","articleSupplySourceId":"S1"}]}]}"""));
+        var sut = CreateSut(handler);
+
+        await sut.FetchOnceAsync(_context);
+
+        var document = Assert.Single(_executedDocuments);
+        var enriched = document!["items"]![0]!["supplySources"]!.AsArray();
+        Assert.Equal("12.34", enriched[0]!["articlePrices"]![0]!["price"]!.ToString());
+    }
+
+    [Fact]
+    public async Task FetchOnce_ArticleBatchMode_EmptyResultExecutesNothing()
+    {
+        // No articles → no execution at all (an empty AS upload would be a lie of a snapshot).
+        Configure("article", emitMode: "Batch");
+        var handler = new FakeHttpMessageHandler((_, _) => FakeHttpMessageHandler.Json("""{"result":[]}"""));
+        var sut = CreateSut(handler);
+
+        await sut.FetchOnceAsync(_context);
+
+        Assert.Empty(_executedDocuments);
+    }
+
+    [Fact]
+    public async Task FetchOnce_BatchModeForSalesOrder_ThrowsBeforeFetching()
+    {
+        // AI is one golden file per order — a batched order execution has no consumer and
+        // would silently break the per-order file contract. Config error, checked upfront.
+        Configure("salesOrder", emitMode: "Batch");
+        var handler = new FakeHttpMessageHandler((_, _) => FakeHttpMessageHandler.Json("""{"result":[]}"""));
+        var sut = CreateSut(handler);
+
+        await Assert.ThrowsAsync<WeClappPipelineExecutionException>(() => sut.FetchOnceAsync(_context));
+
+        Assert.Empty(handler.Requests);
+    }
+
+    [Fact]
+    public async Task FetchOnce_UnknownEmitModeThrows()
+    {
+        Configure("article", emitMode: "Bulk");
+        var handler = new FakeHttpMessageHandler((_, _) => FakeHttpMessageHandler.Json("""{"result":[]}"""));
+        var sut = CreateSut(handler);
+
+        await Assert.ThrowsAsync<WeClappPipelineExecutionException>(() => sut.FetchOnceAsync(_context));
+
+        Assert.Empty(handler.Requests);
     }
 
     [Fact]

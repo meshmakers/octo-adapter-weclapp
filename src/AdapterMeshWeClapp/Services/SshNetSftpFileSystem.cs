@@ -60,7 +60,15 @@ internal sealed class SshNetSftpFileSystem(SftpClient client) : ISftpFileSystem
     {
         using var stream = new MemoryStream();
         client.DownloadFile(fullPath, stream);
-        return Encoding.UTF8.GetString(stream.ToArray());
+        // DilosFile.Encoding (ISO-8859-1) — identical to UTF-8 for the pure-ASCII golden
+        // AR/BE files, and unlike UTF-8 it cannot mangle a future Latin-1 umlaut byte.
+        return Lkv.WeClapp.Core.Dilos.DilosFile.Encoding.GetString(stream.ToArray());
+    }
+
+    public void UploadBytes(string fullPath, byte[] content)
+    {
+        using var stream = new MemoryStream(content);
+        client.UploadFile(stream, fullPath, canOverride: true);
     }
 
     public void DeleteFile(string fullPath)

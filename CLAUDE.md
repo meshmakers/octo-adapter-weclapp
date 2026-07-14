@@ -17,13 +17,16 @@ dotnet test Octo.WeClappAdapter.slnx -c DebugL
 
 ## Project Structure
 - `src/AdapterMeshWeClapp/` - Mesh adapter host (cloud, connects directly to OctoMesh
-  repositories) + all custom pipeline nodes (ingestion: `WeClappFetch@1`, `WeClappToCk@1`,
-  `DilosRender@1`; return path: `DilosFileFetch@1`, `WeClappArWrite@1`, `WeClappBeWrite@1`)
+  repositories) + all custom pipeline nodes (outbound: `WeClappFetch@1`, `WeClappToCk@1`,
+  `DilosRender@1`, `DilosSftpWrite@1` [ISO-8859-1 delivery]; return path: `DilosFileFetch@1`,
+  `WeClappArWrite@1`, `WeClappBeWrite@1`)
 - `src/Lkv.WeClapp.Core/` - plain core lib: WeClapp DTOs/JSON, WeClapp→DILOS value rules,
   DILOS AS/AI writers, DILOS AR/BE parsers + write-back planners (fail-loud, golden-file verified)
 - `src/charts/octo-weclapp-adapter/` - Helm chart (deployed by the Communication Operator;
   httpGet probes on `/healthz/live|ready`)
-- `pipelines/` - tenant pipeline YAMLs; registered via `scripts/om_setup_lkv.ps1`
+- `pipelines/` - tenant pipeline YAMLs (orders→AI per order; articles split into per-item
+  CK sync + batched AS delivery [`emitMode: Batch`, one file per poll]; AR/BE return path);
+  `scripts/om_setup_lkv.ps1` substitutes `${WECLAPP_API_KEY}` + `REPLACE-TENANT` baseUrl
 - `tests/Lkv.WeClapp.Core.Tests/` - xUnit against real LKV golden fixtures
 - `tests/AdapterMeshWeClapp.Tests/` - node/pipeline tests + env-gated live smokes (gates below)
 - `docs/superpowers/` - design specs and implementation plans

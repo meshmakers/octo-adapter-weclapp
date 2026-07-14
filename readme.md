@@ -8,7 +8,8 @@ template.
 
 - `src/AdapterMeshWeClapp` — the adapter host (`WebAdapterBuilder`, `IAdapterService`,
   observability/health endpoints, pipeline registration) plus the custom pipeline nodes:
-  - ingestion: `WeClappFetch@1` (trigger), `WeClappToCk@1`, `DilosRender@1`
+  - outbound: `WeClappFetch@1` (trigger, per-item or batch), `WeClappToCk@1`,
+    `DilosRender@1` (content + golden file names), `DilosSftpWrite@1` (ISO-8859-1 delivery)
   - return path: `DilosFileFetch@1` (SFTP trigger), `WeClappArWrite@1`, `WeClappBeWrite@1`
 - `src/Lkv.WeClapp.Core` — plain .NET core library, no platform dependencies:
   - **WeClapp → DILOS (outbound)**: `WeClappJson`, `WeClappToDilos` value rules,
@@ -18,8 +19,10 @@ template.
     planners (AR shipment / BE stock delta)
 - `src/charts/octo-weclapp-adapter` — Helm chart; deployed by the Communication
   Operator, probes `/healthz/live` + `/healthz/ready`
-- `pipelines/` — tenant pipeline YAMLs (2× ingestion, 2× return path);
-  `scripts/om_setup_lkv.ps1` registers them (substitutes `${WECLAPP_API_KEY}`)
+- `pipelines/` — tenant pipeline YAMLs (3× outbound: orders→AI per order,
+  articles→CK per item, articles→AS as one batched file per poll; 2× return path);
+  `scripts/om_setup_lkv.ps1` prepares them (substitutes `${WECLAPP_API_KEY}` and
+  the `REPLACE-TENANT` baseUrl)
 - `tests/Lkv.WeClapp.Core.Tests` — xUnit against real LKV golden files
   (specs verified field-by-field; see `docs/superpowers/specs/`)
 - `tests/AdapterMeshWeClapp.Tests` — node/pipeline tests plus multi-gated live smokes

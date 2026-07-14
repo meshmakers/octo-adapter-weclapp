@@ -36,6 +36,17 @@ public record WeClappFetchTriggerNodeConfiguration : TriggerNodeConfiguration
     /// <summary>Seconds between polls (design: articles daily, orders every 15 min — configure per pipeline).</summary>
     public int PollingIntervalSeconds { get; set; } = 900;
 
+    /// <summary>How fetched documents start pipeline executions: "PerItem" (default — one
+    /// execution per document, the AI/CK shape) or "Batch" (one execution per poll shaped
+    /// <c>{ "items": [ … ] }</c> — the AS collector shape; golden precedent is ONE AS file
+    /// per run with all articles). Batch is only valid for entity "article".</summary>
+    public string EmitMode { get; set; } = "PerItem";
+
+    /// <summary>Resolve supply-source reference stubs into full articleSupplySource entities
+    /// (EK prices; one extra entity fetch per poll). The AS delivery needs them (EK-Preis
+    /// field); pipelines that do not read prices (CK sync) set false and skip the fetch.</summary>
+    public bool EnrichSupplySources { get; set; } = true;
+
     /// <summary>Retry attempts for transient HTTP failures (5xx/408/429/network), exponential backoff.</summary>
     public int MaxRetries { get; set; } = 4;
 
@@ -129,6 +140,20 @@ public class WeClappFetchTriggerNode(
     internal async Task FetchOnceAsync(ITriggerContext context, CancellationToken cancellationToken = default)
     {
         var config = context.NodeContext.GetNodeConfiguration<WeClappFetchTriggerNodeConfiguration>();
+
+        if (config.EmitMode is not ("PerItem" or "Batch"))
+        {
+            throw new WeClappPipelineExecutionException(
+                $"Unknown WeClappFetch emitMode '{config.EmitMode}' (expected 'PerItem' or 'Batch')");
+        }
+
+        if (config.EmitMode == "Batch" && config.Entity != "article")
+        {
+            throw new WeClappPipelineExecutionException(
+                "WeClappFetch emitMode 'Batch' is only supported for entity 'article' — " +
+                "orders stay per-item (one golden AI file per order)");
+        }
+
         var http = httpClientFactory.CreateClient(nameof(WeClappFetchTriggerNode));
 
         switch (config.Entity)
@@ -157,7 +182,7 @@ public class WeClappFetchTriggerNode(
         // articleSupplySource entity, which has no articleId of its own
         // (customer-verified 2026-07-08). One entity fetch per poll resolves the stubs.
         Dictionary<string, JsonNode>? sourcesById = null;
-        if (articles.Any(a => a["supplySources"]?.AsArray() is { Count: > 0 }))
+        if (config.EnrichSupplySources && articles.Any(a => a["supplySources"]?.AsArray() is { Count: > 0 }))
         {
             var sources = await FetchAllPagesAsync(http, config, "articleSupplySource", "", cancellationToken);
             sourcesById = sources
@@ -165,7 +190,7 @@ public class WeClappFetchTriggerNode(
                 .ToDictionary(s => s["id"]!.ToString(), s => s);
         }
 
-        foreach (var article in articles)
+        JsonNode Enrich(JsonNode article)
         {
             var item = article.DeepClone();
             if (sourcesById is not null && item["supplySources"]?.AsArray() is { Count: > 0 } stubs)
@@ -183,7 +208,32 @@ public class WeClappFetchTriggerNode(
                 item["supplySources"] = resolved;
             }
 
-            var document = new JsonObject { ["item"] = item };
+            return item;
+        }
+
+        if (config.EmitMode == "Batch")
+        {
+            // One execution per poll carrying ALL articles — the AS collector shape
+            // (golden precedent: one AS file per run). Zero articles → no execution,
+            // an empty AS upload would be a false "no articles exist" snapshot.
+            if (articles.Count == 0)
+            {
+                return;
+            }
+
+            var items = new JsonArray();
+            foreach (var article in articles)
+            {
+                items.Add(Enrich(article));
+            }
+
+            await ExecutePipelineAsync(context, new JsonObject { ["items"] = items });
+            return;
+        }
+
+        foreach (var article in articles)
+        {
+            var document = new JsonObject { ["item"] = Enrich(article) };
             await ExecutePipelineAsync(context, document);
         }
     }

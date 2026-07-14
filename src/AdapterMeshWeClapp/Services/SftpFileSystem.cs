@@ -42,6 +42,10 @@ public interface ISftpFileSystem : IDisposable
     /// <summary>Downloads a remote file as text (DILOS AR/BE files are pure ASCII — golden-verified).</summary>
     string DownloadText(string fullPath);
 
+    /// <summary>Uploads raw bytes to a remote path, overwriting an existing file — encoding
+    /// is the CALLER's contract (DILOS delivery writes ISO-8859-1).</summary>
+    void UploadBytes(string fullPath, byte[] content);
+
     /// <summary>Deletes a remote file.</summary>
     void DeleteFile(string fullPath);
 }
@@ -51,4 +55,34 @@ public interface ISftpFileSystemFactory
 {
     /// <summary>Opens a connected session; the caller disposes it after the poll.</summary>
     ISftpFileSystem Connect(SftpConnectionSettings settings);
+}
+
+/// <summary>
+/// Shared resolution of a tenant SFTP GlobalConfiguration entry — one validation for both
+/// transfer directions (DilosFileFetch@1 and DilosSftpWrite@1), so a half-configured entry
+/// fails with the same clear message everywhere instead of reaching SSH.NET with empty
+/// credentials.
+/// </summary>
+public static class SftpConnectionSettingsResolver
+{
+    public static SftpConnectionSettings ResolveSftpSettings(
+        this Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.IGlobalConfiguration globalConfiguration,
+        string serverConfiguration)
+    {
+        if (!globalConfiguration.IsDefined(serverConfiguration))
+        {
+            throw new WeClappPipelineExecutionException(
+                $"Global configuration '{serverConfiguration}' is not defined for this pipeline " +
+                "— link the configuration entity to the pipeline (Uses association)");
+        }
+
+        var settings = globalConfiguration.GetValue<SftpConnectionSettings>(serverConfiguration);
+        if (string.IsNullOrWhiteSpace(settings.Password) && string.IsNullOrWhiteSpace(settings.PrivateKey))
+        {
+            throw new WeClappPipelineExecutionException(
+                $"Global configuration '{serverConfiguration}' has neither password nor private key");
+        }
+
+        return settings;
+    }
 }
