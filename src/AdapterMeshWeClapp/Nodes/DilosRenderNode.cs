@@ -55,6 +55,15 @@ public class DilosRenderNode(NodeDelegate next, TimeProvider? timeProvider = nul
         {
             case "AS":
                 content = RenderArticles(dataContext, config, nodeContext);
+                if (content.Length == 0)
+                {
+                    // A batch can consist entirely of system articles (e.g. tenant bootstrap
+                    // before regular articles exist); an empty AS file would be a false
+                    // snapshot and the write node refuses it — end the pipeline instead.
+                    nodeContext.Info("DilosRender: batch contains no deliverable articles — skipping AS delivery");
+                    return;
+                }
+
                 if (config.FileNameTargetPath.Length > 0)
                 {
                     fileName = DilosFile.AsFileName(_timeProvider.GetUtcNow());

@@ -66,7 +66,8 @@ public class DilosSftpWriteNode(
         if (string.IsNullOrEmpty(content))
         {
             // An empty DILOS file would be a false snapshot; upstream never emits one
-            // (the Batch trigger skips empty polls), so reaching this node empty is a bug.
+            // (the Batch trigger skips empty polls and DilosRender ends the pipeline when
+            // a batch has no deliverable articles), so reaching this node empty is a bug.
             throw new WeClappPipelineExecutionException(
                 $"No content found at '{config.Path}' — refusing to upload an empty DILOS file");
         }
