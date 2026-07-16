@@ -12,8 +12,8 @@ namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Tests.Nodes;
 
 public class WeClappArWriteNodeTests
 {
-    // Golden AR00006946.TXT verbatim (order 400000001247987, carrier code 9 = ÖPAG legacy
-    // fallback → AUSTRIAN_POST, no matching entity in the mock carrier list,
+    // Golden AR00006946.TXT verbatim (order 400000001247987, carrier code 9 = meaningless
+    // initial placeholder — maps to nothing, tracking is written without a carrier reference;
     // bare tracking number, article 400000001273682 delivered 1, over-delivery open -1).
     private const string GoldenAr =
         "K*|1|1|400000001572890||400000001247987|TEST-123|1001801714|1400137|2|10.04.2024|1|1|2,5\r\n" +
@@ -24,6 +24,12 @@ public class WeClappArWriteNodeTests
     // Same shipment with a DHL carrier code (400) instead of the unmapped 9.
     private static readonly string DhlAr = GoldenAr.Replace(
         "C*|400000001247987|9|", "C*|400000001247987|400|");
+
+    // Same shipment with the GLS transition code (300, real LKV ARs since 2026-07-16).
+    // GLS exists in the WeClapp ecommerceShippingCarrier enum, but tenant carrier entities
+    // may carry only a display name — the node therefore tries the constant AND the name.
+    private static readonly string GlsAr = GoldenAr.Replace(
+        "C*|400000001247987|9|", "C*|400000001247987|300|");
 
     private readonly IDataContext _dataContext = A.Fake<IDataContext>();
     private readonly INodeContext _nodeContext = A.Fake<INodeContext>();
@@ -98,6 +104,59 @@ public class WeClappArWriteNodeTests
     }
 
     [Fact]
+    public async Task Process_GlsTransitionCode_ResolvesCarrierByName()
+    {
+        Configure(GlsAr);
+        var handler = new FakeHttpMessageHandler((req, _) =>
+        {
+            if (req.RequestUri!.ToString().Contains("shippingCarrier"))
+            {
+                // Pilot-shaped tenant: the GLS carrier entity carries NO ecommerce constant —
+                // only the display name can match the DILOS transition code 300.
+                return FakeHttpMessageHandler.Json(
+                    """{"result":[{"id":"77","name":"DHL","ecommerceShippingCarrier":"DHL"},{"id":"88","name":"GLS"}]}""");
+            }
+
+            return DefaultResponder(req);
+        });
+        var sut = CreateSut(handler);
+
+        await sut.ProcessObjectAsync(_dataContext, _nodeContext);
+
+        var dataPut = handler.Requests.First(r =>
+            r.Method == "PUT" && r.Url.Contains("/shipment/id/S1") && !r.Url.Contains("dryRun"));
+        var data = JsonNode.Parse(dataPut.Body!)!;
+        Assert.Equal("88", data["shippingCarrierId"]!.ToString());
+    }
+
+    [Fact]
+    public async Task Process_GlsTransitionCode_ResolvesCarrierByConstantDespiteVerboseName()
+    {
+        Configure(GlsAr);
+        var handler = new FakeHttpMessageHandler((req, _) =>
+        {
+            if (req.RequestUri!.ToString().Contains("shippingCarrier"))
+            {
+                // Tenant with a properly configured entity: verbose display name, but the
+                // GLS ecommerce constant set — the constant match must win, the name
+                // equality ("GLS" vs "GLS Austria") would miss.
+                return FakeHttpMessageHandler.Json(
+                    """{"result":[{"id":"77","name":"DHL","ecommerceShippingCarrier":"DHL"},{"id":"99","name":"GLS Austria","ecommerceShippingCarrier":"GLS"}]}""");
+            }
+
+            return DefaultResponder(req);
+        });
+        var sut = CreateSut(handler);
+
+        await sut.ProcessObjectAsync(_dataContext, _nodeContext);
+
+        var dataPut = handler.Requests.First(r =>
+            r.Method == "PUT" && r.Url.Contains("/shipment/id/S1") && !r.Url.Contains("dryRun"));
+        var data = JsonNode.Parse(dataPut.Body!)!;
+        Assert.Equal("99", data["shippingCarrierId"]!.ToString());
+    }
+
+    [Fact]
     public async Task Process_ExistingNewShipment_FullPutsDataThenStatusShipped()
     {
         Configure();
@@ -133,8 +192,8 @@ public class WeClappArWriteNodeTests
         Assert.Equal("NEW", data["status"]!.ToString()); // SHIPPED is a separate, LAST write
         Assert.Equal("1013408501850970172035", data["packageTrackingNumber"]!.ToString());
         Assert.Null(data["packageTrackingUrl"]); // bare-number carrier: no URL
-        // Code 9 → AUSTRIAN_POST fallback, but the mock list has no such entity (only DHL):
-        // tracking is written without a carrier reference.
+        // Code 9 is a meaningless placeholder (no mapping): tracking is written without
+        // a carrier reference.
         Assert.Null(data["shippingCarrierId"]);
         Assert.Equal(1712700000000, (long)data["shippingDate"]!); // 2024-04-10 00:00 Europe/Vienna (CEST) = 2024-04-09 22:00 UTC
         Assert.Equal("2.5", data["totalWeight"]!.ToString());

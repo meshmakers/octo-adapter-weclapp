@@ -163,6 +163,58 @@ public class ArShipmentWritePlannerTests
     }
 
     [Fact]
+    public void Plan_GlsTransitionCode300_CarriesConstantAndCarrierName()
+    {
+        // Real LKV ARs use 300 for GLS (LKV 2026-07-16). The planner attaches BOTH the
+        // ecommerce constant (GLS exists in the WeClapp enum) and the carrier NAME —
+        // tenant carrier entities may have the constant set, only a display name, or both;
+        // the node tries id, then constant, then name.
+        var ar = GoldenShapedShipment() with
+        {
+            Parcels =
+            [
+                new DilosParcel
+                {
+                    OrderNumber1 = "5910986621265", Carrier = "300",
+                    TrackingNumber = "1013408501850970172035"
+                }
+            ]
+        };
+
+        var plan = ArShipmentWritePlanner.Plan(ar, []);
+
+        var u = plan.Update!;
+        Assert.Equal("300", u.CarrierToken);
+        Assert.Equal("GLS", u.EcommerceShippingCarrier);
+        Assert.Equal("GLS", u.CarrierName);
+    }
+
+    [Fact]
+    public void Plan_LegacyCode9_MapsToNothing()
+    {
+        // 9 was an initial placeholder without meaning (Jürgen 2026-07-16; 100 is Post) —
+        // the earlier ÖPAG reading is withdrawn. The raw token is still carried.
+        var ar = GoldenShapedShipment() with
+        {
+            Parcels =
+            [
+                new DilosParcel
+                {
+                    OrderNumber1 = "5910986621265", Carrier = "9",
+                    TrackingNumber = "1013408501850970172035"
+                }
+            ]
+        };
+
+        var plan = ArShipmentWritePlanner.Plan(ar, []);
+
+        var u = plan.Update!;
+        Assert.Equal("9", u.CarrierToken);
+        Assert.Null(u.EcommerceShippingCarrier);
+        Assert.Null(u.CarrierName);
+    }
+
+    [Fact]
     public void Plan_ShortagesAndOverDelivery_ProduceWarningsButWriteDeliveredQuantities()
     {
         var ar = GoldenShapedShipment() with

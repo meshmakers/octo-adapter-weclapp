@@ -119,10 +119,12 @@ public class WeClappArWriteNode(
 
             // 4. Carrier reference. Primary: C* field 3 is the carrier id as configured in the
             //    shop system (Jürgen 2026-07-08) — for WeClapp the shippingCarrier entity id
-            //    itself. Fallback: legacy DILOS/Billbee code mapped to an ecommerce constant.
+            //    itself. Fallbacks for legacy DILOS codes: the ecommerce constant, then the
+            //    carrier NAME for constant-less carriers (300 = GLS, Jürgen 2026-07-16).
             //    Tracking fields are always written; a carrier entity is never created by us.
             string? shippingCarrierId = null;
-            if (plan.Update!.CarrierToken is not null || plan.Update.EcommerceShippingCarrier is not null)
+            if (plan.Update!.CarrierToken is not null || plan.Update.EcommerceShippingCarrier is not null ||
+                plan.Update.CarrierName is not null)
             {
                 carrierEntities ??= await LoadCarrierEntitiesAsync(api);
                 if (plan.Update.CarrierToken is { } token)
@@ -136,6 +138,13 @@ public class WeClappArWriteNode(
                     shippingCarrierId = carrierEntities
                         .FirstOrDefault(c => c["ecommerceShippingCarrier"]?.ToString() == wantedCarrier)?["id"]
                         ?.ToString();
+                }
+
+                if (shippingCarrierId is null && plan.Update.CarrierName is { } wantedName)
+                {
+                    shippingCarrierId = carrierEntities
+                        .FirstOrDefault(c => string.Equals(c["name"]?.ToString(), wantedName,
+                            StringComparison.OrdinalIgnoreCase))?["id"]?.ToString();
                 }
 
                 if (shippingCarrierId is null)

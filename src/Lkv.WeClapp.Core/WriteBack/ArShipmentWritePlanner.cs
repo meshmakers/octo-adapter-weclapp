@@ -177,6 +177,7 @@ public static class ArShipmentWritePlanner
         string? shipmentTrackingUrl = null;
         string? carrierToken = null;
         string? carrier = null;
+        string? carrierName = null;
         if (primaryIndex >= 0)
         {
             shipmentTrackingNumber = parcels[primaryIndex].TrackingId;
@@ -186,9 +187,17 @@ public static class ArShipmentWritePlanner
             // no warning here; the legacy code map is attached as a fallback.
             var rawCarrier = ar.Parcels[primaryIndex].Carrier;
             carrierToken = rawCarrier.Trim().Length > 0 ? rawCarrier.Trim() : null;
+            // Constant and name are independent fallbacks: a tenant's carrier entity may
+            // carry the ecommerce constant, only a display name, or both — the node tries
+            // entity id, then constant, then name.
             if (DilosCarrierMap.TryMap(rawCarrier, out var mapped))
             {
                 carrier = mapped;
+            }
+
+            if (DilosCarrierMap.TryMapName(rawCarrier, out var mappedName))
+            {
+                carrierName = mappedName;
             }
         }
 
@@ -239,6 +248,7 @@ public static class ArShipmentWritePlanner
             TotalWeight = Dec(ar.TotalWeight),
             CarrierToken = carrierToken,
             EcommerceShippingCarrier = carrier,
+            CarrierName = carrierName,
             Parcels = parcels,
             ItemQuantities = itemQuantities
         };

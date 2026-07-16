@@ -50,6 +50,44 @@ public class DilosOrderWriterTests
     }
 
     [Fact]
+    public void RenderHeader_B2cAddresses_WritePersonNamesAndAvisPhone()
+    {
+        // A B2C test import arrived at LKV without any recipient name (2026-07-16). The
+        // DILOS-import-proven golden files pin the layout: the MANDATORY name1 fields
+        // (f5/f15, spec "L+R") always carry a name — for B2C that is the person
+        // ("FirstName LastName", golden order), name2 stays empty; only when a company
+        // occupies name1 does name2 carry the person ("LastName FirstName", Billbee
+        // column mapping). Avisatelefon comes from the delivery phone — real customer
+        // shop orders carry firstName/lastName/phoneNumber (live-verified).
+        var o = new WeClappSalesOrder
+        {
+            Id = "622075",
+            OrderNumber = "SO-1001",
+            CustomerNumber = "K-77",
+            DeliveryAddress = new WeClappAddress
+            {
+                FirstName = "Erika",
+                LastName = "Muster",
+                PhoneNumber = "+43 660 1234567",
+                CountryCode = "AT",
+                Zipcode = "5400",
+                Street1 = "Weg 1",
+                City = "Hallein"
+            },
+            InvoiceAddress = new WeClappAddress { Company = "Muster GmbH", FirstName = "Max", LastName = "Muster" }
+        };
+
+        var k = DilosOrderWriter.RenderHeader(o, Ctx);
+
+        Assert.Equal("Erika Muster", Field(k, 5));     // B2C: person fills the MANDATORY name1 (golden layout)
+        Assert.Equal("", Field(k, 6));                 // name2 empty when the person already is name1
+        Assert.Equal("+43 660 1234567", Field(k, 12)); // Avisatelefon
+        Assert.Equal("Muster GmbH", Field(k, 15));     // Rechnungsname1 = company when present
+        Assert.Equal("Muster Max", Field(k, 16));      // Rechnungsname2 = person next to the company
+        Assert.Equal(66, k.Split('|').Length);
+    }
+
+    [Fact]
     public void RenderHeader_OrderDateAtViennaMidnight_KeepsTheAustrianCalendarDay()
     {
         // Real WeClapp date-picker values are account-local (Vienna) midnight:

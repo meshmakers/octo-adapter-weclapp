@@ -11,7 +11,8 @@
 # GetOrCreateRtEntitiesByType@1 (CkTypeId/FieldFilters[attributePath,operator,
 # comparisonValuePath]/RtIdTargetPath/CkTypeIdTargetPath/ModOperationPath),
 # CreateUpdateInfo@1 (RtIdPath/CkTypeId/UpdateKindPath/AttributeUpdates[attributeName,
-# valuePath]/TargetPath), CreateAssociationUpdate@1 (UpdateKind Create|Delete,
+# attributeValueType (REQUIRED — silently dropped without it), valuePath]/TargetPath),
+# CreateAssociationUpdate@1 (UpdateKind Create|Delete,
 # Origin/Target RtIdPath+CkTypeId, AssociationRoleId), ApplyChanges@1 (Path = a
 # List<EntityUpdateInfo>).
 # Source-verified 2026-07-11 (was "confirm at the tenant" before):
@@ -24,8 +25,9 @@
 # - Entity updates (EntityUpdateInfo) and association updates (AssociationUpdateInfo)
 #   are DIFFERENT types in SEPARATE lists: ApplyChanges@1 reads only entity updates;
 #   ApplyChanges@2 takes entityUpdatesPath + associationUpdatesPath — used below.
-# STILL TO CONFIRM at the first tenant run: the full attribute list per type
-# (source: WECLAPP-4228-MAPPING.md).
+# The first tenant run (2026-07-16, staging) happened and surfaced the attributeValueType
+# and path-shape contracts now pinned by PipelineYamlContractTests. STILL OPEN: extending
+# the attribute list per type to the full mapping (source: WECLAPP-4228-MAPPING.md).
 
 triggers:
   - type: WeClappFetch@1
@@ -84,6 +86,9 @@ transformations:
     value: 0                    # UpdateKind.Insert — literal proven against the production
     valueType: Enum             # data-context write in AiExportGateTests
     transformations:
+      # attributeValueType is REQUIRED per update — a missing type is a debug-only error
+      # and the update is silently dropped (ApplyChanges then logs "No update infos found";
+      # staging finding 2026-07-16 — without it this whole gate never persists its marker).
       - type: CreateUpdateInfo@1
         description: Customer attribute values onto the upserted entity (full list → WECLAPP-4228-MAPPING.md)
         path: $.ck.Customer
@@ -92,9 +97,13 @@ transformations:
         updateKindPath: $.rt.customerModOperation # Insert|Update as decided by the lookup node
         attributeUpdates:
           - attributeName: CustomerNumber
+            attributeValueType: String
             valuePath: $.ck.Customer.CustomerNumber
           - attributeName: Name
-            valuePath: $.ck.Customer.Contact.CompanyName
+            attributeValueType: String
+            # CkCustomer.Name carries the B2C fallback (company OR "first last") —
+            # Contact.CompanyName is empty for private customers.
+            valuePath: $.ck.Customer.Name
         targetPath: $.updates
         targetValueWriteMode: Append      # collect into ONE list — the Overwrite default keeps only the last update
 
@@ -106,10 +115,13 @@ transformations:
         updateKindPath: $.rt.orderModOperation
         attributeUpdates:
           - attributeName: OrderNumber
+            attributeValueType: String
             valuePath: $.ck.Order.OrderNumber
           - attributeName: ExternalOrderNumber
+            attributeValueType: String
             valuePath: $.ck.Order.ExternalOrderNumber
           - attributeName: OrderDate
+            attributeValueType: DateTime
             valuePath: $.ck.Order.OrderDate
         targetPath: $.updates
         targetValueWriteMode: Append

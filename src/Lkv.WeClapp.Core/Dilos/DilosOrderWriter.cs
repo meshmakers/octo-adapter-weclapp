@@ -30,12 +30,18 @@ public static class DilosOrderWriter
         f[1] = "K*";
         f[2] = o.CustomerNumber;               // ClientIdnummer = Kundennummer des Warenempfängers
         f[4] = ctx.Submandant;                 // Submandant = WeClapp Mandanten-ID (konstant)
-        f[5] = o.DeliveryAddress.Company;      // Empfaengername1
+        f[5] = RecipientName1(o.DeliveryAddress);  // Empfaengername1 (Pflicht): Firma, sonst Person
+        f[6] = RecipientName2(o.DeliveryAddress);  // Empfaengername2: Person NEBEN einer Firma, sonst leer
         f[8] = o.DeliveryAddress.CountryCode;  // ELKZ
         f[9] = o.DeliveryAddress.Zipcode;      // EPLZ
         f[10] = o.DeliveryAddress.Street1;     // Estrasse_postfach
         f[11] = o.DeliveryAddress.City;        // Eort
-        f[15] = o.InvoiceAddress.Company;      // Rechnungsname1
+        f[12] = o.DeliveryAddress.PhoneNumber; // Avisatelefon (carrier avis)
+        // f[14] Avisa-email stays empty for now: the previous connector sourced it from an
+        // address-level email, which WeClapp addresses do not carry — which email (if any)
+        // belongs on the carrier avis is a pending decision with the logistics partner.
+        f[15] = RecipientName1(o.InvoiceAddress);  // Rechnungsname1 (Pflicht): Firma, sonst Person
+        f[16] = RecipientName2(o.InvoiceAddress);  // Rechnungsname2: Person neben der Firma
         f[18] = o.InvoiceAddress.CountryCode;  // RLKZ
         f[19] = o.InvoiceAddress.Zipcode;      // RPLZ
         f[20] = o.InvoiceAddress.Street1;      // Rstrasse_postfach
@@ -49,6 +55,21 @@ public static class DilosOrderWriter
         f[65] = Money(o.GrossAmount);          // RechnungssummeBrutto
         return Join(f, HeaderFieldCount);
     }
+
+    /// <summary>Mandatory name1 (spec "L+R"): the company, or the person for B2C —
+    /// "FirstName LastName", the shape every DILOS-import-proven golden file carries.</summary>
+    private static string RecipientName1(WeClappAddress address) =>
+        address.Company.Length > 0
+            ? address.Company
+            : $"{address.FirstName} {address.LastName}".Trim();
+
+    /// <summary>Optional name2: the person NEXT TO a company ("Nachname Vorname", the
+    /// previous connector's column mapping) — empty when the person already fills name1
+    /// (golden B2C files keep name2 empty).</summary>
+    private static string RecipientName2(WeClappAddress address) =>
+        address.Company.Length > 0
+            ? $"{address.LastName} {address.FirstName}".Trim()
+            : "";
 
     public static IEnumerable<string> RenderPositions(WeClappSalesOrder o, DilosOrderContext ctx)
     {

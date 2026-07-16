@@ -50,4 +50,8 @@ public sealed record WeClappAddress
     public string Zipcode { get; init; } = "";
     public string City { get; init; } = "";
     public string CountryCode { get; init; } = "";
+
+    /// <summary>API field `phoneNumber` — present on real customer shop orders
+    /// (live-verified 2026-07-16); feeds the DILOS Avisatelefon field.</summary>
+    public string PhoneNumber { get; init; } = "";
 }
