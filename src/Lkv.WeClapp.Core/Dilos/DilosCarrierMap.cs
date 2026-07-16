@@ -1,14 +1,16 @@
 namespace Lkv.WeClapp.Core.Dilos;
 
 /// <summary>
-/// LEGACY FALLBACK mapping of DILOS/Billbee-era carrier codes (AR C* field 3) to WeClapp
-/// ecommerceShippingCarrier constants. Since Jürgen's answer of 2026-07-08, C* field 3
-/// primarily carries the carrier id as configured in the shop system — for WeClapp the
-/// shippingCarrier entity id itself, which the AR write node resolves directly against
-/// the live carrier list BEFORE consulting this table. This map only covers the codes
-/// found in the golden files: the spec table 100–800 plus "9", the Billbee-internal id
-/// LKV returned for ÖPAG back then. Unresolvable tokens: tracking is written without a
-/// carrier reference.
+/// TRANSITIONAL FALLBACK mapping of DILOS legacy carrier codes (AR C* field 3) to WeClapp
+/// carriers. The primary path (since 2026-07-08): C* field 3 carries the carrier id as
+/// configured in the shop system — for WeClapp the shippingCarrier entity id itself, which
+/// the AR write node resolves directly against the live carrier list BEFORE consulting
+/// these tables. LKV keeps accepting/sending the legacy table codes during the transition
+/// (2026-07-16): 100 = Austrian Post, 200 = UPS, 300 = GLS, 400 = DHL, 800 = DPD.
+/// "9" appears in old golden files but was an initial placeholder without meaning — it maps
+/// to nothing. GLS has no WeClapp ecommerceShippingCarrier constant, so 300 resolves via the
+/// carrier NAME against the live list instead. Unresolvable tokens: tracking is written
+/// without a carrier reference.
 /// </summary>
 public static class DilosCarrierMap
 {
@@ -18,7 +20,11 @@ public static class DilosCarrierMap
         ["200"] = "UPS",
         ["400"] = "DHL",
         ["800"] = "DPD",
-        ["9"] = "AUSTRIAN_POST" // ÖPAG via its Billbee-era shop-system id (Jürgen 2026-07-08)
+    };
+
+    private static readonly Dictionary<string, string> NameMap = new(StringComparer.Ordinal)
+    {
+        ["300"] = "GLS", // no WeClapp ecommerce constant — matched against the carrier name
     };
 
     public static bool TryMap(string dilosCarrierCode, out string? ecommerceShippingCarrier)
@@ -30,6 +36,18 @@ public static class DilosCarrierMap
         }
 
         ecommerceShippingCarrier = null;
+        return false;
+    }
+
+    public static bool TryMapName(string dilosCarrierCode, out string? carrierName)
+    {
+        if (NameMap.TryGetValue(dilosCarrierCode.Trim(), out var value))
+        {
+            carrierName = value;
+            return true;
+        }
+
+        carrierName = null;
         return false;
     }
 }

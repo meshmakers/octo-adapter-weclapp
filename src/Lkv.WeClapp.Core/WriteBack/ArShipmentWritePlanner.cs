@@ -177,6 +177,7 @@ public static class ArShipmentWritePlanner
         string? shipmentTrackingUrl = null;
         string? carrierToken = null;
         string? carrier = null;
+        string? carrierName = null;
         if (primaryIndex >= 0)
         {
             shipmentTrackingNumber = parcels[primaryIndex].TrackingId;
@@ -189,6 +190,10 @@ public static class ArShipmentWritePlanner
             if (DilosCarrierMap.TryMap(rawCarrier, out var mapped))
             {
                 carrier = mapped;
+            }
+            else if (DilosCarrierMap.TryMapName(rawCarrier, out var mappedName))
+            {
+                carrierName = mappedName;
             }
         }
 
@@ -239,6 +244,7 @@ public static class ArShipmentWritePlanner
             TotalWeight = Dec(ar.TotalWeight),
             CarrierToken = carrierToken,
             EcommerceShippingCarrier = carrier,
+            CarrierName = carrierName,
             Parcels = parcels,
             ItemQuantities = itemQuantities
         };

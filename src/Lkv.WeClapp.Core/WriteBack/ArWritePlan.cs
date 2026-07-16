@@ -54,6 +54,11 @@ public sealed record ArShipmentUpdate
     /// DILOS/Billbee-era code via <see cref="Dilos.DilosCarrierMap"/>, null when unmapped.</summary>
     public string? EcommerceShippingCarrier { get; init; }
 
+    /// <summary>Transitional fallback for legacy codes whose carrier has NO WeClapp
+    /// ecommerce constant (300 = GLS): the node matches this against the live carrier
+    /// list by name, case-insensitive. Null when the code needs no name path.</summary>
+    public string? CarrierName { get; init; }
+
     public IReadOnlyList<WeClappParcelWrite> Parcels { get; init; } = [];
 
     /// <summary>Delivered quantities per WeClapp article id (P* lines; shipping pseudo-item excluded).</summary>
