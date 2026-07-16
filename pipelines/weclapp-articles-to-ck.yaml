@@ -33,26 +33,30 @@ transformations:
     fieldFilters:
       - attributePath: ArticleNumber
         operator: Equals                      # FieldFilterOperatorDto member (source-verified)
-        comparisonValuePath: $.ck.Article.ArticleNumber
+        comparisonValuePath: $.ck.ArticleNumber   # WeClappToCk writes the CkArticle FLAT at $.ck
     rtIdTargetPath: $.rt.articleRtId
     ckTypeIdTargetPath: $.rt.articleCkTypeId
     modOperationPath: $.rt.articleModOperation
 
   - type: CreateUpdateInfo@1
     description: Article attribute values (full list → WECLAPP-4228-MAPPING.md)
-    path: $.ck.Article
+    path: $.ck
     rtIdPath: $.rt.articleRtId
     ckTypeId: Industry.Logistics/Article
     updateKindPath: $.rt.articleModOperation
+    # attributeValueType is REQUIRED per update — a missing type is a debug-only error
+    # and the update is silently dropped (ApplyChanges then logs "No update infos found").
+    # No Sku here: neither the CK Article type nor CkArticle carries one.
     attributeUpdates:
       - attributeName: ArticleNumber
-        valuePath: $.ck.Article.ArticleNumber
+        attributeValueType: String
+        valuePath: $.ck.ArticleNumber
       - attributeName: Name
-        valuePath: $.ck.Article.Name
-      - attributeName: Sku
-        valuePath: $.ck.Article.Sku
+        attributeValueType: String
+        valuePath: $.ck.Name
       - attributeName: Ean
-        valuePath: $.ck.Article.Ean
+        attributeValueType: String
+        valuePath: $.ck.Ean
     targetPath: $.updates
     targetValueWriteMode: Append      # collect into ONE list — the Overwrite default keeps only the last update
 

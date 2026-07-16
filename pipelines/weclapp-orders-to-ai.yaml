@@ -84,6 +84,9 @@ transformations:
     value: 0                    # UpdateKind.Insert — literal proven against the production
     valueType: Enum             # data-context write in AiExportGateTests
     transformations:
+      # attributeValueType is REQUIRED per update — a missing type is a debug-only error
+      # and the update is silently dropped (ApplyChanges then logs "No update infos found";
+      # staging finding 2026-07-16 — without it this whole gate never persists its marker).
       - type: CreateUpdateInfo@1
         description: Customer attribute values onto the upserted entity (full list → WECLAPP-4228-MAPPING.md)
         path: $.ck.Customer
@@ -92,9 +95,13 @@ transformations:
         updateKindPath: $.rt.customerModOperation # Insert|Update as decided by the lookup node
         attributeUpdates:
           - attributeName: CustomerNumber
+            attributeValueType: String
             valuePath: $.ck.Customer.CustomerNumber
           - attributeName: Name
-            valuePath: $.ck.Customer.Contact.CompanyName
+            attributeValueType: String
+            # CkCustomer.Name carries the B2C fallback (company OR "first last") —
+            # Contact.CompanyName is empty for private customers.
+            valuePath: $.ck.Customer.Name
         targetPath: $.updates
         targetValueWriteMode: Append      # collect into ONE list — the Overwrite default keeps only the last update
 
@@ -106,10 +113,13 @@ transformations:
         updateKindPath: $.rt.orderModOperation
         attributeUpdates:
           - attributeName: OrderNumber
+            attributeValueType: String
             valuePath: $.ck.Order.OrderNumber
           - attributeName: ExternalOrderNumber
+            attributeValueType: String
             valuePath: $.ck.Order.ExternalOrderNumber
           - attributeName: OrderDate
+            attributeValueType: DateTime
             valuePath: $.ck.Order.OrderDate
         targetPath: $.updates
         targetValueWriteMode: Append
