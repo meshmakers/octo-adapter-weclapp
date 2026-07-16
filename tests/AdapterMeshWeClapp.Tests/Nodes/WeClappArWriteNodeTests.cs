@@ -25,8 +25,9 @@ public class WeClappArWriteNodeTests
     private static readonly string DhlAr = GoldenAr.Replace(
         "C*|400000001247987|9|", "C*|400000001247987|400|");
 
-    // Same shipment with the GLS transition code (300, real LKV ARs since 2026-07-16) —
-    // no WeClapp ecommerce constant exists for GLS, resolution goes via the carrier NAME.
+    // Same shipment with the GLS transition code (300, real LKV ARs since 2026-07-16).
+    // GLS exists in the WeClapp ecommerceShippingCarrier enum, but tenant carrier entities
+    // may carry only a display name — the node therefore tries the constant AND the name.
     private static readonly string GlsAr = GoldenAr.Replace(
         "C*|400000001247987|9|", "C*|400000001247987|300|");
 
@@ -110,8 +111,8 @@ public class WeClappArWriteNodeTests
         {
             if (req.RequestUri!.ToString().Contains("shippingCarrier"))
             {
-                // The customer's GLS carrier entity has NO ecommerceShippingCarrier constant —
-                // only the name can match the DILOS transition code 300.
+                // Pilot-shaped tenant: the GLS carrier entity carries NO ecommerce constant —
+                // only the display name can match the DILOS transition code 300.
                 return FakeHttpMessageHandler.Json(
                     """{"result":[{"id":"77","name":"DHL","ecommerceShippingCarrier":"DHL"},{"id":"88","name":"GLS"}]}""");
             }
@@ -126,6 +127,33 @@ public class WeClappArWriteNodeTests
             r.Method == "PUT" && r.Url.Contains("/shipment/id/S1") && !r.Url.Contains("dryRun"));
         var data = JsonNode.Parse(dataPut.Body!)!;
         Assert.Equal("88", data["shippingCarrierId"]!.ToString());
+    }
+
+    [Fact]
+    public async Task Process_GlsTransitionCode_ResolvesCarrierByConstantDespiteVerboseName()
+    {
+        Configure(GlsAr);
+        var handler = new FakeHttpMessageHandler((req, _) =>
+        {
+            if (req.RequestUri!.ToString().Contains("shippingCarrier"))
+            {
+                // Tenant with a properly configured entity: verbose display name, but the
+                // GLS ecommerce constant set — the constant match must win, the name
+                // equality ("GLS" vs "GLS Austria") would miss.
+                return FakeHttpMessageHandler.Json(
+                    """{"result":[{"id":"77","name":"DHL","ecommerceShippingCarrier":"DHL"},{"id":"99","name":"GLS Austria","ecommerceShippingCarrier":"GLS"}]}""");
+            }
+
+            return DefaultResponder(req);
+        });
+        var sut = CreateSut(handler);
+
+        await sut.ProcessObjectAsync(_dataContext, _nodeContext);
+
+        var dataPut = handler.Requests.First(r =>
+            r.Method == "PUT" && r.Url.Contains("/shipment/id/S1") && !r.Url.Contains("dryRun"));
+        var data = JsonNode.Parse(dataPut.Body!)!;
+        Assert.Equal("99", data["shippingCarrierId"]!.ToString());
     }
 
     [Fact]

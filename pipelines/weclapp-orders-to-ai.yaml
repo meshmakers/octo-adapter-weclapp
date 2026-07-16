@@ -11,7 +11,8 @@
 # GetOrCreateRtEntitiesByType@1 (CkTypeId/FieldFilters[attributePath,operator,
 # comparisonValuePath]/RtIdTargetPath/CkTypeIdTargetPath/ModOperationPath),
 # CreateUpdateInfo@1 (RtIdPath/CkTypeId/UpdateKindPath/AttributeUpdates[attributeName,
-# valuePath]/TargetPath), CreateAssociationUpdate@1 (UpdateKind Create|Delete,
+# attributeValueType (REQUIRED — silently dropped without it), valuePath]/TargetPath),
+# CreateAssociationUpdate@1 (UpdateKind Create|Delete,
 # Origin/Target RtIdPath+CkTypeId, AssociationRoleId), ApplyChanges@1 (Path = a
 # List<EntityUpdateInfo>).
 # Source-verified 2026-07-11 (was "confirm at the tenant" before):
@@ -24,8 +25,9 @@
 # - Entity updates (EntityUpdateInfo) and association updates (AssociationUpdateInfo)
 #   are DIFFERENT types in SEPARATE lists: ApplyChanges@1 reads only entity updates;
 #   ApplyChanges@2 takes entityUpdatesPath + associationUpdatesPath — used below.
-# STILL TO CONFIRM at the first tenant run: the full attribute list per type
-# (source: WECLAPP-4228-MAPPING.md).
+# The first tenant run (2026-07-16, staging) happened and surfaced the attributeValueType
+# and path-shape contracts now pinned by PipelineYamlContractTests. STILL OPEN: extending
+# the attribute list per type to the full mapping (source: WECLAPP-4228-MAPPING.md).
 
 triggers:
   - type: WeClappFetch@1

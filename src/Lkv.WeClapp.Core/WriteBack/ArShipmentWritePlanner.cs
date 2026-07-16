@@ -187,11 +187,15 @@ public static class ArShipmentWritePlanner
             // no warning here; the legacy code map is attached as a fallback.
             var rawCarrier = ar.Parcels[primaryIndex].Carrier;
             carrierToken = rawCarrier.Trim().Length > 0 ? rawCarrier.Trim() : null;
+            // Constant and name are independent fallbacks: a tenant's carrier entity may
+            // carry the ecommerce constant, only a display name, or both — the node tries
+            // entity id, then constant, then name.
             if (DilosCarrierMap.TryMap(rawCarrier, out var mapped))
             {
                 carrier = mapped;
             }
-            else if (DilosCarrierMap.TryMapName(rawCarrier, out var mappedName))
+
+            if (DilosCarrierMap.TryMapName(rawCarrier, out var mappedName))
             {
                 carrierName = mappedName;
             }

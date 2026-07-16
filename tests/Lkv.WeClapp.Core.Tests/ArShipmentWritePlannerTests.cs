@@ -163,11 +163,12 @@ public class ArShipmentWritePlannerTests
     }
 
     [Fact]
-    public void Plan_GlsTransitionCode300_CarriesCarrierNameForLiveListMatch()
+    public void Plan_GlsTransitionCode300_CarriesConstantAndCarrierName()
     {
-        // Real LKV ARs use 300 for GLS (Jürgen 2026-07-16). WeClapp has no GLS ecommerce
-        // constant, so the planner attaches the carrier NAME for the node to match against
-        // the live shippingCarrier list.
+        // Real LKV ARs use 300 for GLS (LKV 2026-07-16). The planner attaches BOTH the
+        // ecommerce constant (GLS exists in the WeClapp enum) and the carrier NAME —
+        // tenant carrier entities may have the constant set, only a display name, or both;
+        // the node tries id, then constant, then name.
         var ar = GoldenShapedShipment() with
         {
             Parcels =
@@ -184,7 +185,7 @@ public class ArShipmentWritePlannerTests
 
         var u = plan.Update!;
         Assert.Equal("300", u.CarrierToken);
-        Assert.Null(u.EcommerceShippingCarrier);
+        Assert.Equal("GLS", u.EcommerceShippingCarrier);
         Assert.Equal("GLS", u.CarrierName);
     }
 

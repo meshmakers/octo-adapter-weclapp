@@ -52,10 +52,13 @@ public class DilosOrderWriterTests
     [Fact]
     public void RenderHeader_B2cAddresses_WritePersonNamesAndAvisPhone()
     {
-        // A B2C test import arrived at LKV without any recipient name (2026-07-16): the
-        // writer only filled Empfaengername1 (company). Billbee parity: Empfaengername2 /
-        // Rechnungsname2 carry "LastName FirstName", Avisatelefon the delivery phone —
-        // real customer shop orders carry firstName/lastName/phoneNumber (live-verified).
+        // A B2C test import arrived at LKV without any recipient name (2026-07-16). The
+        // DILOS-import-proven golden files pin the layout: the MANDATORY name1 fields
+        // (f5/f15, spec "L+R") always carry a name — for B2C that is the person
+        // ("FirstName LastName", golden order), name2 stays empty; only when a company
+        // occupies name1 does name2 carry the person ("LastName FirstName", Billbee
+        // column mapping). Avisatelefon comes from the delivery phone — real customer
+        // shop orders carry firstName/lastName/phoneNumber (live-verified).
         var o = new WeClappSalesOrder
         {
             Id = "622075",
@@ -76,11 +79,11 @@ public class DilosOrderWriterTests
 
         var k = DilosOrderWriter.RenderHeader(o, Ctx);
 
-        Assert.Equal("", Field(k, 5));                 // no company on the delivery address
-        Assert.Equal("Muster Erika", Field(k, 6));     // Empfaengername2 = person
+        Assert.Equal("Erika Muster", Field(k, 5));     // B2C: person fills the MANDATORY name1 (golden layout)
+        Assert.Equal("", Field(k, 6));                 // name2 empty when the person already is name1
         Assert.Equal("+43 660 1234567", Field(k, 12)); // Avisatelefon
-        Assert.Equal("Muster GmbH", Field(k, 15));     // Rechnungsname1
-        Assert.Equal("Muster Max", Field(k, 16));      // Rechnungsname2
+        Assert.Equal("Muster GmbH", Field(k, 15));     // Rechnungsname1 = company when present
+        Assert.Equal("Muster Max", Field(k, 16));      // Rechnungsname2 = person next to the company
         Assert.Equal(66, k.Split('|').Length);
     }
 

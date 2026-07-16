@@ -28,20 +28,23 @@ namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Tests;
 /// </summary>
 public class PipelineYamlContractTests
 {
-    private static readonly string[] AllPipelineYamls =
-    [
-        "weclapp-articles-to-ck.yaml",
-        "weclapp-articles-to-as.yaml",
-        "weclapp-orders-to-ai.yaml",
-        "dilos-ar-to-weclapp.yaml",
-        "dilos-be-to-weclapp.yaml",
-    ];
+    // Enumerated from the repo so a future pipeline yaml cannot silently escape the
+    // guard (the strict deserializer fails loudly on unregistered node types instead).
+    private static string[] AllPipelineYamls =>
+        Directory.GetFiles(Path.GetDirectoryName(FindRepoFile(Path.Combine("pipelines",
+                "weclapp-articles-to-ck.yaml")))!, "*.yaml")
+            .Select(Path.GetFileName)
+            .Cast<string>()
+            .ToArray();
 
     // ---------- contract 1: every attribute update declares its value type ----------
 
     [Fact]
     public async Task AllPipelineYamls_EveryAttributeUpdate_DeclaresValueType()
     {
+        Assert.True(AllPipelineYamls.Length >= 5,
+            "pipeline yaml enumeration must find the shipped pipelines");
+
         var violations = new List<string>();
 
         foreach (var yaml in AllPipelineYamls)

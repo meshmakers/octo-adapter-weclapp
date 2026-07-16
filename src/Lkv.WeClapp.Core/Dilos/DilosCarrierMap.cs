@@ -8,9 +8,11 @@ namespace Lkv.WeClapp.Core.Dilos;
 /// these tables. LKV keeps accepting/sending the legacy table codes during the transition
 /// (2026-07-16): 100 = Austrian Post, 200 = UPS, 300 = GLS, 400 = DHL, 800 = DPD.
 /// "9" appears in old golden files but was an initial placeholder without meaning — it maps
-/// to nothing. GLS has no WeClapp ecommerceShippingCarrier constant, so 300 resolves via the
-/// carrier NAME against the live list instead. Unresolvable tokens: tracking is written
-/// without a carrier reference.
+/// to nothing. All five constants exist in the WeClapp ecommerceShippingCarrier enum
+/// (OpenAPI/community-SDK ground truth, incl. GLS); tenant carrier entities may however be
+/// created WITHOUT the constant, so 300 additionally carries a display-NAME fallback that
+/// the node matches against the live list after the constant. Unresolvable tokens: tracking
+/// is written without a carrier reference.
 /// </summary>
 public static class DilosCarrierMap
 {
@@ -18,13 +20,14 @@ public static class DilosCarrierMap
     {
         ["100"] = "AUSTRIAN_POST",
         ["200"] = "UPS",
+        ["300"] = "GLS",
         ["400"] = "DHL",
         ["800"] = "DPD",
     };
 
     private static readonly Dictionary<string, string> NameMap = new(StringComparer.Ordinal)
     {
-        ["300"] = "GLS", // no WeClapp ecommerce constant — matched against the carrier name
+        ["300"] = "GLS", // pilot tenant's entity carries no ecommerce constant — name fallback
     };
 
     public static bool TryMap(string dilosCarrierCode, out string? ecommerceShippingCarrier)
