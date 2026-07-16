@@ -31,11 +31,15 @@ public static class DilosOrderWriter
         f[2] = o.CustomerNumber;               // ClientIdnummer = Kundennummer des Warenempfängers
         f[4] = ctx.Submandant;                 // Submandant = WeClapp Mandanten-ID (konstant)
         f[5] = o.DeliveryAddress.Company;      // Empfaengername1
+        f[6] = PersonName(o.DeliveryAddress);  // Empfaengername2 = "Nachname Vorname" (Billbee-Parität;
+                                               // B2C orders carry no company — 2026-07-16 finding)
         f[8] = o.DeliveryAddress.CountryCode;  // ELKZ
         f[9] = o.DeliveryAddress.Zipcode;      // EPLZ
         f[10] = o.DeliveryAddress.Street1;     // Estrasse_postfach
         f[11] = o.DeliveryAddress.City;        // Eort
+        f[12] = o.DeliveryAddress.PhoneNumber; // Avisatelefon (carrier avis)
         f[15] = o.InvoiceAddress.Company;      // Rechnungsname1
+        f[16] = PersonName(o.InvoiceAddress);  // Rechnungsname2
         f[18] = o.InvoiceAddress.CountryCode;  // RLKZ
         f[19] = o.InvoiceAddress.Zipcode;      // RPLZ
         f[20] = o.InvoiceAddress.Street1;      // Rstrasse_postfach
@@ -49,6 +53,11 @@ public static class DilosOrderWriter
         f[65] = Money(o.GrossAmount);          // RechnungssummeBrutto
         return Join(f, HeaderFieldCount);
     }
+
+    /// <summary>"Nachname Vorname" like the previous production connector wrote it —
+    /// empty when the address carries no person (pure company addresses).</summary>
+    private static string PersonName(WeClappAddress address) =>
+        $"{address.LastName} {address.FirstName}".Trim();
 
     public static IEnumerable<string> RenderPositions(WeClappSalesOrder o, DilosOrderContext ctx)
     {
