@@ -47,9 +47,16 @@ transformations:
     customerPath: $.customer
     targetPath: $.ck
 
-  # --- CK persistence (built-ins; see header note for verification status) ---
+  # --- Export dedup: lookups OUTSIDE the gate (read-only), everything that renders,
+  # delivers or persists INSIDE it. GetOrCreate… only queries the repository — on a miss
+  # it merely generates a fresh id and sets ModOperation=Insert in the data context; the
+  # actual write happens in ApplyChanges. The persisted CK Order therefore doubles as the
+  # export marker: it is written ONLY after a successful upload (at-least-once — a crash
+  # between upload and persist re-delivers on the next poll; the 15-min cadence makes the
+  # race window irrelevant). Without the gate, the same order would be re-delivered every
+  # poll until its WeClapp status changes.
   - type: GetOrCreateRtEntitiesByType@1
-    description: Upsert the Customer by its WeClapp customer number
+    description: Look up the Customer by its WeClapp customer number (query only, see gate note)
     ckTypeId: Industry.Logistics/Customer
     fieldFilters:
       - attributePath: CustomerNumber
@@ -59,22 +66,8 @@ transformations:
     ckTypeIdTargetPath: $.rt.customerCkTypeId
     modOperationPath: $.rt.customerModOperation
 
-  - type: CreateUpdateInfo@1
-    description: Customer attribute values onto the upserted entity (full list → WECLAPP-4228-MAPPING.md)
-    path: $.ck.Customer
-    rtIdPath: $.rt.customerRtId
-    ckTypeId: Industry.Logistics/Customer
-    updateKindPath: $.rt.customerModOperation # Insert|Update as decided by the upsert node
-    attributeUpdates:
-      - attributeName: CustomerNumber
-        valuePath: $.ck.Customer.CustomerNumber
-      - attributeName: Name
-        valuePath: $.ck.Customer.Contact.CompanyName
-    targetPath: $.updates
-    targetValueWriteMode: Append      # collect into ONE list — the Overwrite default keeps only the last update
-
   - type: GetOrCreateRtEntitiesByType@1
-    description: Upsert the Order by its WeClapp id (= Auftragsnummer1)
+    description: Look up the Order by its WeClapp id (= Auftragsnummer1) — the export marker probe
     ckTypeId: Industry.Logistics/Order
     fieldFilters:
       - attributePath: OrderNumber
@@ -84,57 +77,80 @@ transformations:
     ckTypeIdTargetPath: $.rt.orderCkTypeId
     modOperationPath: $.rt.orderModOperation
 
-  - type: CreateUpdateInfo@1
-    description: Order attribute values (full list → WECLAPP-4228-MAPPING.md)
-    path: $.ck.Order
-    rtIdPath: $.rt.orderRtId
-    ckTypeId: Industry.Logistics/Order
-    updateKindPath: $.rt.orderModOperation
-    attributeUpdates:
-      - attributeName: OrderNumber
-        valuePath: $.ck.Order.OrderNumber
-      - attributeName: ExternalOrderNumber
-        valuePath: $.ck.Order.ExternalOrderNumber
-      - attributeName: OrderDate
-        valuePath: $.ck.Order.OrderDate
-    targetPath: $.updates
-    targetValueWriteMode: Append
+  - type: If@1
+    description: Deliver only orders whose CK entity does not exist yet (ModOperation Insert = never exported)
+    path: $.rt.orderModOperation
+    operator: Equal
+    value: 0                    # UpdateKind.Insert — literal proven against the production
+    valueType: Enum             # data-context write in AiExportGateTests
+    transformations:
+      - type: CreateUpdateInfo@1
+        description: Customer attribute values onto the upserted entity (full list → WECLAPP-4228-MAPPING.md)
+        path: $.ck.Customer
+        rtIdPath: $.rt.customerRtId
+        ckTypeId: Industry.Logistics/Customer
+        updateKindPath: $.rt.customerModOperation # Insert|Update as decided by the lookup node
+        attributeUpdates:
+          - attributeName: CustomerNumber
+            valuePath: $.ck.Customer.CustomerNumber
+          - attributeName: Name
+            valuePath: $.ck.Customer.Contact.CompanyName
+        targetPath: $.updates
+        targetValueWriteMode: Append      # collect into ONE list — the Overwrite default keeps only the last update
 
-  - type: CreateAssociationUpdate@1
-    description: Order → Customer (role from the imported Industry.Logistics CK)
-    updateKind: Create
-    originRtIdPath: $.rt.orderRtId
-    originCkTypeId: Industry.Logistics/Order
-    targetRtIdPath: $.rt.customerRtId
-    targetCkTypeId: Industry.Logistics/Customer
-    associationRoleId: Industry.Logistics/OrderCustomer
-    # AssociationUpdateInfo is a DIFFERENT type than the entity updates — it gets its
-    # own list; ApplyChanges@2 consumes both lists separately (ApplyChanges@1 reads
-    # ONLY List<EntityUpdateInfo> and would lose/reject the association).
-    targetPath: $.associationUpdates
-    targetValueWriteMode: Append
+      - type: CreateUpdateInfo@1
+        description: Order attribute values (full list → WECLAPP-4228-MAPPING.md)
+        path: $.ck.Order
+        rtIdPath: $.rt.orderRtId
+        ckTypeId: Industry.Logistics/Order
+        updateKindPath: $.rt.orderModOperation
+        attributeUpdates:
+          - attributeName: OrderNumber
+            valuePath: $.ck.Order.OrderNumber
+          - attributeName: ExternalOrderNumber
+            valuePath: $.ck.Order.ExternalOrderNumber
+          - attributeName: OrderDate
+            valuePath: $.ck.Order.OrderDate
+        targetPath: $.updates
+        targetValueWriteMode: Append
 
-  - type: ApplyChanges@2
-    description: Persist the collected entity AND association updates in one repository call
-    entityUpdatesPath: $.updates
-    associationUpdatesPath: $.associationUpdates
+      - type: CreateAssociationUpdate@1
+        description: Order → Customer (role from the imported Industry.Logistics CK)
+        updateKind: Create
+        originRtIdPath: $.rt.orderRtId
+        originCkTypeId: Industry.Logistics/Order
+        targetRtIdPath: $.rt.customerRtId
+        targetCkTypeId: Industry.Logistics/Customer
+        associationRoleId: Industry.Logistics/OrderCustomer
+        # AssociationUpdateInfo is a DIFFERENT type than the entity updates — it gets its
+        # own list; ApplyChanges@2 consumes both lists separately (ApplyChanges@1 reads
+        # ONLY List<EntityUpdateInfo> and would lose/reject the association).
+        targetPath: $.associationUpdates
+        targetValueWriteMode: Append
 
-  - type: DilosRender@1
-    description: Render the AI file content for this order (K* + P* + shipping -1 line)
-    mode: AI
-    submandant: "51696697501"   # REPLACE per tenant: WeClapp-Mandanten-Kennung (LKV maps it)
-    path: $.item
-    targetPath: $.dilosAi
-    fileNameTargetPath: $.dilosAiFileName   # AI<Auftragsnummer1>.txt = the WeClapp id, the
-                                            # SAME number as the K* line — NOT the shop orderNumber
+      - type: DilosRender@1
+        description: Render the AI file content for this order (K* + P* + shipping -1 line)
+        mode: AI
+        submandant: "51696697501"   # REPLACE per tenant: WeClapp-Mandanten-Kennung (LKV maps it)
+        path: $.item
+        targetPath: $.dilosAi
+        fileNameTargetPath: $.dilosAiFileName   # AI<Auftragsnummer1>.txt = the WeClapp id, the
+                                                # SAME number as the K* line — NOT the shop orderNumber
 
-  # --- File delivery (own DilosSftpWrite@1 — ISO-8859-1, golden format) ---
-  # The golden (DILOS-import-proven) AI/AS files are ISO-8859-1 with LF; the built-in
-  # SftpUpload@1 writes UTF-8, which corrupts umlauts (45/89 customers carry non-ASCII).
-  # Non-Latin-1 characters are replaced with '?' and reported loudly by the node.
-  - type: DilosSftpWrite@1
-    description: Deliver the AI file to the LKV SFTP root as ISO-8859-1 (delete-side handled by LKV)
-    serverConfiguration: LkvSftp        # SAME tenant GlobalConfiguration as the return path
-    remoteDirectory: /
-    fileNamePath: $.dilosAiFileName
-    path: $.dilosAi
+      # --- File delivery (own DilosSftpWrite@1 — ISO-8859-1, golden format) ---
+      # The golden (DILOS-import-proven) AI/AS files are ISO-8859-1 with LF; the built-in
+      # SftpUpload@1 writes UTF-8, which corrupts umlauts (45/89 customers carry non-ASCII).
+      # Non-Latin-1 characters are replaced with '?' and reported loudly by the node.
+      - type: DilosSftpWrite@1
+        description: Deliver the AI file to the LKV SFTP root as ISO-8859-1 (delete-side handled by LKV)
+        serverConfiguration: LkvSftp        # SAME tenant GlobalConfiguration as the return path
+        remoteDirectory: /
+        fileNamePath: $.dilosAiFileName
+        path: $.dilosAi
+
+      # Persisting the CK entities IS the export marker — it MUST stay the last step so a
+      # failed upload leaves no marker behind (the order is retried on the next poll).
+      - type: ApplyChanges@2
+        description: Persist order + customer AFTER successful delivery (export marker, at-least-once)
+        entityUpdatesPath: $.updates
+        associationUpdatesPath: $.associationUpdates
