@@ -128,6 +128,58 @@ public class PipelineYamlContractTests
         Assert.Equal("Erika Muster", resolved);
     }
 
+    // ---------- contract 4: ALL ai yaml $.ck paths resolve against the Order-mode output ----------
+
+    [Fact]
+    public async Task OrdersToAiYaml_ConfiguredCkPaths_ResolveAgainstOrderTransformOutput()
+    {
+        // Article mode writes the CK document FLAT at $.ck, Order mode writes a NESTED
+        // CkOrderDocument — the exact confusion that broke the ck yaml. A symmetric
+        // "flattening" of the ai yaml would break the dedup-gate probe (filter resolves
+        // to null → every order re-delivered per poll + duplicated CK entities), so every
+        // $.ck path in the file is pinned here against the real transform output.
+        var root = await DeserializePipeline("weclapp-orders-to-ai.yaml");
+        var all = Walk(root.Transformations).ToList();
+        var toCk = Assert.Single(all.OfType<WeClappToCkNodeConfiguration>());
+
+        var dataContext = await RunToCkNode(toCk, """
+            {"item":{"id":"622075","orderNumber":"SO-1001","customerNumber":"K-77","orderDate":1782820560333,
+              "orderItems":[]},
+             "customer":{"id":"77","customerNumber":"K-77","company":"","firstName":"Erika","lastName":"Muster"}}
+            """);
+
+        var ckPaths = new List<(string What, string Path)>();
+        foreach (var lookup in all.OfType<GetOrCreateRtEntitiesByTypeNodeConfiguration>())
+        {
+            foreach (var filter in lookup.FieldFilters ?? [])
+            {
+                if (filter.ComparisonValuePath is { } path && path.StartsWith("$.ck", StringComparison.Ordinal))
+                {
+                    ckPaths.Add(($"lookup filter of {lookup.CkTypeId}", path));
+                }
+            }
+        }
+
+        foreach (var update in all.OfType<CreateUpdateInfoNodeConfiguration>())
+        {
+            foreach (var attributeUpdate in update.AttributeUpdates ?? [])
+            {
+                if (attributeUpdate.ValuePath is { } path && path.StartsWith("$.ck", StringComparison.Ordinal))
+                {
+                    ckPaths.Add(($"attribute update '{attributeUpdate.AttributeName}'", path));
+                }
+            }
+        }
+
+        Assert.True(ckPaths.Count >= 7, "the ai yaml must expose its $.ck lookup and update paths");
+        foreach (var (what, path) in ckPaths)
+        {
+            Assert.False(string.IsNullOrEmpty(dataContext.Get<string?>(path)),
+                $"{what} path '{path}' resolves to nothing against the real Order-mode output — " +
+                "flat-vs-nested drift would re-deliver every order and duplicate CK entities");
+        }
+    }
+
     // ---------- helpers ----------
 
     private static async Task<NodeDefinitionRoot> DeserializePipeline(string fileName)
@@ -151,16 +203,36 @@ public class PipelineYamlContractTests
                ?? throw new InvalidOperationException($"'{fileName}' deserialized to null");
     }
 
+    // Descends into EVERY children-bearing container (If/Switch/ForEach/For/Group/…, via
+    // IChildNodeConfiguration) plus the Switch-specific Cases/Default collections — a
+    // CreateUpdateInfo hidden in any container must not escape the value-type guard.
     private static IEnumerable<NodeConfiguration> Walk(IEnumerable<NodeConfiguration>? nodes)
     {
         foreach (var node in nodes ?? [])
         {
             yield return node;
-            if (node is IfNodeConfiguration ifNode)
+
+            if (node is IChildNodeConfiguration container)
             {
-                foreach (var child in Walk(ifNode.Transformations))
+                foreach (var child in Walk(container.Transformations))
                 {
                     yield return child;
+                }
+            }
+
+            if (node is SwitchNodeConfiguration switchNode)
+            {
+                foreach (var child in Walk(switchNode.Default))
+                {
+                    yield return child;
+                }
+
+                foreach (var switchCase in switchNode.Cases)
+                {
+                    foreach (var child in Walk(switchCase.Transformations))
+                    {
+                        yield return child;
+                    }
                 }
             }
         }
