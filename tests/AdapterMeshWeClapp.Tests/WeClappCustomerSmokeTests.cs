@@ -10,13 +10,16 @@ using Xunit.Abstractions;
 namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Tests;
 
 /// <summary>
-/// Environment-gated LIVE smoke against a real WeClapp account (trial now, customer later):
-/// runs only when WECLAPP_TRIAL_API_KEY and WECLAPP_TRIAL_BASEURL are set (process or user
-/// scope) and is a no-op otherwise. Verifies the real API contract our fetch node relies on:
+/// Environment-gated LIVE smoke against the real customer WeClapp account (successor of the
+/// trial-account smokes; the trial account expired 2026-07): runs only when
+/// WECLAPP_CUSTOMER_API_KEY and WECLAPP_CUSTOMER_BASEURL are set (process or user scope)
+/// and is a no-op otherwise. STRICTLY read-only — the customer system is productive, GET
+/// only; the former dry-run/real-write smokes died with the trial account and must not be
+/// revived against this system. Verifies the real API contract our fetch node relies on:
 /// AuthenticationToken header, page/pageSize paging, the {result:[...]} envelope, and the
 /// customer join via the id-eq filter. Logs counts only — never payload contents or the key.
 /// </summary>
-public class WeClappTrialSmokeTests(ITestOutputHelper output)
+public class WeClappCustomerSmokeTests(ITestOutputHelper output)
 {
     private static string? Env(string name) =>
         Environment.GetEnvironmentVariable(name)
@@ -26,8 +29,8 @@ public class WeClappTrialSmokeTests(ITestOutputHelper output)
 
     private static (string BaseUrl, string ApiKey)? LiveConfig()
     {
-        var apiKey = Env("WECLAPP_TRIAL_API_KEY");
-        var baseUrl = Env("WECLAPP_TRIAL_BASEURL");
+        var apiKey = Env("WECLAPP_CUSTOMER_API_KEY");
+        var baseUrl = Env("WECLAPP_CUSTOMER_BASEURL");
         return string.IsNullOrEmpty(apiKey) || string.IsNullOrEmpty(baseUrl)
             ? null
             : (baseUrl, apiKey);
@@ -67,7 +70,7 @@ public class WeClappTrialSmokeTests(ITestOutputHelper output)
     {
         if (LiveConfig() is not var (baseUrl, apiKey))
         {
-            output.WriteLine("SKIPPED: WECLAPP_TRIAL_API_KEY / WECLAPP_TRIAL_BASEURL not set.");
+            output.WriteLine("SKIPPED: WECLAPP_CUSTOMER_API_KEY / WECLAPP_CUSTOMER_BASEURL not set.");
             return;
         }
 
@@ -87,7 +90,7 @@ public class WeClappTrialSmokeTests(ITestOutputHelper output)
     {
         if (LiveConfig() is not var (baseUrl, apiKey))
         {
-            output.WriteLine("SKIPPED: WECLAPP_TRIAL_API_KEY / WECLAPP_TRIAL_BASEURL not set.");
+            output.WriteLine("SKIPPED: WECLAPP_CUSTOMER_API_KEY / WECLAPP_CUSTOMER_BASEURL not set.");
             return;
         }
 
