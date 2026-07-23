@@ -336,11 +336,34 @@ public class WeClappFetchTriggerNodeTests
         var sut = CreateSut(handler);
 
         await sut.StartAsync(_context);
-        await Task.Delay(50); // let the first poll run
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (handler.Requests.Count == 0 && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(10);
+        }
+
         var stop = sut.StopAsync(_context);
         var finished = await Task.WhenAny(stop, Task.Delay(5000));
 
         Assert.Same(stop, finished); // stop must not hang
         Assert.NotEmpty(handler.Requests);
+    }
+
+    [Fact]
+    public async Task StartAsync_RunOnStartFalse_DoesNotFetchBeforeFirstInterval()
+    {
+        var config = Configure("article");
+        config.RunOnStart = false;
+        config.PollingIntervalSeconds = 3600;
+        var handler = new FakeHttpMessageHandler((_, _) =>
+            FakeHttpMessageHandler.Json("""{"result":[]}"""));
+        var sut = CreateSut(handler);
+
+        await sut.StartAsync(_context);
+        await Task.Delay(250);
+        await sut.StopAsync(_context);
+
+        Assert.Empty(handler.Requests);          // delay-first: kein API-Call beim Start
+        Assert.Empty(_executedDocuments);        // und keine Pipeline-Execution
     }
 }

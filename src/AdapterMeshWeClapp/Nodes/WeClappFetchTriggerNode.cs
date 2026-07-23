@@ -36,6 +36,12 @@ public record WeClappFetchTriggerNodeConfiguration : TriggerNodeConfiguration
     /// <summary>Seconds between polls (design: articles daily, orders every 15 min — configure per pipeline).</summary>
     public int PollingIntervalSeconds { get; set; } = 900;
 
+    /// <summary>When false, the polling loop delays FIRST and fetches only after the first
+    /// interval — a (re)deploy then never triggers an immediate fetch/delivery (P2
+    /// redeploy determinism; the as pipeline sets false). Default true keeps the
+    /// fetch-first behavior for idempotent pipelines (ck) and gated ones (ai).</summary>
+    public bool RunOnStart { get; set; } = true;
+
     /// <summary>How fetched documents start pipeline executions: "PerItem" (default — one
     /// execution per document, the AI/CK shape) or "Batch" (one execution per poll shaped
     /// <c>{ "items": [ … ] }</c> — the AS collector shape; golden precedent is ONE AS file
@@ -82,6 +88,18 @@ public class WeClappFetchTriggerNode(
 
         _pollingTask = Task.Run(async () =>
         {
+            if (!config.RunOnStart)
+            {
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(config.PollingIntervalSeconds), token);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+            }
+
             while (!token.IsCancellationRequested)
             {
                 try
