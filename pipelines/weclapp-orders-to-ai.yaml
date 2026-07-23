@@ -39,6 +39,7 @@ triggers:
     # (real-write-proven 2026-07-07), and the customer's stock of orders is CLOSED.
     additionalQuery: status-eq=ORDER_CONFIRMATION_PRINTED
     pageSize: 100
+    runOnStart: true              # fetch-first is wanted here: ck is idempotent, ai is gated
     pollingIntervalSeconds: 900
 
 transformations:
