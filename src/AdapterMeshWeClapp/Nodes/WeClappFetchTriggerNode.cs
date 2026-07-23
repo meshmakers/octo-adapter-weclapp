@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json.Nodes;
 using Lkv.WeClapp.Core;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
@@ -260,7 +261,7 @@ public class WeClappFetchTriggerNode(
                 ["meta"] = new JsonObject
                 {
                     ["exportKind"] = config.ExportKind,
-                    ["exportDate"] = viennaNow.ToString("yyyy-MM-dd"),
+                    ["exportDate"] = viennaNow.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
                 },
             });
             return;
