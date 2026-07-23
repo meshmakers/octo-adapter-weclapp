@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using Lkv.WeClapp.Core;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.Services;
@@ -53,6 +54,11 @@ public record WeClappFetchTriggerNodeConfiguration : TriggerNodeConfiguration
     /// field); pipelines that do not read prices (CK sync) set false and skip the fetch.</summary>
     public bool EnrichSupplySources { get; set; } = true;
 
+    /// <summary>Marker kind emitted as $.meta.exportKind in Batch mode — the delivery-dedup
+    /// gate keys its per-day CK marker (Industry.Logistics/ExportRun) on it. Only used
+    /// with emitMode Batch.</summary>
+    public string ExportKind { get; set; } = "AS";
+
     /// <summary>Retry attempts for transient HTTP failures (5xx/408/429/network), exponential backoff.</summary>
     public int MaxRetries { get; set; } = 4;
 
@@ -72,8 +78,10 @@ public record WeClappFetchTriggerNodeConfiguration : TriggerNodeConfiguration
 // ReSharper disable once ClassNeverInstantiated.Global
 public class WeClappFetchTriggerNode(
     ILogger<WeClappFetchTriggerNode> logger,
-    IHttpClientFactory httpClientFactory) : ITriggerPipelineNode
+    IHttpClientFactory httpClientFactory,
+    TimeProvider? timeProvider = null) : ITriggerPipelineNode
 {
+    private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
     private CancellationTokenSource? _cancellationTokenSource;
     private Task? _pollingTask;
 
@@ -177,7 +185,7 @@ public class WeClappFetchTriggerNode(
         switch (config.Entity)
         {
             case "article":
-                await FetchArticlesAsync(http, config, context, cancellationToken);
+                await FetchArticlesAsync(http, config, context, _timeProvider, cancellationToken);
                 break;
 
             case "salesOrder":
@@ -191,7 +199,7 @@ public class WeClappFetchTriggerNode(
     }
 
     private static async Task FetchArticlesAsync(HttpClient http, WeClappFetchTriggerNodeConfiguration config,
-        ITriggerContext context, CancellationToken cancellationToken)
+        ITriggerContext context, TimeProvider timeProvider, CancellationToken cancellationToken)
     {
         var articles = await FetchAllPagesAsync(http, config, "article", config.AdditionalQuery, cancellationToken);
 
@@ -245,7 +253,16 @@ public class WeClappFetchTriggerNode(
                 items.Add(Enrich(article));
             }
 
-            await ExecutePipelineAsync(context, new JsonObject { ["items"] = items });
+            var viennaNow = TimeZoneInfo.ConvertTime(timeProvider.GetUtcNow(), ViennaTime.Zone);
+            await ExecutePipelineAsync(context, new JsonObject
+            {
+                ["items"] = items,
+                ["meta"] = new JsonObject
+                {
+                    ["exportKind"] = config.ExportKind,
+                    ["exportDate"] = viennaNow.ToString("yyyy-MM-dd"),
+                },
+            });
             return;
         }
 

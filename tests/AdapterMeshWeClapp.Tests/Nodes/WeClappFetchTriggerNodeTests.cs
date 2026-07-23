@@ -16,7 +16,7 @@ public class WeClappFetchTriggerNodeTests
     private readonly IHttpClientFactory _httpClientFactory = A.Fake<IHttpClientFactory>();
     private readonly List<JsonNode?> _executedDocuments = new();
 
-    private WeClappFetchTriggerNode CreateSut(FakeHttpMessageHandler handler)
+    private WeClappFetchTriggerNode CreateSut(FakeHttpMessageHandler handler, TimeProvider? timeProvider = null)
     {
         A.CallTo(() => _context.NodeContext).Returns(_nodeContext);
         A.CallTo(() => _context.ExecuteAsync(A<ExecutePipelineOptions>._, A<object?>._))
@@ -24,7 +24,7 @@ public class WeClappFetchTriggerNodeTests
             .Returns(Task.FromResult<object?>(null));
         A.CallTo(() => _httpClientFactory.CreateClient(A<string>._))
             .Returns(new HttpClient(handler));
-        return new WeClappFetchTriggerNode(A.Fake<ILogger<WeClappFetchTriggerNode>>(), _httpClientFactory);
+        return new WeClappFetchTriggerNode(A.Fake<ILogger<WeClappFetchTriggerNode>>(), _httpClientFactory, timeProvider);
     }
 
     private WeClappFetchTriggerNodeConfiguration Configure(string entity, int pageSize = 100,
@@ -287,6 +287,24 @@ public class WeClappFetchTriggerNodeTests
         var document = Assert.Single(_executedDocuments);
         var enriched = document!["items"]![0]!["supplySources"]!.AsArray();
         Assert.Equal("12.34", enriched[0]!["articlePrices"]![0]!["price"]!.ToString());
+    }
+
+    [Fact]
+    public async Task FetchOnce_BatchMode_EmitsExportMarkerMeta_ViennaCalendarDay()
+    {
+        Configure("article", emitMode: "Batch");
+        var handler = new FakeHttpMessageHandler((_, _) =>
+            FakeHttpMessageHandler.Json("""{"result":[{"id":"1","name":"A"}]}"""));
+        // 22:30 UTC = 00:30 Wien (CEST, UTC+2) am FOLGETAG → exportDate muss 2026-07-24 sein
+        var sut = CreateSut(handler, new FixedTimeProvider(
+            new DateTimeOffset(2026, 7, 23, 22, 30, 0, TimeSpan.Zero)));
+
+        await sut.FetchOnceAsync(_context);
+
+        var document = Assert.Single(_executedDocuments);
+        Assert.Equal("AS", document!["meta"]!["exportKind"]!.ToString());
+        Assert.Equal("2026-07-24", document["meta"]!["exportDate"]!.ToString());
+        Assert.Single(document["items"]!.AsArray());
     }
 
     [Fact]
