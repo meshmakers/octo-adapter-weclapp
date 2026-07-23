@@ -94,6 +94,11 @@ public class WeClappFetchTriggerNode(
         var token = _cancellationTokenSource.Token;
 
         context.NodeContext.Info("WeClappFetch: polling '{0}' every {1}s", config.Entity, config.PollingIntervalSeconds);
+        if (!config.RunOnStart)
+        {
+            context.NodeContext.Info("WeClappFetch: first poll delayed by {0}s (runOnStart=false)",
+                config.PollingIntervalSeconds);
+        }
 
         _pollingTask = Task.Run(async () =>
         {

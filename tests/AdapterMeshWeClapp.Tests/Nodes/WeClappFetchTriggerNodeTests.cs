@@ -384,4 +384,28 @@ public class WeClappFetchTriggerNodeTests
         Assert.Empty(handler.Requests);          // delay-first: kein API-Call beim Start
         Assert.Empty(_executedDocuments);        // und keine Pipeline-Execution
     }
+
+    [Fact]
+    public async Task StartAsync_RunOnStartFalse_FetchesAfterFirstInterval()
+    {
+        // Liveness-Gegenstück zum Starvation-Schutz: delay-first darf den Fetch NUR
+        // verzögern, nicht verhindern — nach dem ersten Intervall muss geliefert werden.
+        var config = Configure("article");
+        config.RunOnStart = false;
+        config.PollingIntervalSeconds = 1;
+        var handler = new FakeHttpMessageHandler((_, _) =>
+            FakeHttpMessageHandler.Json("""{"result":[]}"""));
+        var sut = CreateSut(handler);
+
+        await sut.StartAsync(_context);
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (handler.Requests.Count == 0 && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(10);
+        }
+
+        await sut.StopAsync(_context);
+
+        Assert.NotEmpty(handler.Requests);       // delay-first liefert NACH dem Intervall
+    }
 }

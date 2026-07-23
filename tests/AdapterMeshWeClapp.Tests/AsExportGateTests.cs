@@ -76,6 +76,11 @@ public class AsExportGateTests
         Assert.Equal(AttributeValueTypesDto.Enum, gate.ValueType);
         Assert.Equal((int)UpdateKind.Insert, Convert.ToInt32(gate.Value));
 
+        // Reihenfolge auf Top-Ebene: die query-only Probe läuft VOR dem liefernden Gate:
+        var probeIndex = top.FindIndex(n => n is GetOrCreateRtEntitiesByTypeNodeConfiguration);
+        var gateIndex = top.FindIndex(n => n is IfNodeConfiguration);
+        Assert.True(probeIndex < gateIndex, "probe must run before the gate");
+
         // Im Gate: render → upload → Marker-CreateUpdateInfo → ApplyChanges@2 als LETZTER Schritt:
         var children = gate.Transformations!.ToList();
         var renderIndex = children.FindIndex(n => n is DilosRenderNodeConfiguration);
