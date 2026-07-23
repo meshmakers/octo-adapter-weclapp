@@ -44,6 +44,9 @@ dotnet test Octo.WeClappAdapter.slnx -c DebugL
 - Node logs are message templates with args (`nodeContext.Info("... {0}", x)`) — NEVER
   interpolated strings: `INodeContext` forwards to structured logging, so a literal `{...}`
   (JSON body, URL) corrupts the template
+- Redeploy determinism (P2): the AS batch pipeline runs delay-first (`runOnStart: false`) and
+  gates delivery on a per-day CK marker (`Industry.Logistics/ExportRun`), so a (re)deploy emits
+  no immediate or duplicate AS file; ck/ai keep `runOnStart: true` (ck idempotent, ai gated)
 
 ## Domain Gotchas (golden-file verified — do not "fix" without evidence)
 - DILOS AR/BE use **comma** decimals; AI/AS use dot. Both verified against real files.
