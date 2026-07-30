@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 using System.Text.Json.Nodes;
 using FakeItEasy;
@@ -305,6 +306,52 @@ public class WeClappFetchTriggerNodeTests
         Assert.Equal("AS", document!["meta"]!["exportKind"]!.ToString());
         Assert.Equal("2026-07-24", document["meta"]!["exportDate"]!.ToString());
         Assert.Single(document["items"]!.AsArray());
+    }
+
+    [Fact]
+    public async Task FetchOnce_BatchMode_ExportDateStaysGregorianUnderNonGregorianCulture()
+    {
+        // exportDate ist der Marker-SCHLÜSSEL (Tages-Bucket): ohne den InvariantCulture-Pin
+        // würde ein Host mit nicht-gregorianischer Kultur (ar-SA = Umm-al-Qura-Kalender)
+        // ein Hijri-Datum schreiben — der Marker würde nie matchen und das Dedup-Gate
+        // liefe ins Leere (Parität zu DilosFile.AsFileName).
+        Configure("article", emitMode: "Batch");
+        var handler = new FakeHttpMessageHandler((_, _) =>
+            FakeHttpMessageHandler.Json("""{"result":[{"id":"1","name":"A"}]}"""));
+        var sut = CreateSut(handler, new FixedTimeProvider(
+            new DateTimeOffset(2026, 7, 23, 22, 30, 0, TimeSpan.Zero)));
+
+        var originalCulture = CultureInfo.CurrentCulture;
+        CultureInfo.CurrentCulture = new CultureInfo("ar-SA");
+        try
+        {
+            await sut.FetchOnceAsync(_context);
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = originalCulture;
+        }
+
+        var document = Assert.Single(_executedDocuments);
+        Assert.Equal("2026-07-24", document!["meta"]!["exportDate"]!.ToString());
+    }
+
+    [Fact]
+    public async Task FetchOnce_BatchMode_ExportKindComesFromConfiguration()
+    {
+        // meta.exportKind muss aus der Node-Konfiguration kommen (nicht hartkodiert "AS") —
+        // ein zweiter Batch-Export (anderer kind) bekäme sonst still denselben Marker-Schlüssel.
+        var config = Configure("article", emitMode: "Batch");
+        config.ExportKind = "XX";
+        var handler = new FakeHttpMessageHandler((_, _) =>
+            FakeHttpMessageHandler.Json("""{"result":[{"id":"1","name":"A"}]}"""));
+        var sut = CreateSut(handler, new FixedTimeProvider(
+            new DateTimeOffset(2026, 7, 23, 10, 0, 0, TimeSpan.Zero)));
+
+        await sut.FetchOnceAsync(_context);
+
+        var document = Assert.Single(_executedDocuments);
+        Assert.Equal("XX", document!["meta"]!["exportKind"]!.ToString());
     }
 
     [Fact]
