@@ -2,10 +2,12 @@ using System.Net;
 using System.Text.Json.Nodes;
 using FakeItEasy;
 using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Nodes;
+using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Services;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Execution;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.Common.Services;
+using Meshmakers.Octo.Sdk.MeshAdapter;
 using Microsoft.Extensions.Logging;
 
 namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Tests.Nodes;
@@ -31,11 +33,34 @@ public class WeClappBeWriteNodeTests
     private readonly INodeContext _nodeContext = A.Fake<INodeContext>();
     private readonly NodeDelegate _next = A.Fake<NodeDelegate>();
     private readonly IHttpClientFactory _httpClientFactory = A.Fake<IHttpClientFactory>();
+    private readonly IMeshEtlContext _etlContext = A.Fake<IMeshEtlContext>();
 
     private WeClappBeWriteNode CreateSut(FakeHttpMessageHandler handler)
     {
         A.CallTo(() => _httpClientFactory.CreateClient(A<string>._)).Returns(new HttpClient(handler));
-        return new WeClappBeWriteNode(_next, A.Fake<ILogger<WeClappBeWriteNode>>(), _httpClientFactory);
+        return new WeClappBeWriteNode(_next, A.Fake<ILogger<WeClappBeWriteNode>>(), _httpClientFactory, _etlContext);
+    }
+
+    [Fact]
+    public async Task Process_ApiConfiguration_UsesResolvedBaseUrlAndKey()
+    {
+        var config = Configure();
+        config.ApiConfiguration = "WeClappApi";
+        config.BaseUrl = null;
+        config.ApiKey = null;
+        var globalConfiguration = A.Fake<IGlobalConfiguration>();
+        A.CallTo(() => _etlContext.GlobalConfiguration).Returns(globalConfiguration);
+        A.CallTo(() => globalConfiguration.IsDefined("WeClappApi")).Returns(true);
+        A.CallTo(() => globalConfiguration.GetValue<WeClappConnectionSettings>("WeClappApi"))
+            .Returns(new WeClappConnectionSettings { BaseUrl = "https://cfg.weclapp.com/webapp/api/v1", ApiKey = "cfg-key" });
+        var handler = new FakeHttpMessageHandler((req, _) => DefaultResponder(req));
+        var sut = CreateSut(handler);
+
+        await sut.ProcessObjectAsync(_dataContext, _nodeContext);
+
+        Assert.NotEmpty(handler.Requests);
+        Assert.All(handler.Requests, r => Assert.StartsWith("https://cfg.weclapp.com/webapp/api/v1/", r.Url));
+        Assert.All(handler.Requests, r => Assert.Equal("cfg-key", r.AuthToken));
     }
 
     private WeClappBeWriteNodeConfiguration Configure(bool dryRun = false, int pageSize = 500)
