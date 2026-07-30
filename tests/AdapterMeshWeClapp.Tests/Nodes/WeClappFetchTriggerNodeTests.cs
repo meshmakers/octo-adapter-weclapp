@@ -3,6 +3,7 @@ using System.Net;
 using System.Text.Json.Nodes;
 using FakeItEasy;
 using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Nodes;
+using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Services;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.Common.Services;
@@ -454,5 +455,67 @@ public class WeClappFetchTriggerNodeTests
         await sut.StopAsync(_context);
 
         Assert.NotEmpty(handler.Requests);       // delay-first liefert NACH dem Intervall
+    }
+
+    private IGlobalConfiguration FakeWeClappApiConfiguration(string baseUrl, string apiKey)
+    {
+        var globalConfiguration = A.Fake<IGlobalConfiguration>();
+        A.CallTo(() => _context.GlobalConfiguration).Returns(globalConfiguration);
+        A.CallTo(() => globalConfiguration.IsDefined("WeClappApi")).Returns(true);
+        A.CallTo(() => globalConfiguration.GetValue<WeClappConnectionSettings>("WeClappApi"))
+            .Returns(new WeClappConnectionSettings { BaseUrl = baseUrl, ApiKey = apiKey });
+        return globalConfiguration;
+    }
+
+    [Fact]
+    public async Task FetchOnce_ApiConfiguration_UsesResolvedBaseUrlAndKey()
+    {
+        var config = Configure("article");
+        config.ApiConfiguration = "WeClappApi";
+        config.BaseUrl = null;
+        config.ApiKey = null;
+        FakeWeClappApiConfiguration("https://cfg.weclapp.com/webapp/api/v1", "cfg-key");
+        var handler = new FakeHttpMessageHandler((_, _) => FakeHttpMessageHandler.Json("""{"result":[]}"""));
+        var sut = CreateSut(handler);
+
+        await sut.FetchOnceAsync(_context);
+
+        Assert.NotEmpty(handler.Requests);
+        Assert.All(handler.Requests, r => Assert.StartsWith("https://cfg.weclapp.com/webapp/api/v1/", r.Url));
+        Assert.All(handler.Requests, r => Assert.Equal("cfg-key", r.AuthToken));
+    }
+
+    [Fact]
+    public async Task FetchOnce_ApiConfigurationWinsOverInline()
+    {
+        var config = Configure("article"); // Configure setzt Inline-BaseUrl https://demo… + "test-key"
+        config.ApiConfiguration = "WeClappApi";
+        FakeWeClappApiConfiguration("https://cfg.weclapp.com/webapp/api/v1", "cfg-key");
+        var handler = new FakeHttpMessageHandler((_, _) => FakeHttpMessageHandler.Json("""{"result":[]}"""));
+        var sut = CreateSut(handler);
+
+        await sut.FetchOnceAsync(_context);
+
+        Assert.NotEmpty(handler.Requests);
+        Assert.All(handler.Requests, r => Assert.Equal("cfg-key", r.AuthToken));
+        Assert.All(handler.Requests, r => Assert.StartsWith("https://cfg.weclapp.com/webapp/api/v1/", r.Url));
+    }
+
+    [Fact]
+    public async Task FetchOnce_ApiConfigurationMissingEntry_FailsLoudWithoutHttp()
+    {
+        var config = Configure("article");
+        config.ApiConfiguration = "WeClappApi";
+        var globalConfiguration = A.Fake<IGlobalConfiguration>();
+        A.CallTo(() => _context.GlobalConfiguration).Returns(globalConfiguration);
+        A.CallTo(() => globalConfiguration.IsDefined("WeClappApi")).Returns(false);
+        var handler = new FakeHttpMessageHandler((_, _) => FakeHttpMessageHandler.Json("{}"));
+        var sut = CreateSut(handler);
+
+        var ex = await Assert.ThrowsAsync<WeClappPipelineExecutionException>(() => sut.FetchOnceAsync(_context));
+
+        Assert.Contains("WeClappApi", ex.Message);
+        Assert.DoesNotContain("cfg-key", ex.Message);
+        Assert.Empty(handler.Requests);
     }
 }

@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.Json.Nodes;
 using Lkv.WeClapp.Core;
+using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Services;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.Services;
@@ -17,12 +18,19 @@ namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Nodes;
 [NodeName("WeClappFetch", 1)]
 public record WeClappFetchTriggerNodeConfiguration : TriggerNodeConfiguration
 {
-    /// <summary>WeClapp API base, e.g. "https://{tenant}.weclapp.com/webapp/api/v1".</summary>
-    public required string BaseUrl { get; set; }
+    /// <summary>Name of the tenant GlobalConfiguration entry with the WeClapp access settings
+    /// ({ baseUrl, apiKey }, e.g. "WeClappApi" — shared with the write-back nodes). When set,
+    /// it takes precedence over the inline <see cref="BaseUrl"/>/<see cref="ApiKey"/>; the key
+    /// then lives once per tenant instead of in every pipeline definition.</summary>
+    public string? ApiConfiguration { get; set; }
 
-    /// <summary>WeClapp API token (sent as "AuthenticationToken" header). Comes from the
-    /// pipeline deployment configuration — never hardcode or log it.</summary>
-    public required string ApiKey { get; set; }
+    /// <summary>WeClapp API base, e.g. "https://{tenant}.weclapp.com/webapp/api/v1".
+    /// Optional when <see cref="ApiConfiguration"/> is set.</summary>
+    public string? BaseUrl { get; set; }
+
+    /// <summary>WeClapp API token (sent as "AuthenticationToken" header) — never hardcode or
+    /// log it. Optional when <see cref="ApiConfiguration"/> is set.</summary>
+    public string? ApiKey { get; set; }
 
     /// <summary>WeClapp entity to pull: "article" or "salesOrder" (orders are joined with
     /// their customer; orderItems are part of the default salesOrder response — live-verified,
@@ -186,16 +194,19 @@ public class WeClappFetchTriggerNode(
                 "orders stay per-item (one golden AI file per order)");
         }
 
+        var settings = context.GlobalConfiguration.ResolveWeClappSettings(
+            config.ApiConfiguration, config.BaseUrl, config.ApiKey);
+
         var http = httpClientFactory.CreateClient(nameof(WeClappFetchTriggerNode));
 
         switch (config.Entity)
         {
             case "article":
-                await FetchArticlesAsync(http, config, context, _timeProvider, cancellationToken);
+                await FetchArticlesAsync(http, config, settings, context, _timeProvider, cancellationToken);
                 break;
 
             case "salesOrder":
-                await FetchOrdersAsync(http, config, context, cancellationToken);
+                await FetchOrdersAsync(http, config, settings, context, cancellationToken);
                 break;
 
             default:
@@ -205,9 +216,11 @@ public class WeClappFetchTriggerNode(
     }
 
     private static async Task FetchArticlesAsync(HttpClient http, WeClappFetchTriggerNodeConfiguration config,
-        ITriggerContext context, TimeProvider timeProvider, CancellationToken cancellationToken)
+        WeClappConnectionSettings settings, ITriggerContext context, TimeProvider timeProvider,
+        CancellationToken cancellationToken)
     {
-        var articles = await FetchAllPagesAsync(http, config, "article", config.AdditionalQuery, cancellationToken);
+        var articles = await FetchAllPagesAsync(http, config, settings, "article", config.AdditionalQuery,
+            cancellationToken);
 
         // EK enrichment: raw articles embed only supply-source REFERENCE STUBS
         // ({articleSupplySourceId}); the purchase prices live on the separate
@@ -216,7 +229,8 @@ public class WeClappFetchTriggerNode(
         Dictionary<string, JsonNode>? sourcesById = null;
         if (config.EnrichSupplySources && articles.Any(a => a["supplySources"]?.AsArray() is { Count: > 0 }))
         {
-            var sources = await FetchAllPagesAsync(http, config, "articleSupplySource", "", cancellationToken);
+            var sources = await FetchAllPagesAsync(http, config, settings, "articleSupplySource", "",
+                cancellationToken);
             sourcesById = sources
                 .Where(s => s["id"] is not null)
                 .ToDictionary(s => s["id"]!.ToString(), s => s);
@@ -280,10 +294,11 @@ public class WeClappFetchTriggerNode(
     }
 
     private static async Task FetchOrdersAsync(HttpClient http, WeClappFetchTriggerNodeConfiguration config,
-        ITriggerContext context, CancellationToken cancellationToken)
+        WeClappConnectionSettings settings, ITriggerContext context, CancellationToken cancellationToken)
     {
         // orderItems are included in the default salesOrder response (live-verified).
-        var orders = await FetchAllPagesAsync(http, config, "salesOrder", config.AdditionalQuery, cancellationToken);
+        var orders = await FetchAllPagesAsync(http, config, settings, "salesOrder", config.AdditionalQuery,
+            cancellationToken);
 
         var customerCache = new Dictionary<string, JsonNode?>();
 
@@ -295,7 +310,7 @@ public class WeClappFetchTriggerNode(
             {
                 if (!customerCache.TryGetValue(customerId, out customer))
                 {
-                    var matches = await FetchAllPagesAsync(http, config, "customer", $"id-eq={customerId}",
+                    var matches = await FetchAllPagesAsync(http, config, settings, "customer", $"id-eq={customerId}",
                         cancellationToken);
                     customer = matches.FirstOrDefault();
                     customerCache[customerId] = customer;
@@ -319,11 +334,11 @@ public class WeClappFetchTriggerNode(
     }
 
     private static async Task<List<JsonNode>> FetchAllPagesAsync(HttpClient http,
-        WeClappFetchTriggerNodeConfiguration config, string entity, string additionalQuery,
-        CancellationToken cancellationToken)
+        WeClappFetchTriggerNodeConfiguration config, WeClappConnectionSettings settings, string entity,
+        string additionalQuery, CancellationToken cancellationToken)
     {
         var results = new List<JsonNode>();
-        var baseUrl = config.BaseUrl.TrimEnd('/');
+        var baseUrl = settings.BaseUrl.TrimEnd('/');
         var page = 1;
 
         while (true)
@@ -331,7 +346,7 @@ public class WeClappFetchTriggerNode(
             var url = $"{baseUrl}/{entity}?page={page}&pageSize={config.PageSize}"
                       + (additionalQuery.Length > 0 ? "&" + additionalQuery : "");
 
-            var json = await GetWithRetryAsync(http, url, config, cancellationToken);
+            var json = await GetWithRetryAsync(http, url, config, settings, cancellationToken);
             var result = JsonNode.Parse(json)?["result"]?.AsArray()
                          ?? throw new WeClappPipelineExecutionException(
                              $"WeClapp response for '{entity}' page {page} has no 'result' array");
@@ -355,7 +370,8 @@ public class WeClappFetchTriggerNode(
     }
 
     private static async Task<string> GetWithRetryAsync(HttpClient http, string url,
-        WeClappFetchTriggerNodeConfiguration config, CancellationToken cancellationToken)
+        WeClappFetchTriggerNodeConfiguration config, WeClappConnectionSettings settings,
+        CancellationToken cancellationToken)
     {
         string? lastError = null;
         var attempts = Math.Max(1, config.MaxRetries); // a misconfigured 0 must still try once
@@ -365,7 +381,7 @@ public class WeClappFetchTriggerNode(
             try
             {
                 using var request = new HttpRequestMessage(HttpMethod.Get, url);
-                request.Headers.Add("AuthenticationToken", config.ApiKey);
+                request.Headers.Add("AuthenticationToken", settings.ApiKey);
                 using var response = await http.SendAsync(request, cancellationToken);
 
                 if (response.IsSuccessStatusCode)
