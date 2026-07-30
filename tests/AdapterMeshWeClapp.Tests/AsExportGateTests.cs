@@ -91,6 +91,30 @@ public class AsExportGateTests
         Assert.True(uploadIndex > renderIndex, "Upload nach Render, im Gate");
         Assert.True(markerIndex > uploadIndex, "Marker-Update NACH dem Upload (at-least-once)");
         Assert.Equal(persistIndex, children.Count - 1);
+
+        // Pfad-VERDRAHTUNG: jede dieser String-Verbindungen kann per YAML-Edit einseitig
+        // brechen, ohne dass Struktur-/Reihenfolge-Pins rot werden — zur Laufzeit wäre das
+        // ein STILLER Fehler (Gate liest null ⇒ dauer-zu = Liefer-Starvation; ApplyChanges
+        // findet keine Updates ⇒ nur Warning, Marker persistiert nie ⇒ Gate dauer-offen;
+        // Marker-Werte matchen die Probe nie ⇒ tägliche Duplikate).
+        Assert.Equal("$.rt.asExportRunModOperation", probe.ModOperationPath);
+        Assert.Equal(probe.ModOperationPath, gate.Path);
+        Assert.Equal("$.rt.asExportRunRtId", probe.RtIdTargetPath);
+
+        var marker = Assert.Single(children.OfType<CreateUpdateInfoNodeConfiguration>());
+        Assert.Equal(probe.RtIdTargetPath, marker.RtIdPath);
+        Assert.Equal(probe.ModOperationPath, marker.UpdateKindPath);
+        Assert.Equal(probe.CkTypeId, marker.CkTypeId);
+
+        var persist = Assert.Single(children.OfType<ApplyChangesNodeConfiguration2>());
+        Assert.Equal(marker.TargetPath, persist.EntityUpdatesPath);
+
+        // Der Marker schreibt exakt die Attribute/Pfade, auf die die Probe filtert:
+        Assert.Contains(probe.FieldFilters!, f => f.AttributePath == "ExportKind" && f.ComparisonValuePath == "$.meta.exportKind");
+        Assert.Contains(probe.FieldFilters!, f => f.AttributePath == "ExportDate" && f.ComparisonValuePath == "$.meta.exportDate");
+        Assert.NotNull(marker.AttributeUpdates);
+        Assert.Contains(marker.AttributeUpdates!, u => u.AttributeName == "ExportKind" && u.ValuePath == "$.meta.exportKind");
+        Assert.Contains(marker.AttributeUpdates!, u => u.AttributeName == "ExportDate" && u.ValuePath == "$.meta.exportDate");
     }
 
     private static string FindRepoFile(string relativePath)

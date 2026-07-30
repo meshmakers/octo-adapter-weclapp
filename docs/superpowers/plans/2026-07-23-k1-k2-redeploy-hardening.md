@@ -1,4 +1,4 @@
-# K1/K2 Redeploy-Härtung Implementation Plan (Go-Live-Plan v2, Phase 1) — **v2 nach adversarischer Verifikation**
+# K1/K2 Redeploy-Härtung Implementation Plan (Go-Live-Plan v2, Phase 1) — **v3, umgesetzt in diesem Branch**
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 > **v2 (23.07.):** 3 Major + 5 Minor + 4 Nits aus der 4-Prüfer-Verifikation eingearbeitet (ApplyChanges@2 statt deprecated @1; TimeProvider als optionaler Ctor-Param nach echtem DilosRender-Muster; Silent-Empty-Prüfpunkt; Begründungs- und Pfadkorrekturen). Poll-Intervall 3600 s von Martin bestätigt.

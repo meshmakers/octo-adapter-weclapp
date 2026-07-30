@@ -26,7 +26,9 @@ template.
   - **Redeploy determinism (P2):** the AS pipeline delays first (`runOnStart: false`) and
     gates delivery on a per-day CK marker (`Industry.Logistics/ExportRun`), so a (re)deploy
     emits no immediate or duplicate AS file; `ck`/`ai` keep `runOnStart: true`
-    (ck idempotent, ai already gated)
+    (ck idempotent, ai already gated). Operational constraint: keep the chart's
+    `replicaCount: 1` — the gate's probe-to-persist window is race-free only with a
+    single replica (two replicas could both deliver before the day marker lands)
 - `tests/Lkv.WeClapp.Core.Tests` — xUnit against real LKV golden files
   (specs verified field-by-field; see `docs/superpowers/specs/`)
 - `tests/AdapterMeshWeClapp.Tests` — node/pipeline tests plus multi-gated live smokes
