@@ -55,7 +55,11 @@ public static class WeClappConnectionSettingsResolver
 
 Aufrufstellen lösen einmal pro Poll/Verarbeitung auf und verwenden nur noch `settings.BaseUrl`/`settings.ApiKey`:
 - `WeClappFetchTriggerNode`: Auflösung in `FetchOnceAsync` (Zugriff via `context.GlobalConfiguration`, wie `DilosFileFetchTriggerNode.cs:146`); Header `AuthenticationToken` (:368) und URL-Bau aus den Settings.
-- `WeClappArWriteNode.cs:58` / `WeClappBeWriteNode.cs:58`: `WeClappApi`-Konstruktion aus den Settings (Zugriff via ETL-Kontext, wie `DilosSftpWriteNode`).
+- `WeClappArWriteNode.cs:58` / `WeClappBeWriteNode.cs:58`: `WeClappApi`-Konstruktion aus den Settings. **Erfordert Konstruktor-Erweiterung**: Beide Write-Nodes haben heute keinen ETL-Kontext (Primary Constructor nur `next, logger, httpClientFactory` — `WeClappArWriteNode.cs:37-40`); sie bekommen zusätzlich `IMeshEtlContext etlContext` injiziert — dieselbe DI-Signatur, mit der `DilosSftpWriteNode.cs:40-43` seinen `etlContext.GlobalConfiguration`-Zugriff (:82) erhält.
+
+### Auflösungszeitpunkt & Rotation (bewusste Entscheidung)
+
+Aufgelöst wird **je Poll** (Fetch-Trigger) bzw. **je Verarbeitung** (Write-Nodes) — exakt das heutige SFTP-Verhalten im selben Repo (`DilosFileFetch` löst `LkvSftp` in jedem `FetchOnceAsync` auf). Vorteile: Key-Rotation am Tenant greift **ohne Redeploy** beim nächsten Poll; kein gecachter Zustand im Node. Bewusst **keine** zusätzliche Validierung in `StartAsync`: das wiche vom etablierten SFTP-Muster ab und hinge von der (offline nicht belegten) Annahme ab, dass `GlobalConfiguration` beim Trigger-Start bereits vollständig initialisiert ist. Dokumentierte Konsequenz: Eine Fehlkonfiguration zeigt sich beim ersten Poll nach dem Deploy (bei der as-Pipeline mit `runOnStart: false` erst nach dem ersten 3600-s-Intervall) — der Migrate/Contract-Schritt enthält deshalb eine bewusste Staging-Probe statt „deploy and forget".
 
 Der aufgelöste Key wird **nie** geloggt und **nie** in den DataContext geschrieben (gleiches Verhalten wie heute; Vorbild-Doku AnthropicAiQuery: „never exposed in the data context").
 
@@ -68,7 +72,7 @@ Der aufgelöste Key wird **nie** geloggt und **nie** in den DataContext geschrie
 ### Folgeschritte nach diesem PR (nicht Teil des Diffs, im PR-Body dokumentiert)
 
 1. **Migrate:** `WeClappApi`-Eintrag auf staging-1 (+ test-2, falls weiter genutzt) anlegen + Uses-Association an die 5 Pipelines; prod-2 im Zuge von Phase 4 (dort fehlen ohnehin LkvSftp + WeClappApi).
-2. **Contract (Mini-Folgecommit):** 5 YAML-Stellen auf `apiConfiguration: WeClappApi` umstellen, beide `Replace(...)`-Zeilen aus `om_setup_lkv.ps1` entfernen. Deploy nur auf Tenants mit vorhandenem Eintrag; fehlt er doch, stoppt der Resolver fail-loud mit Handlungsanweisung.
+2. **Contract (Mini-Folgecommit):** In allen 5 Pipeline-YAMLs **beide Felder** (`baseUrl` + `apiKey`; 3× Fetch- und 2× Write-Node-Sektionen) durch `apiConfiguration: WeClappApi` ersetzen, beide `Replace(...)`-Zeilen aus `om_setup_lkv.ps1` entfernen. Deploy nur auf Tenants mit vorhandenem Eintrag; fehlt er doch, stoppt der Resolver fail-loud mit Handlungsanweisung.
 
 ## Fehlerbehandlung (vollständige Matrix)
 
