@@ -20,9 +20,15 @@ template.
 - `src/charts/octo-weclapp-adapter` — Helm chart; deployed by the Communication
   Operator, probes `/healthz/live` + `/healthz/ready`
 - `pipelines/` — tenant pipeline YAMLs (3× outbound: orders→AI per order,
-  articles→CK per item, articles→AS as one batched file per poll; 2× return path);
+  articles→CK per item, articles→AS as at most one batched file per Vienna calendar day; 2× return path);
   `scripts/om_setup_lkv.ps1` prepares them (substitutes `${WECLAPP_API_KEY}` and
   the `REPLACE-TENANT` baseUrl)
+  - **Redeploy determinism (P2):** the AS pipeline delays first (`runOnStart: false`) and
+    gates delivery on a per-day CK marker (`Industry.Logistics/ExportRun`), so a (re)deploy
+    emits no immediate or duplicate AS file; `ck`/`ai` keep `runOnStart: true`
+    (ck idempotent, ai already gated). Operational constraint: keep the chart's
+    `replicaCount: 1` — the gate's probe-to-persist window is race-free only with a
+    single replica (two replicas could both deliver before the day marker lands)
 - `tests/Lkv.WeClapp.Core.Tests` — xUnit against real LKV golden files
   (specs verified field-by-field; see `docs/superpowers/specs/`)
 - `tests/AdapterMeshWeClapp.Tests` — node/pipeline tests plus multi-gated live smokes

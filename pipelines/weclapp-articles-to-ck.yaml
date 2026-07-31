@@ -16,6 +16,7 @@ triggers:
     entity: article
     enrichSupplySources: false    # CK maps no EK prices — skip the heaviest fetch
     pageSize: 100
+    runOnStart: true              # fetch-first is wanted here: ck upserts are idempotent
     pollingIntervalSeconds: 86400
 
 transformations:
