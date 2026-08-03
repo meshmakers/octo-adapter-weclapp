@@ -80,11 +80,12 @@ dotnet test Octo.WeClappAdapter.slnx -c DebugL
   articleId BEFORE delta planning — variant lines (Characteristic1/2) can collapse to one
   article and would otherwise double-book.
 - `DryRun` on both write nodes: PUTs run with `?dryRun=true`; createShipment/movements
-  are skipped and logged. Trial writes use `WECLAPP_TRIAL_*` env vars ONLY —
-  **`WECLAPP_CUSTOMER_*` is a productive system: GET only, never writes.**
-- Live smokes are multi-gated: real writes additionally require `WECLAPP_TRIAL_REAL_WRITE=1`
-  (process-scoped for ONE deliberate run — never persist it) and the SFTP E2E also needs
-  `LKV_SFTP_CREDENTIALS_FILE`; a normal `dotnet test` stays a no-op.
+  are skipped and logged.
+- Live smoke: `WeClappCustomerSmokeTests` is env-gated on `WECLAPP_CUSTOMER_*` and
+  **strictly read-only** — the customer system is productive: **GET only, never writes.**
+  The former trial-account smokes (dry-run writes, real writes, SFTP E2E) died with the
+  trial account (expired 2026-07) and were removed — do not revive write smokes against
+  the customer system. A normal `dotnet test` without the env vars stays a no-op.
 
 ## Conventions
 - `TreatWarningsAsErrors`, nullable enabled, `LangVersion latestmajor` (Directory.Build.props)
