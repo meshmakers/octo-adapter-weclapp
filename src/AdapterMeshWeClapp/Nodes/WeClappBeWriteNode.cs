@@ -7,6 +7,7 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.Common.Services;
+using Meshmakers.Octo.Sdk.MeshAdapter;
 using Microsoft.Extensions.Logging;
 
 namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Nodes;
@@ -39,7 +40,8 @@ public record WeClappBeWriteNodeConfiguration : WeClappWriteNodeConfiguration
 public class WeClappBeWriteNode(
     NodeDelegate next,
     ILogger<WeClappBeWriteNode> logger,
-    IHttpClientFactory httpClientFactory) : IPipelineNode
+    IHttpClientFactory httpClientFactory,
+    IMeshEtlContext etlContext) : IPipelineNode
 {
     /// <inheritdoc />
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
@@ -54,8 +56,10 @@ public class WeClappBeWriteNode(
                           $"WeClappBeWrite: no content at '{config.ContentPath}'");
 
         var lines = DilosBeParser.Parse(content);
+        var settings = etlContext.GlobalConfiguration.ResolveWeClappSettings(
+            config.ApiConfiguration, config.BaseUrl, config.ApiKey);
         var api = new WeClappApi(httpClientFactory.CreateClient(nameof(WeClappBeWriteNode)),
-            config.BaseUrl, config.ApiKey, config.MaxRetries, config.RetryBackoffBaseSeconds);
+            settings.BaseUrl, settings.ApiKey, config.MaxRetries, config.RetryBackoffBaseSeconds);
 
         // Bulk reads: warehouse (booking place), article ids (key validation), stock rows.
         var warehouseBody = WeClappApi.EnsureSuccess(

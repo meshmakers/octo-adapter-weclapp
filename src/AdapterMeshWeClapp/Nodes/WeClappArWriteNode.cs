@@ -7,6 +7,7 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.Common.Services;
+using Meshmakers.Octo.Sdk.MeshAdapter;
 using Microsoft.Extensions.Logging;
 
 namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Nodes;
@@ -37,7 +38,8 @@ public record WeClappArWriteNodeConfiguration : WeClappWriteNodeConfiguration;
 public class WeClappArWriteNode(
     NodeDelegate next,
     ILogger<WeClappArWriteNode> logger,
-    IHttpClientFactory httpClientFactory) : IPipelineNode
+    IHttpClientFactory httpClientFactory,
+    IMeshEtlContext etlContext) : IPipelineNode
 {
     private static readonly JsonSerializerOptions CaseInsensitive = new() { PropertyNameCaseInsensitive = true };
 
@@ -54,8 +56,10 @@ public class WeClappArWriteNode(
                           $"WeClappArWrite: no content at '{config.ContentPath}'");
 
         var shipments = DilosArParser.Parse(content);
+        var settings = etlContext.GlobalConfiguration.ResolveWeClappSettings(
+            config.ApiConfiguration, config.BaseUrl, config.ApiKey);
         var api = new WeClappApi(httpClientFactory.CreateClient(nameof(WeClappArWriteNode)),
-            config.BaseUrl, config.ApiKey, config.MaxRetries, config.RetryBackoffBaseSeconds);
+            settings.BaseUrl, settings.ApiKey, config.MaxRetries, config.RetryBackoffBaseSeconds);
 
         List<JsonNode>? carrierEntities = null; // looked up lazily, once per file
 

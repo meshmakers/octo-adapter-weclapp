@@ -122,7 +122,8 @@ public class WeClappTrialWriteSmokeTests(ITestOutputHelper output)
         var (dataContext, nodeContext, next) = FakePipeline("SMOKE-AR.TXT", arContent);
         A.CallTo(() => nodeContext.GetNodeConfiguration<WeClappArWriteNodeConfiguration>()).Returns(config);
 
-        var node = new WeClappArWriteNode(next, A.Fake<ILogger<WeClappArWriteNode>>(), LiveHttpClientFactory());
+        var node = new WeClappArWriteNode(next, A.Fake<ILogger<WeClappArWriteNode>>(), LiveHttpClientFactory(),
+            A.Fake<Meshmakers.Octo.Sdk.MeshAdapter.IMeshEtlContext>());
         await node.ProcessObjectAsync(dataContext, nodeContext); // throws if WeClapp rejects the PUT shape
 
         output.WriteLine($"LIVE AR dry-run validated: order {orderId}, shipment {candidate["id"]} " +
@@ -175,7 +176,8 @@ public class WeClappTrialWriteSmokeTests(ITestOutputHelper output)
             "SMOKE-BE.txt", $"{articleId}|0|0||1|VER\r\n");
         A.CallTo(() => nodeContext.GetNodeConfiguration<WeClappBeWriteNodeConfiguration>()).Returns(config);
 
-        var node = new WeClappBeWriteNode(next, A.Fake<ILogger<WeClappBeWriteNode>>(), LiveHttpClientFactory());
+        var node = new WeClappBeWriteNode(next, A.Fake<ILogger<WeClappBeWriteNode>>(), LiveHttpClientFactory(),
+            A.Fake<Meshmakers.Octo.Sdk.MeshAdapter.IMeshEtlContext>());
         await node.ProcessObjectAsync(dataContext, nodeContext); // throws if any bulk-read query is wrong
 
         output.WriteLine($"LIVE BE dry-run validated: warehouse {warehouseId} " +

@@ -170,7 +170,8 @@ public class WeClappTrialRealWriteSmokeTests(ITestOutputHelper output)
         var (dataContext, nodeContext, next, _) = FakePipeline("REAL-AR.TXT", arContent);
         A.CallTo(() => nodeContext.GetNodeConfiguration<WeClappArWriteNodeConfiguration>()).Returns(config);
 
-        var node = new WeClappArWriteNode(next, A.Fake<ILogger<WeClappArWriteNode>>(), LiveHttpClientFactory());
+        var node = new WeClappArWriteNode(next, A.Fake<ILogger<WeClappArWriteNode>>(), LiveHttpClientFactory(),
+            A.Fake<Meshmakers.Octo.Sdk.MeshAdapter.IMeshEtlContext>());
         await node.ProcessObjectAsync(dataContext, nodeContext);
 
         // Read-back: the order now has exactly one shipment, SHIPPED, with our tracking
@@ -249,7 +250,8 @@ public class WeClappTrialRealWriteSmokeTests(ITestOutputHelper output)
             var content = $"{articleId}|0|0||{quantity.ToString(CultureInfo.InvariantCulture).Replace('.', ',')}|VER\r\n";
             var (dataContext, nodeContext, next, infos) = FakePipeline($"REAL-BE-{label}.txt", content);
             A.CallTo(() => nodeContext.GetNodeConfiguration<WeClappBeWriteNodeConfiguration>()).Returns(config);
-            var node = new WeClappBeWriteNode(next, A.Fake<ILogger<WeClappBeWriteNode>>(), LiveHttpClientFactory());
+            var node = new WeClappBeWriteNode(next, A.Fake<ILogger<WeClappBeWriteNode>>(), LiveHttpClientFactory(),
+                A.Fake<Meshmakers.Octo.Sdk.MeshAdapter.IMeshEtlContext>());
             await node.ProcessObjectAsync(dataContext, nodeContext);
             return infos;
         }
