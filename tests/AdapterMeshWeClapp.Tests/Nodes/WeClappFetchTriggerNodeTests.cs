@@ -515,7 +515,33 @@ public class WeClappFetchTriggerNodeTests
         var ex = await Assert.ThrowsAsync<WeClappPipelineExecutionException>(() => sut.FetchOnceAsync(_context));
 
         Assert.Contains("WeClappApi", ex.Message);
-        Assert.DoesNotContain("cfg-key", ex.Message);
+        Assert.DoesNotContain("test-key", ex.Message); // the inline key in scope must not leak into the error
         Assert.Empty(handler.Requests);
+    }
+
+    [Fact]
+    public async Task FetchOnce_ResolvesPerPoll_PicksUpChangedConfigurationValue()
+    {
+        // Pins the no-cached-state contract: the node re-reads IGlobalConfiguration on every
+        // poll, so a changed entry value is used by the next poll of the same node instance.
+        var config = Configure("article");
+        config.ApiConfiguration = "WeClappApi";
+        config.BaseUrl = null;
+        config.ApiKey = null;
+        var globalConfiguration = A.Fake<IGlobalConfiguration>();
+        A.CallTo(() => _context.GlobalConfiguration).Returns(globalConfiguration);
+        A.CallTo(() => globalConfiguration.IsDefined("WeClappApi")).Returns(true);
+        A.CallTo(() => globalConfiguration.GetValue<WeClappConnectionSettings>("WeClappApi"))
+            .ReturnsNextFromSequence(
+                new WeClappConnectionSettings { BaseUrl = "https://cfg.weclapp.com/webapp/api/v1", ApiKey = "rotated-key-1" },
+                new WeClappConnectionSettings { BaseUrl = "https://cfg.weclapp.com/webapp/api/v1", ApiKey = "rotated-key-2" });
+        var handler = new FakeHttpMessageHandler((_, _) => FakeHttpMessageHandler.Json("""{"result":[]}"""));
+        var sut = CreateSut(handler);
+
+        await sut.FetchOnceAsync(_context);
+        await sut.FetchOnceAsync(_context);
+
+        Assert.Equal("rotated-key-1", handler.Requests.First().AuthToken);
+        Assert.Equal("rotated-key-2", handler.Requests.Last().AuthToken);
     }
 }

@@ -89,4 +89,34 @@ public class WeClappConnectionSettingsResolverTests
 
         Assert.Contains("apiConfiguration", ex.Message);
     }
+
+    [Fact]
+    public void Resolve_ConfigurationEntryNullValue_FailsLoud()
+    {
+        A.CallTo(() => _globalConfiguration.IsDefined("WeClappApi")).Returns(true);
+        // A tenant entry whose ConfigurationValue is the JSON literal null deserializes to
+        // null (Deserialize<T> suppresses the nullability) — must hit the clear error, not an NRE.
+        A.CallTo(() => _globalConfiguration.GetValue<WeClappConnectionSettings>("WeClappApi"))
+            .Returns(null!);
+
+        var ex = Assert.Throws<WeClappPipelineExecutionException>(() =>
+            _globalConfiguration.ResolveWeClappSettings("WeClappApi", null, null));
+
+        Assert.Contains("WeClappApi", ex.Message);
+        Assert.Contains("baseUrl", ex.Message);
+        Assert.Contains("apiKey", ex.Message);
+    }
+
+    [Fact]
+    public void SettingsToString_DoesNotContainApiKey()
+    {
+        var settings = new WeClappConnectionSettings
+        {
+            BaseUrl = "https://cfg.weclapp.com/webapp/api/v1",
+            ApiKey = "super-secret-token",
+        };
+
+        Assert.DoesNotContain("super-secret-token", settings.ToString());
+        Assert.Contains("BaseUrl", settings.ToString());
+    }
 }

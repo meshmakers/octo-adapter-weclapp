@@ -13,6 +13,9 @@ public record WeClappConnectionSettings
 
     /// <summary>API token (sent as "AuthenticationToken" header) — never log it.</summary>
     public string ApiKey { get; init; } = "";
+
+    /// <summary>Records synthesize a ToString over all members — keep the key out of it.</summary>
+    public override string ToString() => $"WeClappConnectionSettings {{ BaseUrl = {BaseUrl}, ApiKey = *** }}";
 }
 
 /// <summary>
@@ -36,8 +39,9 @@ public static class WeClappConnectionSettingsResolver
                     "— link the configuration entity to the pipeline (Uses association)");
             }
 
+            // A ConfigurationValue of literal null deserializes to null despite the non-null contract.
             var settings = globalConfiguration.GetValue<WeClappConnectionSettings>(apiConfiguration);
-            if (string.IsNullOrWhiteSpace(settings.BaseUrl) || string.IsNullOrWhiteSpace(settings.ApiKey))
+            if (settings is null || string.IsNullOrWhiteSpace(settings.BaseUrl) || string.IsNullOrWhiteSpace(settings.ApiKey))
             {
                 throw new WeClappPipelineExecutionException(
                     $"Global configuration '{apiConfiguration}' must provide both 'baseUrl' and 'apiKey'");
