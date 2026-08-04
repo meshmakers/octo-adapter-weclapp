@@ -54,8 +54,9 @@ public record WeClappFetchTriggerNodeConfiguration : TriggerNodeConfiguration
 
     /// <summary>How fetched documents start pipeline executions: "PerItem" (default — one
     /// execution per document, the AI/CK shape) or "Batch" (one execution per poll shaped
-    /// <c>{ "items": [ … ] }</c> — the AS collector shape; golden precedent is ONE AS file
-    /// per run with all articles). Batch is only valid for entity "article".</summary>
+    /// <c>{ "items": [ … ], "meta": { exportKind, exportDate } }</c> — the AS collector shape;
+    /// golden precedent is ONE AS file per run with all articles, and meta carries the keys
+    /// of the per-day delivery-dedup marker). Batch is only valid for entity "article".</summary>
     public string EmitMode { get; set; } = "PerItem";
 
     /// <summary>Resolve supply-source reference stubs into full articleSupplySource entities
