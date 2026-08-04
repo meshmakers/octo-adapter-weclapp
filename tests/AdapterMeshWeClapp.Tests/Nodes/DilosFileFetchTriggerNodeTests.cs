@@ -290,10 +290,12 @@ public class DilosFileFetchTriggerNodeTests
             await Task.Delay(10); // first poll is thread-pool-scheduled — wait for it, don't race it
         }
 
+        var firstPollRan = Volatile.Read(ref listCalls) > 0;
         var stop = sut.StopAsync(_context);
         var finished = await Task.WhenAny(stop, Task.Delay(5000));
 
         Assert.Same(stop, finished); // stop must not hang
+        Assert.True(firstPollRan, "first poll did not run within the 5 s deadline");
         A.CallTo(() => _sftp.ListFiles("/")).MustHaveHappened();
     }
 }
