@@ -16,7 +16,7 @@ baseUrl: https://REPLACE-TENANT.weclapp.com/webapp/api/v1   apiConfiguration: We
 apiKey: ${WECLAPP_API_KEY}
 ```
 
-Ein Eintrag `WeClappApi` `{ baseUrl, apiKey }` pro Tenant (Studio: octosystem/general/configurations, Quelle Keeper), per **Uses-Association** an die 5 Pipelines gehängt. Key existiert 1× pro Tenant; `om_setup_lkv.ps1` braucht keine Substitutionen mehr; Rotation = ein Studio-Edit.
+Ein Eintrag `WeClappApi` `{ baseUrl, apiKey }` pro Tenant (Studio: octosystem/general/configurations, Quelle Keeper), per **Uses-Association** an die 5 Pipelines gehängt. Key existiert 1× pro Tenant; `om_setup_lkv.ps1` braucht keine Substitutionen mehr; Rotation = ein Studio-Edit **+ Redeploy/Adapter-Reconnect** (Snapshot-Semantik, s. „Auflösungszeitpunkt & Rotation").
 
 ## Design (Expand-Schritt = dieser PR)
 
@@ -59,7 +59,7 @@ Aufrufstellen lösen einmal pro Poll/Verarbeitung auf und verwenden nur noch `se
 
 ### Auflösungszeitpunkt & Rotation (bewusste Entscheidung)
 
-Aufgelöst wird **je Poll** (Fetch-Trigger) bzw. **je Verarbeitung** (Write-Nodes) — exakt das heutige SFTP-Verhalten im selben Repo (`DilosFileFetch` löst `LkvSftp` in jedem `FetchOnceAsync` auf). Vorteile: Key-Rotation am Tenant greift **ohne Redeploy** beim nächsten Poll; kein gecachter Zustand im Node. Bewusst **keine** zusätzliche Validierung in `StartAsync`: das wiche vom etablierten SFTP-Muster ab und hinge von der (offline nicht belegten) Annahme ab, dass `GlobalConfiguration` beim Trigger-Start bereits vollständig initialisiert ist. Dokumentierte Konsequenz: Eine Fehlkonfiguration zeigt sich beim ersten Poll nach dem Deploy (bei der as-Pipeline mit `runOnStart: false` erst nach dem ersten 3600-s-Intervall) — der Migrate/Contract-Schritt enthält deshalb eine bewusste Staging-Probe statt „deploy and forget".
+Aufgelöst wird **je Poll** (Fetch-Trigger) bzw. **je Verarbeitung** (Write-Nodes) — exakt das heutige SFTP-Verhalten im selben Repo (`DilosFileFetch` löst `LkvSftp` in jedem `FetchOnceAsync` auf). Vorteil: kein gecachter Zustand im Node — jeder Poll liest neu aus der `IGlobalConfiguration` (per Test gepinnt). **Wichtig — Reichweite der Rotation:** Die `IGlobalConfiguration` selbst ist ein **Deploy-Zeit-Snapshot** je Pipeline-Registration (CCS `AdapterService.CreatePipelineConfigurationAsync` serialisiert Configuration-Werte nur in Registrierungs-/Deploy-Flows; `PipelineRegistryService.cs:89` baut die `GlobalConfiguration` einmal je Registration — es gibt keinen Change-Watcher). Ein Studio-Edit des `WeClappApi`-Eintrags erreicht laufende Pipelines daher erst nach **Redeploy bzw. Adapter-Reconnect**; dasselbe gilt heute für `LkvSftp`. Betriebsregel: neuen Key eintragen **und redeployen**, erst danach den alten Key bei WeClapp sperren — sonst 401 auf allen 5 Pipelines bis zum Redeploy. Bewusst **keine** zusätzliche Validierung in `StartAsync`: das wiche vom etablierten SFTP-Muster ab und hinge von der (offline nicht belegten) Annahme ab, dass `GlobalConfiguration` beim Trigger-Start bereits vollständig initialisiert ist. Dokumentierte Konsequenz: Eine Fehlkonfiguration zeigt sich beim ersten Poll nach dem Deploy (bei der as-Pipeline mit `runOnStart: false` erst nach dem ersten 3600-s-Intervall) — der Migrate/Contract-Schritt enthält deshalb eine bewusste Staging-Probe statt „deploy and forget".
 
 Der aufgelöste Key wird **nie** geloggt und **nie** in den DataContext geschrieben (gleiches Verhalten wie heute; Vorbild-Doku AnthropicAiQuery: „never exposed in the data context").
 
