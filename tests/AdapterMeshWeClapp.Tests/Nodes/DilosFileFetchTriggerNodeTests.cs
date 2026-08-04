@@ -275,11 +275,21 @@ public class DilosFileFetchTriggerNodeTests
     public async Task StartAndStop_TerminateCleanly()
     {
         Configure("AR*TXT");
-        ListingReturns();
+        var listCalls = 0;
+        A.CallTo(() => _sftp.ListFiles("/")).ReturnsLazily(() =>
+        {
+            Interlocked.Increment(ref listCalls);
+            return Array.Empty<SftpFileEntry>();
+        });
         var sut = CreateSut();
 
         await sut.StartAsync(_context);
-        await Task.Delay(50); // let the first poll run
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (Volatile.Read(ref listCalls) == 0 && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(10); // first poll is thread-pool-scheduled — wait for it, don't race it
+        }
+
         var stop = sut.StopAsync(_context);
         var finished = await Task.WhenAny(stop, Task.Delay(5000));
 
