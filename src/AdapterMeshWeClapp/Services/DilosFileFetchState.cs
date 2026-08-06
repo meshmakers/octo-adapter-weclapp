@@ -10,12 +10,21 @@ namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Services;
 /// here instead. A pod restart clears this singleton exactly like restarting the old trigger
 /// cleared its instance fields — same behavior, only the storage location changed.
 /// <para/>
-/// Both sets are keyed by the file's <c>FileKey</c> (<c>{Name}|{Length}|{LastWriteTimeUtc.Ticks}</c>,
-/// <see cref="Nodes.DilosFileFetchTriggerNode"/>). <c>DilosFileConfirm@1</c> is the only node
-/// that MARKS a key processed (kept-on-server or pending-delete); <c>DilosFileFetchStep@1</c>
-/// only reads those marks (to skip a file or retry a delete) but writes both sets too, during
-/// its own listing — bounding them via <see cref="IntersectWith"/> and clearing a delete it
-/// just retried via <see cref="ClearPendingDelete"/>.
+/// ONE singleton instance is shared by EVERY pipeline that wires up these two nodes — today
+/// that means both the ar AND the be pipeline resolve the SAME instance, unlike the legacy
+/// trigger, where each pipeline's <c>DilosFileFetchTriggerNode</c> owned its own instance
+/// fields. Both sets are therefore keyed by a per-pipeline SCOPED key: a scope prefix
+/// (<c>{ServerConfiguration}|{RemoteDirectory}|{FilePattern}|</c>, computed by
+/// <c>DilosFileFetchStepNode</c> from its own config) followed by the file's <c>FileKey</c>
+/// (<c>{Name}|{Length}|{LastWriteTimeUtc.Ticks}</c>, <see cref="Nodes.DilosFileFetchTriggerNode"/>)
+/// — so ar's and be's keys never collide even though they share one <c>HashSet&lt;string&gt;</c>
+/// pair. <c>DilosFileConfirm@1</c> is the only node that MARKS a key processed (kept-on-server or
+/// pending-delete) — it receives the already-scoped key opaquely via the data context and never
+/// needs the scope prefix itself. <c>DilosFileFetchStep@1</c> only reads those marks (to skip a
+/// file or retry a delete) but writes both sets too, during its own listing — bounding them via
+/// <see cref="IntersectWith"/> (scoped to ITS OWN prefix, so one pipeline's tick can never prune
+/// another pipeline's keys) and clearing a delete it just retried via
+/// <see cref="ClearPendingDelete"/>.
 /// </summary>
 public sealed class DilosFileFetchState
 {
@@ -79,16 +88,22 @@ public sealed class DilosFileFetchState
         }
     }
 
-    /// <summary>Forgets keys of files that vanished from the server, so both sets stay bounded
-    /// (mirrors <c>DilosFileFetchTriggerNode.FetchOnceAsync</c>'s per-poll cleanup,
-    /// <c>DilosFileFetchTriggerNode.cs:156-158</c>).</summary>
-    public void IntersectWith(IEnumerable<string> currentKeys)
+    /// <summary>Forgets keys of files that vanished from the server, so both sets stay bounded —
+    /// scoped to <paramref name="scopePrefix"/> only, since the singleton is shared across every
+    /// pipeline wired to these nodes (see the class summary): this is per-SCOPE cleanup, not a
+    /// plain global intersect, because a global intersect would also discard every OTHER
+    /// pipeline's keys that this call's <paramref name="currentKeys"/> naturally never mentions.
+    /// A key not starting with <paramref name="scopePrefix"/> is never touched, no matter what it
+    /// is. Mirrors <c>DilosFileFetchTriggerNode.FetchOnceAsync</c>'s per-poll cleanup
+    /// (<c>DilosFileFetchTriggerNode.cs:156-158</c>), which needed no scoping because each
+    /// pipeline there owned its own instance fields instead of sharing one singleton.</summary>
+    public void IntersectWith(string scopePrefix, IEnumerable<string> currentKeys)
     {
+        var keys = currentKeys as HashSet<string> ?? new HashSet<string>(currentKeys, StringComparer.Ordinal);
         lock (_gate)
         {
-            var keys = currentKeys as ICollection<string> ?? currentKeys.ToList();
-            _keptOnServer.IntersectWith(keys);
-            _pendingDelete.IntersectWith(keys);
+            _keptOnServer.RemoveWhere(key => key.StartsWith(scopePrefix, StringComparison.Ordinal) && !keys.Contains(key));
+            _pendingDelete.RemoveWhere(key => key.StartsWith(scopePrefix, StringComparison.Ordinal) && !keys.Contains(key));
         }
     }
 }

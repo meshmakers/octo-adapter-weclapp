@@ -65,6 +65,11 @@ public record DilosFileFetchStepNodeConfiguration : NodeConfiguration
 /// their state between ticks. A pod restart clears the singleton exactly like it used to clear
 /// the trigger's instance fields: a kept file is re-emitted and re-executed once more, relying
 /// on downstream idempotency — identical to today's restart behavior.
+/// <para/>
+/// The SAME singleton instance is shared by every pipeline wired to this node (e.g. ar AND be),
+/// so every key this step reads or writes is namespaced with a scope prefix built from its own
+/// config (<see cref="ScopePrefix"/>) — without it, one pipeline's tick would prune another
+/// pipeline's keys via <see cref="DilosFileFetchState.IntersectWith"/>.
 /// </summary>
 [NodeConfiguration(typeof(DilosFileFetchStepNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
@@ -89,15 +94,20 @@ public class DilosFileFetchStepNode(
             .OrderBy(f => f.Name, StringComparer.Ordinal)
             .ToList();
 
-        // Forget keys of files that vanished from the server, so the singleton stays bounded.
-        state.IntersectWith(files.Select(FileKey));
+        var scopePrefix = ScopePrefix(config);
+
+        // Forget THIS scope's keys for files that vanished from the server, so the singleton
+        // stays bounded without touching another pipeline's keys sharing the same singleton
+        // (the DI singleton is shared across every pipeline wired to DilosFileFetchStep@1 —
+        // see DilosFileFetchState's class summary).
+        state.IntersectWith(scopePrefix, files.Select(f => scopePrefix + FileKey(f)));
 
         var now = DateTime.UtcNow;
         var emitted = new JsonArray();
 
         foreach (var file in files)
         {
-            var key = FileKey(file);
+            var key = scopePrefix + FileKey(file);
             try
             {
                 // Both checks are gated on the CURRENT mode: after a config flip a stale key
@@ -153,6 +163,15 @@ public class DilosFileFetchStepNode(
 
         await next(dataContext, nodeContext);
     }
+
+    /// <summary>The per-pipeline scope prefix namespacing this step's keys in the shared
+    /// <see cref="DilosFileFetchState"/> singleton, so its keys can never collide with — or be
+    /// pruned by — a DIFFERENT pipeline's <c>DilosFileFetchStep@1</c> (e.g. ar vs be) sharing the
+    /// same singleton. Deliberately built only from THIS step's own config, not from any global
+    /// or tenant identifier: two chains with the same server/directory/pattern are, by
+    /// definition, the same logical fetch scope.</summary>
+    private static string ScopePrefix(DilosFileFetchStepNodeConfiguration config) =>
+        $"{config.ServerConfiguration}|{config.RemoteDirectory}|{config.FilePattern}|";
 
     private static string FileKey(SftpFileEntry file) =>
         $"{file.Name}|{file.Length}|{file.LastWriteTimeUtc.Ticks}";

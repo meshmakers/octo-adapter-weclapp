@@ -70,10 +70,17 @@ public class DilosFileFetchStepNodeTests
 
     private static string FileKey(SftpFileEntry file) => $"{file.Name}|{file.Length}|{file.LastWriteTimeUtc.Ticks}";
 
+    /// <summary>The namespaced key <c>DilosFileFetchStepNode</c> actually reads/writes/emits:
+    /// a scope prefix built from the step's OWN config, followed by the file's bare
+    /// <see cref="FileKey"/> as a suffix — the FileKey-parity claim of the pre-scoping tests now
+    /// applies to this suffix, not to the full emitted/stored key.</summary>
+    private static string ScopedKey(DilosFileFetchStepNodeConfiguration config, SftpFileEntry file) =>
+        $"{config.ServerConfiguration}|{config.RemoteDirectory}|{config.FilePattern}|{FileKey(file)}";
+
     [Fact]
     public async Task EmitsFiles_NameOrdered_RespectingMinFileAge_WithKeyAndFullPath()
     {
-        Configure("AR*TXT", minFileAgeSeconds: 60);
+        var config = Configure("AR*TXT", minFileAgeSeconds: 60);
         var young = new SftpFileEntry("AR_young.TXT", "/AR_young.TXT", false, DateTime.UtcNow.AddSeconds(-5), 50);
         var first = RemoteFile("AR20240205143134947.TXT", ageMinutes: 20, length: 111);
         var second = RemoteFile("AR00006946.TXT", ageMinutes: 30, length: 222);
@@ -90,10 +97,10 @@ public class DilosFileFetchStepNodeTests
         Assert.Equal("AR00006946.TXT", _capturedFiles[0]!["fileName"]!.ToString()); // Ordinal name order
         Assert.Equal("K|content-1", _capturedFiles[0]!["content"]!.ToString());
         Assert.Equal("/AR00006946.TXT", _capturedFiles[0]!["fullPath"]!.ToString());
-        Assert.Equal(FileKey(second), _capturedFiles[0]!["key"]!.ToString());
+        Assert.Equal(ScopedKey(config, second), _capturedFiles[0]!["key"]!.ToString());
         Assert.Equal(second.LastWriteTimeUtc, _capturedFiles[0]!["lastWriteTimeUtc"]!.GetValue<DateTime>());
         Assert.Equal("AR20240205143134947.TXT", _capturedFiles[1]!["fileName"]!.ToString());
-        Assert.Equal(FileKey(first), _capturedFiles[1]!["key"]!.ToString());
+        Assert.Equal(ScopedKey(config, first), _capturedFiles[1]!["key"]!.ToString());
         A.CallTo(() => _sftp.DownloadText("/AR_young.TXT")).MustNotHaveHappened();
         A.CallTo(() => _next(_dataContext, _nodeContext)).MustHaveHappenedOnceExactly();
     }
@@ -115,17 +122,17 @@ public class DilosFileFetchStepNodeTests
     [Fact]
     public async Task PendingDeleteRetry_DeletesDuringListing_WithoutEmitting()
     {
-        Configure("AR*TXT", deleteAfterSuccess: true);
+        var config = Configure("AR*TXT", deleteAfterSuccess: true);
         var file = RemoteFile("AR1.TXT", ageMinutes: 20, length: 100);
         ListingReturns(file);
-        _state.MarkPendingDelete(FileKey(file)); // DilosFileConfirm@1 processed it, delete failed then
+        _state.MarkPendingDelete(ScopedKey(config, file)); // DilosFileConfirm@1 processed it, delete failed then
         var sut = CreateSut();
 
         await sut.ProcessObjectAsync(_dataContext, _nodeContext);
 
         A.CallTo(() => _sftp.DeleteFile("/AR1.TXT")).MustHaveHappenedOnceExactly();
         A.CallTo(() => _sftp.DownloadText(A<string>._)).MustNotHaveHappened(); // never re-downloaded
-        Assert.False(_state.HasPendingDelete(FileKey(file))); // cleared after the successful retry
+        Assert.False(_state.HasPendingDelete(ScopedKey(config, file))); // cleared after the successful retry
         Assert.NotNull(_capturedFiles);
         Assert.Empty(_capturedFiles!); // not (re-)emitted
     }
@@ -136,18 +143,18 @@ public class DilosFileFetchStepNodeTests
         // Beyond the brief's 7 required tests: proves the "mirror of :176-181" instruction
         // extends to that block's failure isolation, not just its happy path — a failed
         // retry-delete must stay retryable and must not stop other files from being listed.
-        Configure("AR*TXT", deleteAfterSuccess: true);
+        var config = Configure("AR*TXT", deleteAfterSuccess: true);
         var pending = RemoteFile("AR1.TXT", ageMinutes: 20, length: 100);
         var ok = RemoteFile("AR2.TXT", ageMinutes: 20, length: 200);
         ListingReturns(pending, ok);
-        _state.MarkPendingDelete(FileKey(pending));
+        _state.MarkPendingDelete(ScopedKey(config, pending));
         A.CallTo(() => _sftp.DeleteFile("/AR1.TXT")).Throws(new IOException("permission denied"));
         A.CallTo(() => _sftp.DownloadText("/AR2.TXT")).Returns("content");
         var sut = CreateSut();
 
         await sut.ProcessObjectAsync(_dataContext, _nodeContext); // must not throw
 
-        Assert.True(_state.HasPendingDelete(FileKey(pending))); // still pending, retried next tick
+        Assert.True(_state.HasPendingDelete(ScopedKey(config, pending))); // still pending, retried next tick
         Assert.NotNull(_capturedFiles);
         var only = Assert.Single(_capturedFiles!);
         Assert.Equal("AR2.TXT", only!["fileName"]!.ToString()); // the other file still got listed
@@ -156,10 +163,10 @@ public class DilosFileFetchStepNodeTests
     [Fact]
     public async Task KeepMode_SecondRun_SkipsAlreadyEmittedFiles()
     {
-        Configure("AR*TXT", deleteAfterSuccess: false);
+        var config = Configure("AR*TXT", deleteAfterSuccess: false);
         var file = RemoteFile("AR1.TXT", ageMinutes: 20);
         ListingReturns(file);
-        _state.MarkKeptOnServer(FileKey(file)); // DilosFileConfirm@1 already confirmed it kept
+        _state.MarkKeptOnServer(ScopedKey(config, file)); // DilosFileConfirm@1 already confirmed it kept
         var sut = CreateSut();
 
         await sut.ProcessObjectAsync(_dataContext, _nodeContext);
@@ -167,6 +174,35 @@ public class DilosFileFetchStepNodeTests
         Assert.NotNull(_capturedFiles);
         Assert.Empty(_capturedFiles!); // skipped, not re-emitted
         A.CallTo(() => _sftp.DownloadText(A<string>._)).MustNotHaveHappened();
+    }
+
+    [Fact]
+    public async Task SharedSingleton_OwnScopeTick_NeverPrunesOrSkipsAnotherScopesKeys()
+    {
+        // Beyond the brief's required DilosFileFetchState-level two-pattern test: reproduces M1
+        // at the level the defect actually manifested in production — TWO pipelines' step nodes
+        // (ar, be) resolving the SAME DilosFileFetchState DI singleton (Program.cs), exactly like
+        // the real adapter. Before the scope fix this was the failing scenario: an ar-only
+        // IntersectWith call intersected BOTH global sets, discarding every be key an ar tick
+        // never listed — a be file already confirmed "kept on server" would be silently
+        // re-emitted and re-executed on the very next (unrelated) ar tick.
+        var beConfig = Configure("BE*txt", deleteAfterSuccess: false);
+        var beFile = RemoteFile("BE_20240205035403463.txt", ageMinutes: 20);
+        _state.MarkKeptOnServer(ScopedKey(beConfig, beFile)); // be confirmed this kept, in an earlier tick
+
+        // An unrelated ar tick now runs against the SAME _state singleton and lists only AR files.
+        Configure("AR*TXT", deleteAfterSuccess: false);
+        ListingReturns(RemoteFile("AR1.TXT", ageMinutes: 20));
+        var sut = CreateSut();
+
+        await sut.ProcessObjectAsync(_dataContext, _nodeContext);
+
+        // be's kept key must survive an ar tick that never mentioned it — and ar itself must not
+        // have been affected by be's pre-existing entry either.
+        Assert.True(_state.WasKeptOnServer(ScopedKey(beConfig, beFile)));
+        Assert.NotNull(_capturedFiles);
+        var only = Assert.Single(_capturedFiles!);
+        Assert.Equal("AR1.TXT", only!["fileName"]!.ToString());
     }
 }
 
