@@ -30,7 +30,7 @@ transformations:
     keyPath: $.current
     mergePath: $.current             # aligned with keyPath — default $.key would collect null
     targetPath: $.loopResult         # NEVER omit: default "$" REPLACES the document root.
-                                      # Merge-result ORDER is unspecified (ConcurrentBag) — nothing may read $.loopResult.
+                                     # Merge-result ORDER is unspecified (ConcurrentBag) — nothing may read $.loopResult.
     maxDegreeOfParallelism: 1        # NEVER omit: default 0 = Environment.ProcessorCount (parallel!)
     transformations:
       - type: WeClappToCk@1

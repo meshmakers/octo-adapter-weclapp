@@ -184,11 +184,17 @@ public class PipelineYamlContractTests
 
     // ---------- contract 5: converted pipeline yamls use passive triggers, no polling fields ----------
 
+    // The expected first-transformation type is parameterized per file: the batch/per-item
+    // WeClapp pipelines (as/ck/ai) fetch via WeClappFetchStep@1, the DILOS return-path
+    // pipelines (ar/be) fetch via DilosFileFetchStep@1 — each file gets an exact match against
+    // its own designated fetch-step type, not a loosened "one of either" check.
     [Theory]
-    [InlineData("weclapp-articles-to-as.yaml")]
-    [InlineData("weclapp-articles-to-ck.yaml")]
-    [InlineData("weclapp-orders-to-ai.yaml")]
-    public async Task ConvertedYaml_UsesPassiveTriggers_NoPollingFields(string file)
+    [InlineData("weclapp-articles-to-as.yaml", typeof(WeClappFetchStepNodeConfiguration))]
+    [InlineData("weclapp-articles-to-ck.yaml", typeof(WeClappFetchStepNodeConfiguration))]
+    [InlineData("weclapp-orders-to-ai.yaml", typeof(WeClappFetchStepNodeConfiguration))]
+    [InlineData("dilos-ar-to-weclapp.yaml", typeof(DilosFileFetchStepNodeConfiguration))]
+    [InlineData("dilos-be-to-weclapp.yaml", typeof(DilosFileFetchStepNodeConfiguration))]
+    public async Task ConvertedYaml_UsesPassiveTriggers_NoPollingFields(string file, Type expectedFirstStepType)
     {
         var root = await DeserializePipeline(file);
         Assert.Collection(root.Triggers!,
@@ -197,11 +203,46 @@ public class PipelineYamlContractTests
 
         var transformations = root.Transformations?.ToList() ?? [];
         Assert.NotEmpty(transformations);
-        Assert.IsType<WeClappFetchStepNodeConfiguration>(transformations[0]);
+        Assert.IsType(expectedFirstStepType, transformations[0]);
 
         var raw = File.ReadAllText(FindRepoFile(Path.Combine("pipelines", file)));
         Assert.DoesNotContain("pollingIntervalSeconds", raw);
         Assert.DoesNotContain("runOnStart", raw);
+    }
+
+    // ---------- contract 6: every ForEach fan-out carries safe target-path/parallelism params ----------
+
+    // Machine-guards the two ForEach hazards called out in the Task-6 review: an omitted (or
+    // literal "$") targetPath defaults to "$" and REPLACES the whole document root with the
+    // (unordered) loop-merge result; an omitted/non-1 maxDegreeOfParallelism defaults to
+    // Environment.ProcessorCount and races the shared cross-tick state / export-dedup markers
+    // that every converted pipeline's per-item chain writes through.
+    [Fact]
+    public async Task AllPipelineYamls_EveryForEach_HasNonRootTargetPathAndSequentialDop()
+    {
+        var violations = new List<string>();
+
+        foreach (var yaml in AllPipelineYamls)
+        {
+            var root = await DeserializePipeline(yaml);
+            foreach (var forEach in Walk(root.Transformations).OfType<ForEachNodeConfiguration>())
+            {
+                if (forEach.TargetPath is null or "$")
+                {
+                    violations.Add($"{yaml}: ForEach '{forEach.Description}' TargetPath is " +
+                                    $"'{forEach.TargetPath ?? "null"}' — the default \"$\" REPLACES the document root");
+                }
+
+                if (forEach.MaxDegreeOfParallelism != 1)
+                {
+                    violations.Add($"{yaml}: ForEach '{forEach.Description}' MaxDegreeOfParallelism is " +
+                                    $"{forEach.MaxDegreeOfParallelism}, expected 1 — parallel iterations would race " +
+                                    "the shared cross-tick state / export-dedup markers");
+                }
+            }
+        }
+
+        Assert.Empty(violations);
     }
 
     // ---------- helpers ----------
