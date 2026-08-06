@@ -47,6 +47,12 @@ await adapterBuilder.RunAsync(args, builder =>
     // production, faked in tests.
     builder.Services.AddSingleton<ISftpFileSystemFactory, SshNetSftpFileSystemFactory>();
 
+    // Cross-tick memory for DilosFileFetchStep@1 / DilosFileConfirm@1 (AR/BE return path,
+    // AB#4228/G2 cron-trigger redesign) — nodes are constructed fresh per pipeline chain (per
+    // tick), so the poll-loop instance fields the legacy DilosFileFetch trigger relies on would
+    // lose their state between ticks; this singleton replaces them.
+    builder.Services.AddSingleton<DilosFileFetchState>();
+
     // Add mesh adapter nodes and services to the container:
     // outbound ingestion design (WeClappFetch → WeClappToCk → DilosRender →
     // DilosSftpWrite) plus the AR/BE return path (DilosFileFetch → WeClappArWrite /
