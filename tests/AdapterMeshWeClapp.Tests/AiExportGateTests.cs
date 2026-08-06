@@ -117,6 +117,14 @@ public class AiExportGateTests
 
         var top = root.Transformations?.ToList() ?? new List<NodeConfiguration>();
 
+        // Nothing that renders, delivers or persists may sit at the top level either — every
+        // such node belongs INSIDE the per-item ForEach's gate, never beside or after it.
+        Assert.DoesNotContain(top, n => n is DilosRenderNodeConfiguration);
+        Assert.DoesNotContain(top, n => n is DilosSftpWriteNodeConfiguration);
+        Assert.DoesNotContain(top, n => n is ApplyChangesNodeConfiguration2);
+        Assert.DoesNotContain(top, n => n is CreateUpdateInfoNodeConfiguration);
+        Assert.DoesNotContain(top, n => n is CreateAssociationUpdateNodeConfiguration);
+
         // WeClappFetchStep@1 seeds $.orders; the former per-execution chain now runs once
         // per element inside ForEach@1 (AB#4228 trigger separation) — everything below
         // descends into its children instead of the pipeline's top level.

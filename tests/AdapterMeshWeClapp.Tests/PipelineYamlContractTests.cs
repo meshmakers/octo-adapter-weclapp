@@ -234,11 +234,11 @@ public class PipelineYamlContractTests
 
     // ---------- contract 6: every ForEach fan-out carries safe target-path/parallelism params ----------
 
-    // Machine-guards the two ForEach hazards called out in the Task-6 review: an omitted (or
-    // literal "$") targetPath defaults to "$" and REPLACES the whole document root with the
-    // (unordered) loop-merge result; an omitted/non-1 maxDegreeOfParallelism defaults to
-    // Environment.ProcessorCount and races the shared cross-tick state / export-dedup markers
-    // that every converted pipeline's per-item chain writes through.
+    // Machine-guards the two ForEach hazards: an omitted (or literal "$") targetPath defaults
+    // to "$" and REPLACES the whole document root with the (unordered) loop-merge result; an
+    // omitted/non-1 maxDegreeOfParallelism defaults to Environment.ProcessorCount and races the
+    // shared cross-tick state / export-dedup markers that every converted pipeline's per-item
+    // chain writes through.
     [Fact]
     public async Task AllPipelineYamls_EveryForEach_HasNonRootTargetPathAndSequentialDop()
     {
