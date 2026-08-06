@@ -1,6 +1,4 @@
-using System.Globalization;
 using System.Text.Json.Nodes;
-using Lkv.WeClapp.Core;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
@@ -137,18 +135,7 @@ public class WeClappFetchStepNode(
 
         if (config.EmitMode == "Batch")
         {
-            var items = new JsonArray();
-            foreach (var article in articles)
-            {
-                items.Add(article);
-            }
-
-            var viennaNow = TimeZoneInfo.ConvertTime(timeProvider.GetUtcNow(), ViennaTime.Zone);
-            var meta = new JsonObject
-            {
-                ["exportKind"] = config.ExportKind,
-                ["exportDate"] = viennaNow.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
-            };
+            var (items, meta) = WeClappFetchCore.BuildBatchDocumentParts(articles, config.ExportKind, timeProvider);
 
             dataContext.Set("$.items", items, DocumentModes.Extend, ValueKinds.Simple,
                 TargetValueWriteModes.Overwrite);
@@ -170,32 +157,13 @@ public class WeClappFetchStepNode(
     private static async Task FetchOrdersAsync(HttpClient http, WeClappFetchStepNodeConfiguration config,
         IDataContext dataContext)
     {
-        var orders = await WeClappFetchCore.FetchAllPagesAsync(http, config, "salesOrder", config.AdditionalQuery,
+        var orders = await WeClappFetchCore.FetchOrdersWithCustomersAsync(http, config, config.AdditionalQuery,
             CancellationToken.None);
 
-        var customerCache = new Dictionary<string, JsonNode?>();
         var wrapped = new JsonArray();
-
-        foreach (var order in orders)
+        foreach (var (order, customer) in orders)
         {
-            var customerId = order["customerId"]?.ToString() ?? "";
-            JsonNode? customer = null;
-            if (customerId.Length > 0)
-            {
-                if (!customerCache.TryGetValue(customerId, out customer))
-                {
-                    var matches = await WeClappFetchCore.FetchAllPagesAsync(http, config, "customer",
-                        $"id-eq={customerId}", CancellationToken.None);
-                    customer = matches.FirstOrDefault();
-                    customerCache[customerId] = customer;
-                }
-            }
-
-            wrapped.Add(new JsonObject
-            {
-                ["item"] = order.DeepClone(),
-                ["customer"] = customer?.DeepClone(),
-            });
+            wrapped.Add(new JsonObject { ["item"] = order, ["customer"] = customer });
         }
 
         dataContext.Set("$.orders", wrapped, DocumentModes.Extend, ValueKinds.Simple,

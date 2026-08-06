@@ -223,21 +223,11 @@ public class WeClappFetchTriggerNode(
                 return;
             }
 
-            var items = new JsonArray();
-            foreach (var article in articles)
-            {
-                items.Add(article);
-            }
-
-            var viennaNow = TimeZoneInfo.ConvertTime(timeProvider.GetUtcNow(), ViennaTime.Zone);
+            var (items, meta) = WeClappFetchCore.BuildBatchDocumentParts(articles, config.ExportKind, timeProvider);
             await ExecutePipelineAsync(context, new JsonObject
             {
                 ["items"] = items,
-                ["meta"] = new JsonObject
-                {
-                    ["exportKind"] = config.ExportKind,
-                    ["exportDate"] = viennaNow.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
-                },
+                ["meta"] = meta,
             });
             return;
         }
@@ -252,31 +242,17 @@ public class WeClappFetchTriggerNode(
     private static async Task FetchOrdersAsync(HttpClient http, WeClappFetchTriggerNodeConfiguration config,
         ITriggerContext context, CancellationToken cancellationToken)
     {
-        // orderItems are included in the default salesOrder response (live-verified).
-        var orders = await WeClappFetchCore.FetchAllPagesAsync(http, config, "salesOrder", config.AdditionalQuery,
+        // Paging + customer join/cache is shared with WeClappFetchStep@1 via WeClappFetchCore —
+        // each returned tuple element is already a fresh, unparented deep clone.
+        var orders = await WeClappFetchCore.FetchOrdersWithCustomersAsync(http, config, config.AdditionalQuery,
             cancellationToken);
 
-        var customerCache = new Dictionary<string, JsonNode?>();
-
-        foreach (var order in orders)
+        foreach (var (order, customer) in orders)
         {
-            var customerId = order["customerId"]?.ToString() ?? "";
-            JsonNode? customer = null;
-            if (customerId.Length > 0)
-            {
-                if (!customerCache.TryGetValue(customerId, out customer))
-                {
-                    var matches = await WeClappFetchCore.FetchAllPagesAsync(http, config, "customer",
-                        $"id-eq={customerId}", cancellationToken);
-                    customer = matches.FirstOrDefault();
-                    customerCache[customerId] = customer;
-                }
-            }
-
             var document = new JsonObject
             {
-                ["item"] = order.DeepClone(),
-                ["customer"] = customer?.DeepClone(),
+                ["item"] = order,
+                ["customer"] = customer,
             };
             await ExecutePipelineAsync(context, document);
         }
@@ -369,6 +345,66 @@ internal static class WeClappFetchCore
         }
 
         return item;
+    }
+
+    /// <summary>Fetches all sales orders and joins each one with its customer (customer
+    /// resolved via the verified <c>id-eq</c> filter and cached per call, since many orders
+    /// share the same customer). Each returned tuple element is a fresh, unparented deep
+    /// clone — safe to attach anywhere without a further clone.</summary>
+    public static async Task<List<(JsonNode Order, JsonNode? Customer)>> FetchOrdersWithCustomersAsync(
+        HttpClient http, IWeClappFetchConfiguration config, string additionalQuery,
+        CancellationToken cancellationToken)
+    {
+        // orderItems are included in the default salesOrder response (live-verified).
+        var orders = await FetchAllPagesAsync(http, config, "salesOrder", additionalQuery, cancellationToken);
+
+        var customerCache = new Dictionary<string, JsonNode?>();
+        var result = new List<(JsonNode Order, JsonNode? Customer)>();
+
+        foreach (var order in orders)
+        {
+            var customerId = order["customerId"]?.ToString() ?? "";
+            JsonNode? customer = null;
+            if (customerId.Length > 0)
+            {
+                if (!customerCache.TryGetValue(customerId, out customer))
+                {
+                    var matches = await FetchAllPagesAsync(http, config, "customer", $"id-eq={customerId}",
+                        cancellationToken);
+                    customer = matches.FirstOrDefault();
+                    customerCache[customerId] = customer;
+                }
+            }
+
+            result.Add((order.DeepClone(), customer?.DeepClone()));
+        }
+
+        return result;
+    }
+
+    /// <summary>Builds the <c>$.items</c> array and <c>$.meta</c> object of the AS collector
+    /// (Batch) shape from an already-enriched article list: <paramref name="articles"/> are
+    /// attached to <c>items</c> as-is (already fresh, unparented clones from
+    /// <see cref="FetchEnrichedArticlesAsync"/>); <c>meta</c> carries <paramref name="exportKind"/>
+    /// and the Vienna calendar date of <paramref name="timeProvider"/>'s current instant — the
+    /// delivery-dedup gate's per-day marker key.</summary>
+    public static (JsonArray Items, JsonObject Meta) BuildBatchDocumentParts(List<JsonNode> articles,
+        string exportKind, TimeProvider timeProvider)
+    {
+        var items = new JsonArray();
+        foreach (var article in articles)
+        {
+            items.Add(article);
+        }
+
+        var viennaNow = TimeZoneInfo.ConvertTime(timeProvider.GetUtcNow(), ViennaTime.Zone);
+        var meta = new JsonObject
+        {
+            ["exportKind"] = exportKind,
+            ["exportDate"] = viennaNow.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+        };
+
+        return (items, meta);
     }
 
     public static async Task<List<JsonNode>> FetchAllPagesAsync(HttpClient http,
