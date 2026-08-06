@@ -74,14 +74,14 @@ public class PipelineYamlContractTests
     public async Task ArticlesToCkYaml_ConfiguredPaths_ResolveAgainstTransformOutput()
     {
         var root = await DeserializePipeline("weclapp-articles-to-ck.yaml");
-        var transformations = root.Transformations?.ToList() ?? [];
-        var toCk = Assert.Single(transformations.OfType<WeClappToCkNodeConfiguration>());
-        var lookup = Assert.Single(transformations.OfType<GetOrCreateRtEntitiesByTypeNodeConfiguration>());
-        var updateInfo = Assert.Single(transformations.OfType<CreateUpdateInfoNodeConfiguration>());
+        var all = Walk(root.Transformations).ToList();
+        var toCk = Assert.Single(all.OfType<WeClappToCkNodeConfiguration>());
+        var lookup = Assert.Single(all.OfType<GetOrCreateRtEntitiesByTypeNodeConfiguration>());
+        var updateInfo = Assert.Single(all.OfType<CreateUpdateInfoNodeConfiguration>());
 
         var dataContext = await RunToCkNode(toCk, """
-            {"item":{"id":"168914","articleNumber":"TW_Z_074","name":"Ersatz Schnellverschlüsse",
-             "articleType":"STORABLE","ean":"9001234567890","active":true}}
+            {"current":{"item":{"id":"168914","articleNumber":"TW_Z_074","name":"Ersatz Schnellverschlüsse",
+             "articleType":"STORABLE","ean":"9001234567890","active":true}}}
             """);
 
         foreach (var filter in lookup.FieldFilters ?? [])
@@ -106,9 +106,9 @@ public class PipelineYamlContractTests
     public async Task OrdersToAiYaml_CustomerNameUpdate_ResolvesForB2cCustomers()
     {
         var root = await DeserializePipeline("weclapp-orders-to-ai.yaml");
-        var transformations = root.Transformations?.ToList() ?? [];
-        var toCk = Assert.Single(transformations.OfType<WeClappToCkNodeConfiguration>());
-        var gate = Assert.Single(transformations.OfType<IfNodeConfiguration>());
+        var all = Walk(root.Transformations).ToList();
+        var toCk = Assert.Single(all.OfType<WeClappToCkNodeConfiguration>());
+        var gate = Assert.Single(all.OfType<IfNodeConfiguration>());
         var customerUpdate = (gate.Transformations ?? [])
             .OfType<CreateUpdateInfoNodeConfiguration>()
             .Single(c => c.CkTypeId == "Industry.Logistics/Customer");
@@ -117,9 +117,9 @@ public class PipelineYamlContractTests
         // B2C: private customer without a company — exactly the case Jürgen reported
         // as an empty recipient name on 2026-07-16.
         var dataContext = await RunToCkNode(toCk, """
-            {"item":{"id":"622075","orderNumber":"SO-1001","customerNumber":"K-77","orderDate":1782820560333,
+            {"current":{"item":{"id":"622075","orderNumber":"SO-1001","customerNumber":"K-77","orderDate":1782820560333,
               "orderItems":[]},
-             "customer":{"id":"77","customerNumber":"K-77","company":"","firstName":"Erika","lastName":"Muster"}}
+             "customer":{"id":"77","customerNumber":"K-77","company":"","firstName":"Erika","lastName":"Muster"}}}
             """);
 
         var namePath = Assert.IsType<string>(nameUpdate.ValuePath);
@@ -145,9 +145,9 @@ public class PipelineYamlContractTests
         var toCk = Assert.Single(all.OfType<WeClappToCkNodeConfiguration>());
 
         var dataContext = await RunToCkNode(toCk, """
-            {"item":{"id":"622075","orderNumber":"SO-1001","customerNumber":"K-77","orderDate":1782820560333,
+            {"current":{"item":{"id":"622075","orderNumber":"SO-1001","customerNumber":"K-77","orderDate":1782820560333,
               "orderItems":[]},
-             "customer":{"id":"77","customerNumber":"K-77","company":"","firstName":"Erika","lastName":"Muster"}}
+             "customer":{"id":"77","customerNumber":"K-77","company":"","firstName":"Erika","lastName":"Muster"}}}
             """);
 
         var ckPaths = new List<(string What, string Path)>();
@@ -186,12 +186,19 @@ public class PipelineYamlContractTests
 
     [Theory]
     [InlineData("weclapp-articles-to-as.yaml")]
+    [InlineData("weclapp-articles-to-ck.yaml")]
+    [InlineData("weclapp-orders-to-ai.yaml")]
     public async Task ConvertedYaml_UsesPassiveTriggers_NoPollingFields(string file)
     {
         var root = await DeserializePipeline(file);
         Assert.Collection(root.Triggers!,
             t => Assert.IsType<FromPipelineTriggerEventNodeConfiguration>(t),
             t => Assert.IsType<FromExecutePipelineCommandNodeConfiguration>(t));
+
+        var transformations = root.Transformations?.ToList() ?? [];
+        Assert.NotEmpty(transformations);
+        Assert.IsType<WeClappFetchStepNodeConfiguration>(transformations[0]);
+
         var raw = File.ReadAllText(FindRepoFile(Path.Combine("pipelines", file)));
         Assert.DoesNotContain("pollingIntervalSeconds", raw);
         Assert.DoesNotContain("runOnStart", raw);

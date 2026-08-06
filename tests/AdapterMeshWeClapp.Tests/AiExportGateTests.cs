@@ -104,7 +104,8 @@ public class AiExportGateTests
             .RegisterNodeConfiguration<WeClappFetchTriggerNodeConfiguration>()
             .RegisterNodeConfiguration<WeClappToCkNodeConfiguration>()
             .RegisterNodeConfiguration<DilosRenderNodeConfiguration>()
-            .RegisterNodeConfiguration<DilosSftpWriteNodeConfiguration>();
+            .RegisterNodeConfiguration<DilosSftpWriteNodeConfiguration>()
+            .RegisterNodeConfiguration<WeClappFetchStepNodeConfiguration>();
         var lookup = services.BuildServiceProvider().GetRequiredService<INodeQualifiedNameLookupService>();
 
         NodeDefinitionRoot root;
@@ -116,17 +117,23 @@ public class AiExportGateTests
 
         var top = root.Transformations?.ToList() ?? new List<NodeConfiguration>();
 
+        // WeClappFetchStep@1 seeds $.orders; the former per-execution chain now runs once
+        // per element inside ForEach@1 (AB#4228 trigger separation) — everything below
+        // descends into its children instead of the pipeline's top level.
+        var forEach = Assert.Single(top.OfType<ForEachNodeConfiguration>());
+        var perItem = forEach.Transformations?.ToList() ?? new List<NodeConfiguration>();
+
         // The read-only lookups stay OUTSIDE the gate…
-        Assert.Contains(top, n => n is GetOrCreateRtEntitiesByTypeNodeConfiguration);
+        Assert.Contains(perItem, n => n is GetOrCreateRtEntitiesByTypeNodeConfiguration);
         // …but nothing that renders, delivers or persists may run unconditionally:
-        Assert.DoesNotContain(top, n => n is DilosRenderNodeConfiguration);
-        Assert.DoesNotContain(top, n => n is DilosSftpWriteNodeConfiguration);
-        Assert.DoesNotContain(top, n => n is ApplyChangesNodeConfiguration2);
-        Assert.DoesNotContain(top, n => n is CreateUpdateInfoNodeConfiguration);
-        Assert.DoesNotContain(top, n => n is CreateAssociationUpdateNodeConfiguration);
+        Assert.DoesNotContain(perItem, n => n is DilosRenderNodeConfiguration);
+        Assert.DoesNotContain(perItem, n => n is DilosSftpWriteNodeConfiguration);
+        Assert.DoesNotContain(perItem, n => n is ApplyChangesNodeConfiguration2);
+        Assert.DoesNotContain(perItem, n => n is CreateUpdateInfoNodeConfiguration);
+        Assert.DoesNotContain(perItem, n => n is CreateAssociationUpdateNodeConfiguration);
 
         // One gate, configured exactly like the semantics tests prove it works:
-        var gate = Assert.Single(top.OfType<IfNodeConfiguration>());
+        var gate = Assert.Single(perItem.OfType<IfNodeConfiguration>());
         var expected = GateConfiguration(transformations: null);
         Assert.Equal(expected.Path, gate.Path);
         Assert.Equal(expected.Operator, gate.Operator);
