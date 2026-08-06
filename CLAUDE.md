@@ -98,16 +98,19 @@ has a non-null, non-`"$"` `targetPath` and `maxDegreeOfParallelism == 1`.
   SKU) — parsers fail loud on mismatch by design.
 
 ## AR/BE Return Path (SFTP → WeClapp)
-- `DilosFileFetch@1` polls the LKV SFTP (credentials via tenant GlobalConfiguration
-  entry `LkvSftp`, same JSON shape as `SftpUpload@1`) and starts ONE pipeline execution
-  per file `{fileName, content}`; with `deleteAfterSuccess: true` the remote file is
-  deleted only AFTER the awaited execution succeeded → the downstream write MUST stay
-  idempotent. The DEFAULT is the safe side (false = keep files): a dry-run execution
-  succeeds without writing, deleting would consume the LKV file with no effect — flip
-  `deleteAfterSuccess: true` together with `dryRun: false` for go-live. Importing a
-  pipeline YAML that uses a config key the DEPLOYED image does not know yet fails the
-  pipeline registration (the SDK YAML deserializer rejects unknown properties) → deploy
-  the new image before importing updated YAMLs.
+- `DilosFileFetchStep@1` lists the LKV SFTP (credentials via tenant GlobalConfiguration
+  entry `LkvSftp`, same JSON shape as `SftpUpload@1`) once per cron tick and seeds `$.files`
+  with every matching, ready file (always the array, even `[]`); a per-file `ForEach@1`
+  (`keyPath: $.current`) then fans out the write chain — `WeClappArWrite@1`/`WeClappBeWrite@1`
+  followed by `DilosFileConfirm@1` as the LAST child. `DilosFileConfirm@1`, not the fetch step,
+  performs the actual keep/delete: with `deleteAfterSuccess: true` it deletes the remote file
+  only AFTER the write succeeded → the write MUST stay idempotent. The DEFAULT is the safe side
+  (false = keep files): a dry-run execution succeeds without writing, deleting would consume the
+  LKV file with no effect — flip `deleteAfterSuccess: true` together with `dryRun: false` for
+  go-live (`DilosFileFetchStep@1` and `DilosFileConfirm@1` must carry the SAME value). Importing
+  a pipeline YAML that uses a config key the DEPLOYED image does not know yet fails the pipeline
+  registration (the SDK YAML deserializer rejects unknown properties) → deploy the new image
+  before importing updated YAMLs.
 - `WeClappArWrite@1`: AR K* Auftragsnummer1 = WeClapp `salesOrder.id` (404 = dead-letter
   log, file still consumed). Idempotency: SHIPPED shipment with same tracking = skip;
   reuse non-CANCELLED; else `createShipment`. Quantities match by **articleId, never by
