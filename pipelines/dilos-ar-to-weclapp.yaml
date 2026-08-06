@@ -32,7 +32,7 @@ transformations:
     # gates the keep-mode skip / pending-delete retry, the confirm node performs the actual
     # first-time delete; a mismatch leaves files stuck in an inconsistent state.
     deleteAfterSuccess: false     # dry-run below writes nothing — deleting would consume the
-                                   # LKV file with no effect; flip to true TOGETHER with dryRun
+                                  # LKV file with no effect; flip to true TOGETHER with dryRun
 
   - type: ForEach@1
     description: per-item chain, one former execution per element
@@ -57,4 +57,4 @@ transformations:
         # deleteAfterSuccess MUST match DilosFileFetchStep@1's deleteAfterSuccess above (see note there).
         deleteAfterSuccess: false
         path: $.current             # the ONE current file element — never $.files (would resolve to
-                                     # the whole array via ForEach's parent-fallback and delete unrun files)
+                                    # the whole array via ForEach's parent-fallback and delete unrun files)

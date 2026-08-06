@@ -68,9 +68,9 @@ transformations:
       # it merely generates a fresh id and sets ModOperation=Insert in the data context; the
       # actual write happens in ApplyChanges. The persisted CK Order therefore doubles as the
       # export marker: it is written ONLY after a successful upload (at-least-once — a crash
-      # between upload and persist re-delivers on the next poll; the 15-min cadence makes the
-      # race window irrelevant). Without the gate, the same order would be re-delivered every
-      # poll until its WeClapp status changes.
+      # between upload and persist re-delivers on the next poll; the 15-minute cron schedule
+      # makes the race window irrelevant). Without the gate, the same order would be
+      # re-delivered every poll until its WeClapp status changes.
       - type: GetOrCreateRtEntitiesByType@1
         description: Look up the Customer by its WeClapp customer number (query only, see gate note)
         ckTypeId: Industry.Logistics/Customer
