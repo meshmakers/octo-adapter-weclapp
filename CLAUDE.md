@@ -27,7 +27,7 @@ dotnet test Octo.WeClappAdapter.slnx -c DebugL
 - `src/charts/octo-weclapp-adapter/` - Helm chart (deployed by the Communication Operator;
   httpGet probes on `/healthz/live|ready`)
 - `pipelines/` - tenant pipeline YAMLs (orders→AI per order; articles split into per-item
-  CK sync + batched AS delivery [`emitMode: Batch`, one file per poll]; AR/BE return path);
+  CK sync + batched AS delivery [`emitMode: Batch`, one file per cron tick]; AR/BE return path);
   `scripts/om_setup_lkv.ps1` substitutes `${WECLAPP_API_KEY}` + `REPLACE-TENANT` baseUrl
 - `tests/Lkv.WeClapp.Core.Tests/` - xUnit against real LKV golden fixtures
 - `tests/AdapterMeshWeClapp.Tests/` - node/pipeline tests + env-gated live smokes (gates below)
@@ -66,7 +66,8 @@ chain out over that array, one iteration per element.
   - type: ForEach@1
     iterationPath: $.orders          # or $.articles / $.files
     keyPath: $.current
-    mergePath: $.current             # aligned with keyPath — default $.key collects null
+    mergePath: $.current             # aligned with keyPath — default $.key merges nothing (no
+                                      # child writes $.key; nulls are filtered, $.loopResult stays empty)
     targetPath: $.loopResult         # NEVER omit: default "$" REPLACES the document root
     maxDegreeOfParallelism: 1        # NEVER omit: default 0 = Environment.ProcessorCount (parallel!)
     transformations:
@@ -85,8 +86,14 @@ re-import likewise only bites at the next `DeployTriggers`/tenant restart.
 the shipped YAMLs: `ConvertedYaml_UsesPassiveTriggers_NoPollingFields` asserts both passive
 triggers in order, the correct first fetch-step type per file, and that
 `pollingIntervalSeconds`/`runOnStart` appear nowhere in the raw text (including comments);
-`AllPipelineYamls_EveryForEach_HasNonRootTargetPathAndSequentialDop` asserts every `ForEach@1`
-has a non-null, non-`"$"` `targetPath` and `maxDegreeOfParallelism == 1`.
+`ConvertedYaml_UsesPassiveTriggers_TheoryCoversAllPipelineYamls` keeps that Theory's
+`[InlineData]` rows in lockstep with the pipelines actually shipped, so a future 6th yaml cannot
+silently escape the ban; `AllPipelineYamls_EveryForEach_HasNonRootTargetPathAndSequentialDop`
+asserts every `ForEach@1` has a non-null, non-`"$"` `targetPath` and
+`maxDegreeOfParallelism == 1`; `AllPipelineYamls_EveryForEach_KeyPathIsCurrent` pins every
+`ForEach@1`'s `keyPath` to `$.current`; `AllPipelineYamls_DilosFileFetchStepAndConfirm_DeleteAfterSuccessMatches`
+asserts `DilosFileFetchStep@1`/`DilosFileConfirm@1` carry the same `deleteAfterSuccess` in every
+ar/be yaml.
 
 ## Domain Gotchas (golden-file verified — do not "fix" without evidence)
 - DILOS AR/BE use **comma** decimals; AI/AS use dot. Both verified against real files.
@@ -133,7 +140,9 @@ has a non-null, non-`"$"` `targetPath` and `maxDegreeOfParallelism == 1`.
 - `TreatWarningsAsErrors`, nullable enabled, `LangVersion latestmajor` (Directory.Build.props)
 - Configurations: `Debug`, `Release`, `DebugL` (local NuGet at `../nuget/`, version `999.0.0`)
 - English code + XML docs; DILOS original field names + 1-based field index in XML docs
-- Commit messages: `AB#4228: <meaningful description>`
+- Commit messages: Conventional Commits scoped to the work item —
+  `<type>(AB#4228): <meaningful description>` (types used on this branch: `feat`, `fix`, `test`,
+  `docs`, `style`)
 
 ## Pre-Commit Checklist (ALL steps MUST pass)
 1. `dotnet format Octo.WeClappAdapter.slnx --verify-no-changes`

@@ -68,4 +68,5 @@ dotnet test Octo.WeClappAdapter.slnx -c DebugL
 dotnet format Octo.WeClappAdapter.slnx --verify-no-changes; dotnet build Octo.WeClappAdapter.slnx -c DebugL; dotnet test Octo.WeClappAdapter.slnx -c DebugL
 ```
 
-Commits: `AB#4228: <description>` (Azure Boards work item link).
+Commits: Conventional Commits scoped to the work item — `<type>(AB#4228): <description>` (e.g.
+`feat(AB#4228): …`, `fix(AB#4228): …`; the `AB#4228` scope links the Azure Boards work item).
