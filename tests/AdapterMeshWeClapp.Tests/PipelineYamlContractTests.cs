@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Text.Json;
 using FakeItEasy;
 using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Nodes;
@@ -210,6 +211,27 @@ public class PipelineYamlContractTests
         Assert.DoesNotContain("runOnStart", raw);
     }
 
+    // The Theory above hard-codes one InlineData row per shipped pipeline yaml — a future 6th
+    // yaml dropped into pipelines/ without a matching row would silently escape the
+    // passive-trigger ban instead of failing loudly. This proves the InlineData file set and the
+    // AllPipelineYamls glob stay in lockstep, the same way AllPipelineYamls itself keeps contracts
+    // 1/6 from missing a future file.
+    [Fact]
+    public void ConvertedYaml_UsesPassiveTriggers_TheoryCoversAllPipelineYamls()
+    {
+        var theoryMethod = typeof(PipelineYamlContractTests)
+            .GetMethod(nameof(ConvertedYaml_UsesPassiveTriggers_NoPollingFields))!;
+        var coveredFiles = theoryMethod.GetCustomAttributes<InlineDataAttribute>()
+            .SelectMany(attribute => attribute.GetData(theoryMethod))
+            .Select(row => (string)row[0]!)
+            .OrderBy(file => file, StringComparer.Ordinal)
+            .ToList();
+
+        var allFiles = AllPipelineYamls.OrderBy(file => file, StringComparer.Ordinal).ToList();
+
+        Assert.Equal(allFiles, coveredFiles);
+    }
+
     // ---------- contract 6: every ForEach fan-out carries safe target-path/parallelism params ----------
 
     // Machine-guards the two ForEach hazards called out in the Task-6 review: an omitted (or
@@ -239,6 +261,74 @@ public class PipelineYamlContractTests
                                     $"{forEach.MaxDegreeOfParallelism}, expected 1 — parallel iterations would race " +
                                     "the shared cross-tick state / export-dedup markers");
                 }
+            }
+        }
+
+        Assert.Empty(violations);
+    }
+
+    // ---------- contract 7: every ForEach fan-out pins keyPath to $.current ----------
+
+    // DilosFileConfirm@1's Path defaults to "$.current" (the ForEach keyPath convention) and
+    // every per-item chain in every converted yaml reads $.current.* — a ForEach configured with
+    // a different keyPath would silently break every one of those paths without any structural
+    // test noticing (the yaml still deserializes, every node is still "present", it would just
+    // read nothing at runtime).
+    [Fact]
+    public async Task AllPipelineYamls_EveryForEach_KeyPathIsCurrent()
+    {
+        var violations = new List<string>();
+
+        foreach (var yaml in AllPipelineYamls)
+        {
+            var root = await DeserializePipeline(yaml);
+            foreach (var forEach in Walk(root.Transformations).OfType<ForEachNodeConfiguration>())
+            {
+                if (forEach.KeyPath != "$.current")
+                {
+                    violations.Add($"{yaml}: ForEach '{forEach.Description}' KeyPath is " +
+                                    $"'{forEach.KeyPath}', expected '$.current' — every per-item child " +
+                                    "path (DilosFileConfirm@1's default Path, WeClappToCk's $.current.item, …) " +
+                                    "assumes this convention");
+                }
+            }
+        }
+
+        Assert.Empty(violations);
+    }
+
+    // ---------- contract 8: DilosFileFetchStep and DilosFileConfirm agree on deleteAfterSuccess ----------
+
+    // The two nodes read/write the SAME DilosFileFetchState keys for one file element (the step
+    // gates the keep-mode skip / pending-delete retry, the confirm node performs the actual
+    // first-time delete) — every ar/be yaml already carries a comment saying the two MUST match;
+    // this machine-guards the invariant instead of leaving it comment-only, so the go-live flip
+    // from false to true cannot update one node and forget the other.
+    [Fact]
+    public async Task AllPipelineYamls_DilosFileFetchStepAndConfirm_DeleteAfterSuccessMatches()
+    {
+        var violations = new List<string>();
+
+        foreach (var yaml in AllPipelineYamls)
+        {
+            var root = await DeserializePipeline(yaml);
+            var nodes = Walk(root.Transformations).ToList();
+            var fetchSteps = nodes.OfType<DilosFileFetchStepNodeConfiguration>().ToList();
+            var confirms = nodes.OfType<DilosFileConfirmNodeConfiguration>().ToList();
+
+            if (fetchSteps.Count == 0 && confirms.Count == 0)
+            {
+                continue; // no DILOS return-path file nodes in this yaml at all (as/ck/ai)
+            }
+
+            var fetchStep = Assert.Single(fetchSteps);
+            var confirm = Assert.Single(confirms);
+
+            if (fetchStep.DeleteAfterSuccess != confirm.DeleteAfterSuccess)
+            {
+                violations.Add($"{yaml}: DilosFileFetchStep@1.deleteAfterSuccess=" +
+                                $"{fetchStep.DeleteAfterSuccess} but DilosFileConfirm@1.deleteAfterSuccess=" +
+                                $"{confirm.DeleteAfterSuccess} — the two must match or files get stuck");
             }
         }
 

@@ -1,8 +1,12 @@
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using FakeItEasy;
 using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Nodes;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration.DependencyInjection;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+using Meshmakers.Octo.Sdk.Common.Services;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Tests.Nodes;
@@ -152,6 +156,62 @@ public class WeClappFetchStepNodeTests
         Assert.NotNull(orders);
         Assert.Empty(orders);
         AssertNextCalledOnce();
+    }
+
+    // --- real DataContextImpl: proves the seeded array lands FLAT, not wrapped -----------
+
+    // Every test above uses a FakeItEasy IDataContext, so "Set(\"$.orders\", A<JsonArray>._, …)"
+    // only proves the node PASSES the right object reference to Set — it says nothing about how
+    // a REAL DataContextImpl stores an array under DocumentModes.Extend +
+    // TargetValueWriteModes.Overwrite, or whether a later Get<JsonArray> reads the SAME flat
+    // sequence back. Precedent: AiExportGateTests/AsExportGateTests write their gate literal
+    // through a real DataContextImpl "so a green test proves the literals against production
+    // serialization" instead of against a fake's captured argument — this test applies the same
+    // proof to the array-seeding side of WeClappFetchStep@1.
+    [Fact]
+    public async Task OrderFetch_RealDataContext_SeedsOrdersAsFlatArray()
+    {
+        var handler = new FakeHttpMessageHandler((req, _) =>
+        {
+            var url = req.RequestUri!.ToString();
+            return url.Contains("salesOrder")
+                ? FakeHttpMessageHandler.Json(
+                    """{"result":[{"id":"o1","customerId":"7"},{"id":"o2","customerId":"7"}]}""")
+                : FakeHttpMessageHandler.Json("""{"result":[{"id":"7","customerNumber":"10000"}]}""");
+        });
+        var httpClientFactory = A.Fake<IHttpClientFactory>();
+        A.CallTo(() => httpClientFactory.CreateClient(A<string>._)).Returns(new HttpClient(handler));
+
+        var config = new WeClappFetchStepNodeConfiguration
+        {
+            BaseUrl = "https://demo.weclapp.com/webapp/api/v1",
+            ApiKey = "test-key",
+            Entity = "salesOrder",
+            RetryBackoffBaseSeconds = 0,
+        };
+
+        var dataContext = new DataContextImpl(JsonDocument.Parse("{}"));
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddDataPipeline();
+        var rootContext = NodeContext.CreateRootNodeContext(services.BuildServiceProvider(),
+            A.Fake<IPipelineLogger>(), dataContext);
+        var nodeContext = rootContext.RegisterChildNode("WeClappFetchStep", 0, config, dataContext);
+
+        var sut = new WeClappFetchStepNode(A.Fake<NodeDelegate>(), httpClientFactory,
+            A.Fake<ILogger<WeClappFetchStepNode>>());
+
+        await sut.ProcessObjectAsync(dataContext, nodeContext);
+
+        var orders = dataContext.Get<JsonArray>("$.orders");
+        Assert.NotNull(orders);
+        // FLAT: exactly the 2 order elements at the top level. A single-element-wrapped result
+        // (the whole array nested as ONE element) would report Count == 1 here, and the ["item"]
+        // access below would throw (JsonArray has no string-key semantics).
+        Assert.Equal(2, orders.Count);
+        Assert.Equal("o1", orders[0]!["item"]!["id"]!.ToString());
+        Assert.Equal("10000", orders[0]!["customer"]!["customerNumber"]!.ToString());
+        Assert.Equal("o2", orders[1]!["item"]!["id"]!.ToString());
     }
 
     // --- entity article, emitMode PerItem: $.articles = [{ item }] (ck shape) -------------
