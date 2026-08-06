@@ -10,7 +10,7 @@
 # on meta.exportKind + meta.exportDate) gates the render/upload so at most ONE AS file is
 # delivered per Vienna calendar day. The marker is persisted by ApplyChanges@2 as the LAST
 # step — only after a successful upload (at-least-once: a crash between upload and persist
-# re-delivers on the next poll). Pattern mirrors the AI dedup gate (weclapp-orders-to-ai.yaml).
+# re-delivers on the next tick). Pattern mirrors the AI dedup gate (weclapp-orders-to-ai.yaml).
 #
 # Redeploy determinism (K2): no start-tick by design (FromPipelineTriggerEvent) — a (re)deploy
 # or Enabled flip never fires an immediate execution (3 AS incidents were caused by exactly
@@ -50,7 +50,7 @@ transformations:
   # GetOrCreateRtEntitiesByTypeNode.cs:40-56); multiple fieldFilters combine as AND
   # (RtEntityQueryOptions default LogicalOperators.And). The marker entity is persisted
   # by ApplyChanges@2 as the LAST step, i.e. only after a successful upload
-  # (at-least-once — a crash between upload and persist re-delivers on the next poll).
+  # (at-least-once — a crash between upload and persist re-delivers on the next tick).
   # Unknown ckTypeId (tenant without Industry.Logistics 1.1.0) => the platform THROWS before
   # querying (CkCache: "Ensure that the corresponding construction kit library is imported")
   # => pipeline error, NO delivery. Fail-loud verified 2026-07-23 against platform sources.

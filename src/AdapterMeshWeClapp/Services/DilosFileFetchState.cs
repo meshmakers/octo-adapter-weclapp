@@ -11,9 +11,11 @@ namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Services;
 /// cleared its instance fields — same behavior, only the storage location changed.
 /// <para/>
 /// Both sets are keyed by the file's <c>FileKey</c> (<c>{Name}|{Length}|{LastWriteTimeUtc.Ticks}</c>,
-/// <see cref="Nodes.DilosFileFetchTriggerNode"/>) and are written EXCLUSIVELY by
-/// <c>DilosFileConfirm@1</c> — <c>DilosFileFetchStep@1</c> only reads them (to skip a file) and
-/// clears/retries the pending-delete set during its own listing.
+/// <see cref="Nodes.DilosFileFetchTriggerNode"/>). <c>DilosFileConfirm@1</c> is the only node
+/// that MARKS a key processed (kept-on-server or pending-delete); <c>DilosFileFetchStep@1</c>
+/// only reads those marks (to skip a file or retry a delete) but writes both sets too, during
+/// its own listing — bounding them via <see cref="IntersectWith"/> and clearing a delete it
+/// just retried via <see cref="ClearPendingDelete"/>.
 /// </summary>
 public sealed class DilosFileFetchState
 {
