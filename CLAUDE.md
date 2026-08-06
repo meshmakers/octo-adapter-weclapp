@@ -17,9 +17,11 @@ dotnet test Octo.WeClappAdapter.slnx -c DebugL
 
 ## Project Structure
 - `src/AdapterMeshWeClapp/` - Mesh adapter host (cloud, connects directly to OctoMesh
-  repositories) + all custom pipeline nodes (outbound: `WeClappFetch@1`, `WeClappToCk@1`,
-  `DilosRender@1`, `DilosSftpWrite@1` [ISO-8859-1 delivery]; return path: `DilosFileFetch@1`,
-  `WeClappArWrite@1`, `WeClappBeWrite@1`)
+  repositories) + all custom pipeline nodes (outbound: `WeClappFetchStep@1`, `WeClappToCk@1`,
+  `DilosRender@1`, `DilosSftpWrite@1` [ISO-8859-1 delivery]; return path: `DilosFileFetchStep@1`,
+  `DilosFileConfirm@1`, `WeClappArWrite@1`, `WeClappBeWrite@1`; legacy poll-trigger nodes
+  `WeClappFetch@1`/`DilosFileFetch@1` stay registered for rollback, see "Pipeline Trigger
+  Architecture" below)
 - `src/Lkv.WeClapp.Core/` - plain core lib: WeClapp DTOs/JSON, WeClapp→DILOS value rules,
   DILOS AS/AI writers, DILOS AR/BE parsers + write-back planners (fail-loud, golden-file verified)
 - `src/charts/octo-weclapp-adapter/` - Helm chart (deployed by the Communication Operator;
@@ -44,9 +46,47 @@ dotnet test Octo.WeClappAdapter.slnx -c DebugL
 - Node logs are message templates with args (`nodeContext.Info("... {0}", x)`) — NEVER
   interpolated strings: `INodeContext` forwards to structured logging, so a literal `{...}`
   (JSON body, URL) corrupts the template
-- Redeploy determinism (P2): the AS batch pipeline runs delay-first (`runOnStart: false`) and
-  gates delivery on a per-day CK marker (`Industry.Logistics/ExportRun`), so a (re)deploy emits
-  no immediate or duplicate AS file; ck/ai keep `runOnStart: true` (ck idempotent, ai gated)
+- Redeploy determinism (P2 — superseded by "Pipeline Trigger Architecture" below): no pipeline
+  has `runOnStart`/`pollingIntervalSeconds` anymore; nothing fires on (re)deploy or pod restart
+  by construction. AS still gates delivery on a per-day CK marker
+  (`Industry.Logistics/ExportRun`, at most one file per Vienna calendar day)
+
+## Pipeline Trigger Architecture
+All 5 pipeline YAMLs carry two passive triggers — `FromPipelineTriggerEvent@1` (cron,
+subscribes a per-pipeline queue and calls `ExecuteAsync` directly) and
+`FromExecutePipelineCommand@1` (manual/API run, e.g. for Härtetest probing). Neither is a poll
+loop: a redeploy or pod restart fires no execution. A fetch step
+(`WeClappFetchStep@1`/`DilosFileFetchStep@1`) runs first and seeds the data context at a fixed
+root path — always the array, even `[]` (a missing/non-array path aborts a downstream
+`ForEach@1` with `PathMustBeArray`); a per-item `ForEach@1` then fans the former per-execution
+chain out over that array, one iteration per element.
+
+**Canonical ForEach block** (use exactly this shape — deviating breaks the guard test below):
+```yaml
+  - type: ForEach@1
+    iterationPath: $.orders          # or $.articles / $.files
+    keyPath: $.current
+    mergePath: $.current             # aligned with keyPath — default $.key collects null
+    targetPath: $.loopResult         # NEVER omit: default "$" REPLACES the document root
+    maxDegreeOfParallelism: 1        # NEVER omit: default 0 = Environment.ProcessorCount (parallel!)
+    transformations:
+      # former chain, item segment replaced: $.item → $.current.item etc.
+```
+Merge-result order under `$.loopResult` is unspecified (`ConcurrentBag`) — **nothing may read
+`$.loopResult`**; every child writes through the data context instead (`ApplyChanges@1/@2`,
+`DilosSftpWrite@1`, `WeClappArWrite@1`, ...).
+
+**Activation:** importing a `System.Communication/PipelineTrigger` RT entity schedules NOTHING
+by itself — schedules materialize only via `octo-cli -c DeployTriggers` (or tenant start). Run
+it after every RT import that carries `PipelineTrigger` entities; an `Enabled` flip via
+re-import likewise only bites at the next `DeployTriggers`/tenant restart.
+
+**Guard tests** (`tests/AdapterMeshWeClapp.Tests/PipelineYamlContractTests.cs`) pin this against
+the shipped YAMLs: `ConvertedYaml_UsesPassiveTriggers_NoPollingFields` asserts both passive
+triggers in order, the correct first fetch-step type per file, and that
+`pollingIntervalSeconds`/`runOnStart` appear nowhere in the raw text (including comments);
+`AllPipelineYamls_EveryForEach_HasNonRootTargetPathAndSequentialDop` asserts every `ForEach@1`
+has a non-null, non-`"$"` `targetPath` and `maxDegreeOfParallelism == 1`.
 
 ## Domain Gotchas (golden-file verified — do not "fix" without evidence)
 - DILOS AR/BE use **comma** decimals; AI/AS use dot. Both verified against real files.

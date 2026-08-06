@@ -8,9 +8,16 @@ template.
 
 - `src/AdapterMeshWeClapp` — the adapter host (`WebAdapterBuilder`, `IAdapterService`,
   observability/health endpoints, pipeline registration) plus the custom pipeline nodes:
-  - outbound: `WeClappFetch@1` (trigger, per-item or batch), `WeClappToCk@1`,
-    `DilosRender@1` (content + golden file names), `DilosSftpWrite@1` (ISO-8859-1 delivery)
-  - return path: `DilosFileFetch@1` (SFTP trigger), `WeClappArWrite@1`, `WeClappBeWrite@1`
+  - outbound: `WeClappFetch@1` (legacy trigger, superseded by the passive cron-trigger +
+    step-node pipelines; kept registered for rollback until the standard-node switch),
+    `WeClappFetchStep@1` (fetches WeClapp articles/orders into the data context for the
+    cron-triggered pipelines), `WeClappToCk@1`, `DilosRender@1` (content + golden file names),
+    `DilosSftpWrite@1` (ISO-8859-1 delivery)
+  - return path: `DilosFileFetch@1` (legacy trigger, superseded by the passive cron-trigger +
+    step-node pipelines; kept registered for rollback until the standard-node switch),
+    `DilosFileFetchStep@1` (lists the LKV SFTP server into `$.files` for the cron-triggered
+    pipelines), `DilosFileConfirm@1` (per-file keep/delete confirmation; last child of the
+    return-path `ForEach@1`), `WeClappArWrite@1`, `WeClappBeWrite@1`
 - `src/Lkv.WeClapp.Core` — plain .NET core library, no platform dependencies:
   - **WeClapp → DILOS (outbound)**: `WeClappJson`, `WeClappToDilos` value rules,
     `DilosArticleWriter` (AS `A*`), `DilosOrderWriter` (AI `K*`/`P*`)
@@ -23,12 +30,22 @@ template.
   articles→CK per item, articles→AS as at most one batched file per Vienna calendar day; 2× return path);
   `scripts/om_setup_lkv.ps1` prepares them (substitutes `${WECLAPP_API_KEY}` and
   the `REPLACE-TENANT` baseUrl)
-  - **Redeploy determinism (P2):** the AS pipeline delays first (`runOnStart: false`) and
-    gates delivery on a per-day CK marker (`Industry.Logistics/ExportRun`), so a (re)deploy
-    emits no immediate or duplicate AS file; `ck`/`ai` keep `runOnStart: true`
-    (ck idempotent, ai already gated). Operational constraint: keep the chart's
-    `replicaCount: 1` — the gate's probe-to-persist window is race-free only with a
-    single replica (two replicas could both deliver before the day marker lands)
+  - **Trigger architecture:** every pipeline carries two passive triggers —
+    `FromPipelineTriggerEvent@1` (cron, subscribes a per-pipeline queue) and
+    `FromExecutePipelineCommand@1` (manual/API run). A fetch step
+    (`WeClappFetchStep@1`/`DilosFileFetchStep@1`) runs first and seeds the data context; a
+    per-item `ForEach@1` (`keyPath: $.current`, `maxDegreeOfParallelism: 1`) then fans the
+    former per-execution chain out over the seeded array. Neither trigger polls or fires on
+    (re)deploy — importing a `PipelineTrigger` RT entity schedules nothing by itself; only
+    `octo-cli -c DeployTriggers` activates the schedule (also required again after any
+    `Enabled` flip)
+  - **Redeploy determinism (P2 — superseded by the trigger architecture above):** the former
+    `runOnStart`/`pollingIntervalSeconds` fields no longer exist on any pipeline; nothing fires
+    on (re)deploy or pod restart by construction. The AS pipeline still gates delivery on a
+    per-day CK marker (`Industry.Logistics/ExportRun`, at most one file per Vienna calendar
+    day). Operational constraint unchanged: keep the chart's `replicaCount: 1` — the gate's
+    probe-to-persist window is race-free only with a single replica (two replicas could both
+    deliver before the day marker lands)
 - `tests/Lkv.WeClapp.Core.Tests` — xUnit against real LKV golden files
   (specs verified field-by-field; see `docs/superpowers/specs/`)
 - `tests/AdapterMeshWeClapp.Tests` — node/pipeline tests plus multi-gated live smokes
