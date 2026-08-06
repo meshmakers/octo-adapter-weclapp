@@ -6,12 +6,14 @@ using Meshmakers.Octo.MeshAdapter.Nodes.Configuration;
 using Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
+using Meshmakers.Octo.MeshAdapter.Nodes.Trigger;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration.DependencyInjection;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration.Serializer;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Control;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Triggers;
 using Meshmakers.Octo.Sdk.Common.Services;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -180,6 +182,21 @@ public class PipelineYamlContractTests
         }
     }
 
+    // ---------- contract 5: converted pipeline yamls use passive triggers, no polling fields ----------
+
+    [Theory]
+    [InlineData("weclapp-articles-to-as.yaml")]
+    public async Task ConvertedYaml_UsesPassiveTriggers_NoPollingFields(string file)
+    {
+        var root = await DeserializePipeline(file);
+        Assert.Collection(root.Triggers!,
+            t => Assert.IsType<FromPipelineTriggerEventNodeConfiguration>(t),
+            t => Assert.IsType<FromExecutePipelineCommandNodeConfiguration>(t));
+        var raw = File.ReadAllText(FindRepoFile(Path.Combine("pipelines", file)));
+        Assert.DoesNotContain("pollingIntervalSeconds", raw);
+        Assert.DoesNotContain("runOnStart", raw);
+    }
+
     // ---------- helpers ----------
 
     private static async Task<NodeDefinitionRoot> DeserializePipeline(string fileName)
@@ -195,7 +212,10 @@ public class PipelineYamlContractTests
             .RegisterNodeConfiguration<DilosSftpWriteNodeConfiguration>()
             .RegisterNodeConfiguration<DilosFileFetchTriggerNodeConfiguration>()
             .RegisterNodeConfiguration<WeClappArWriteNodeConfiguration>()
-            .RegisterNodeConfiguration<WeClappBeWriteNodeConfiguration>();
+            .RegisterNodeConfiguration<WeClappBeWriteNodeConfiguration>()
+            .RegisterNodeConfiguration<WeClappFetchStepNodeConfiguration>()
+            .RegisterNodeConfiguration<DilosFileFetchStepNodeConfiguration>()
+            .RegisterNodeConfiguration<DilosFileConfirmNodeConfiguration>();
         var lookup = services.BuildServiceProvider().GetRequiredService<INodeQualifiedNameLookupService>();
 
         await using var stream = File.OpenRead(FindRepoFile(Path.Combine("pipelines", fileName)));
