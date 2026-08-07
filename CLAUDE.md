@@ -93,8 +93,8 @@ silently escape the ban; `AllPipelineYamls_EveryForEach_HasNonRootTargetPathAndS
 asserts every `ForEach@1` has a non-null, non-`"$"` `targetPath` and
 `maxDegreeOfParallelism == 1`; `AllPipelineYamls_EveryForEach_KeyPathIsCurrent` pins every
 `ForEach@1`'s `keyPath` to `$.current`; `AllPipelineYamls_DilosFileFetchStepAndConfirm_DeleteAfterSuccessMatches`
-asserts `DilosFileFetchStep@1`/`DilosFileConfirm@1` carry the same `deleteAfterSuccess` in every
-ar/be yaml.
+asserts `DilosFileFetchStep@1`/`DilosFileConfirm@1` carry the same `deleteAfterSuccess` AND
+`serverConfiguration` in every ar/be yaml.
 
 ## Domain Gotchas (golden-file verified — do not "fix" without evidence)
 - DILOS AR/BE use **comma** decimals; AI/AS use dot. Both verified against real files.
