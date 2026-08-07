@@ -1,29 +1,65 @@
 # Pipeline: DILOS BE stock snapshots (LKV SFTP) → WeClapp stock movement deltas.
 # warehouseStock is GET-only in the WeClapp API (v1 and v2), so the node books
 # bookIncomingMovement / bookOutgoingMovement per BE-vs-current difference. Idempotent by
-# construction: re-processing the same file yields delta 0, so the trigger's
-# delete-after-success protocol is safe once enabled. During the dry-run phase the delete
-# stays off (a dry-run succeeds without writing). GES (blocked) lines and unknown articles
-# are skipped loudly (golden files contain 0 GES lines; semantics not agreed yet).
+# construction: re-processing the same file yields delta 0, so the delete-after-success
+# protocol (DilosFileConfirm@1 below) is safe once enabled. During the dry-run phase the
+# delete stays off (a dry-run succeeds without writing). GES (blocked) lines and unknown
+# articles are skipped loudly (golden files contain 0 GES lines; semantics not agreed yet).
+#
+# DilosFileFetchStep@1 lists the LKV SFTP server (cron-driven; replaces the old
+# DilosFileFetch@1 poll-loop trigger) and seeds $.files = one element per matching, ready
+# file; a ForEach@1 runs the former per-execution chain once per element (one iteration per
+# file). DilosFileConfirm@1 is the LAST child: with deleteAfterSuccess: true it deletes the
+# remote file only after the write succeeded — safe by the same idempotency argument.
+#
+# DeleteAfterSuccess consistency: DilosFileFetchStep@1 and DilosFileConfirm@1 below MUST
+# carry the SAME value — the step gates the keep-mode skip / pending-delete retry, the
+# confirm node performs the actual first-time delete; a mismatch leaves files stuck in an
+# inconsistent state.
 #
 # SFTP credentials come from the tenant GlobalConfiguration entry "LkvSftp" (shared with
 # the outbound SftpUpload@1 and the AR pipeline). ${WECLAPP_API_KEY} is substituted at
 # deploy time (see scripts/om_setup_lkv.ps1).
 
 triggers:
-  - type: DilosFileFetch@1
+  - type: FromPipelineTriggerEvent@1
+  - type: FromExecutePipelineCommand@1
+
+transformations:
+  - type: DilosFileFetchStep@1
+    description: List LKV SFTP for BE stock-snapshot files (cron-driven; replaces the old DilosFileFetch@1 poll-loop trigger)
     serverConfiguration: LkvSftp
     remoteDirectory: "/"          # Billbee production default; per-mandate subdirectory TBD with LKV
     filePattern: BE*txt           # golden name: BE_20240205035403463.txt
-    pollingIntervalSeconds: 3600  # Billbee parity: hourly
     minFileAgeSeconds: 60
+    # deleteAfterSuccess MUST match DilosFileConfirm@1's deleteAfterSuccess below — this step
+    # gates the keep-mode skip / pending-delete retry, the confirm node performs the actual
+    # first-time delete; a mismatch leaves files stuck in an inconsistent state.
     deleteAfterSuccess: false     # dry-run below writes nothing — deleting would consume the
                                   # LKV file with no effect; flip to true TOGETHER with dryRun
 
-transformations:
-  - type: WeClappBeWrite@1
-    description: Reconcile the BE stock snapshot into WeClapp via delta movement bookings
-    baseUrl: https://REPLACE-TENANT.weclapp.com/webapp/api/v1
-    apiKey: ${WECLAPP_API_KEY}
-    warehouseId: "4239"           # trial Main warehouse (default place 4244); customer id TBD
-    dryRun: true                  # movements are logged, not booked; flip for go-live
+  - type: ForEach@1
+    description: per-item chain, one former execution per element
+    iterationPath: $.files
+    keyPath: $.current
+    mergePath: $.current             # aligned with keyPath — default $.key would merge nothing
+    targetPath: $.loopResult         # NEVER omit: default "$" REPLACES the document root.
+                                     # Merge-result ORDER is unspecified (ConcurrentBag) — nothing may read $.loopResult.
+    maxDegreeOfParallelism: 1        # NEVER omit: default 0 = Environment.ProcessorCount (parallel!)
+    transformations:
+      - type: WeClappBeWrite@1
+        description: Reconcile the BE stock snapshot into WeClapp via delta movement bookings
+        baseUrl: https://REPLACE-TENANT.weclapp.com/webapp/api/v1
+        apiKey: ${WECLAPP_API_KEY}
+        fileNamePath: $.current.fileName
+        contentPath: $.current.content
+        warehouseId: "4239"           # trial Main warehouse (default place 4244); customer id TBD
+        dryRun: true                  # movements are logged, not booked; flip for go-live
+
+      - type: DilosFileConfirm@1
+        description: Confirm the BE file — keep it on the server (dry-run) or delete it once dryRun is off
+        serverConfiguration: LkvSftp
+        # deleteAfterSuccess MUST match DilosFileFetchStep@1's deleteAfterSuccess above (see note there).
+        deleteAfterSuccess: false
+        path: $.current             # the ONE current file element — never $.files (would resolve to
+                                    # the whole array via ForEach's parent-fallback and delete unrun files)

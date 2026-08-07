@@ -5,11 +5,13 @@ using Meshmakers.Octo.MeshAdapter.Nodes.Configuration;
 using Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
+using Meshmakers.Octo.MeshAdapter.Nodes.Trigger;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration.DependencyInjection;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration.Serializer;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Control;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Triggers;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Tests;
@@ -40,7 +42,8 @@ public class AsExportGateTests
             .RegisterNodeConfiguration<WeClappFetchTriggerNodeConfiguration>()
             .RegisterNodeConfiguration<WeClappToCkNodeConfiguration>()
             .RegisterNodeConfiguration<DilosRenderNodeConfiguration>()
-            .RegisterNodeConfiguration<DilosSftpWriteNodeConfiguration>();
+            .RegisterNodeConfiguration<DilosSftpWriteNodeConfiguration>()
+            .RegisterNodeConfiguration<WeClappFetchStepNodeConfiguration>();
         var lookup = services.BuildServiceProvider().GetRequiredService<INodeQualifiedNameLookupService>();
 
         NodeDefinitionRoot root;
@@ -50,14 +53,22 @@ public class AsExportGateTests
                    ?? throw new InvalidOperationException("pipeline yaml deserialized to null");
         }
 
-        // Trigger-Pins (K2 + Starvation-Schutz):
-        var trigger = Assert.Single(root.Triggers!.OfType<WeClappFetchTriggerNodeConfiguration>());
-        Assert.False(trigger.RunOnStart);
-        Assert.Equal(3600, trigger.PollingIntervalSeconds);
-        Assert.Equal("Batch", trigger.EmitMode);
-        Assert.Equal("AS", trigger.ExportKind);
+        // Trigger-Pins: passive cron pair. K2 anti-starvation is now structural — a
+        // FromPipelineTriggerEvent@1 trigger never fires on (re)deploy by design, so there is
+        // no RunOnStart/PollingIntervalSeconds config left to get wrong (AB#4228 trigger
+        // separation). The K1 prerequisites move to the fetch-step pins below.
+        Assert.Collection(root.Triggers!,
+            t => Assert.IsType<FromPipelineTriggerEventNodeConfiguration>(t),
+            t => Assert.IsType<FromExecutePipelineCommandNodeConfiguration>(t));
 
         var top = root.Transformations?.ToList() ?? new List<NodeConfiguration>();
+
+        // Fetch-step pins: Batch/AS feed $.meta.exportKind/$.meta.exportDate that the gate below reads.
+        var fetchStep = Assert.Single(top.OfType<WeClappFetchStepNodeConfiguration>());
+        Assert.Equal("article", fetchStep.Entity);
+        Assert.Equal("Batch", fetchStep.EmitMode);
+        Assert.Equal("AS", fetchStep.ExportKind);
+
         // Lookup (query-only) außerhalb des Gates, nichts Lieferndes/Persistierendes davor:
         var probe = Assert.Single(top.OfType<GetOrCreateRtEntitiesByTypeNodeConfiguration>());
         Assert.Equal("Industry.Logistics/ExportRun", probe.CkTypeId);

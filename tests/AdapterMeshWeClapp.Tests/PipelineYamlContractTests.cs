@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Text.Json;
 using FakeItEasy;
 using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Nodes;
@@ -6,12 +7,14 @@ using Meshmakers.Octo.MeshAdapter.Nodes.Configuration;
 using Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
+using Meshmakers.Octo.MeshAdapter.Nodes.Trigger;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration.DependencyInjection;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration.Serializer;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Control;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Triggers;
 using Meshmakers.Octo.Sdk.Common.Services;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -72,14 +75,14 @@ public class PipelineYamlContractTests
     public async Task ArticlesToCkYaml_ConfiguredPaths_ResolveAgainstTransformOutput()
     {
         var root = await DeserializePipeline("weclapp-articles-to-ck.yaml");
-        var transformations = root.Transformations?.ToList() ?? [];
-        var toCk = Assert.Single(transformations.OfType<WeClappToCkNodeConfiguration>());
-        var lookup = Assert.Single(transformations.OfType<GetOrCreateRtEntitiesByTypeNodeConfiguration>());
-        var updateInfo = Assert.Single(transformations.OfType<CreateUpdateInfoNodeConfiguration>());
+        var all = Walk(root.Transformations).ToList();
+        var toCk = Assert.Single(all.OfType<WeClappToCkNodeConfiguration>());
+        var lookup = Assert.Single(all.OfType<GetOrCreateRtEntitiesByTypeNodeConfiguration>());
+        var updateInfo = Assert.Single(all.OfType<CreateUpdateInfoNodeConfiguration>());
 
         var dataContext = await RunToCkNode(toCk, """
-            {"item":{"id":"168914","articleNumber":"TW_Z_074","name":"Ersatz Schnellverschlüsse",
-             "articleType":"STORABLE","ean":"9001234567890","active":true}}
+            {"current":{"item":{"id":"168914","articleNumber":"TW_Z_074","name":"Ersatz Schnellverschlüsse",
+             "articleType":"STORABLE","ean":"9001234567890","active":true}}}
             """);
 
         foreach (var filter in lookup.FieldFilters ?? [])
@@ -104,9 +107,9 @@ public class PipelineYamlContractTests
     public async Task OrdersToAiYaml_CustomerNameUpdate_ResolvesForB2cCustomers()
     {
         var root = await DeserializePipeline("weclapp-orders-to-ai.yaml");
-        var transformations = root.Transformations?.ToList() ?? [];
-        var toCk = Assert.Single(transformations.OfType<WeClappToCkNodeConfiguration>());
-        var gate = Assert.Single(transformations.OfType<IfNodeConfiguration>());
+        var all = Walk(root.Transformations).ToList();
+        var toCk = Assert.Single(all.OfType<WeClappToCkNodeConfiguration>());
+        var gate = Assert.Single(all.OfType<IfNodeConfiguration>());
         var customerUpdate = (gate.Transformations ?? [])
             .OfType<CreateUpdateInfoNodeConfiguration>()
             .Single(c => c.CkTypeId == "Industry.Logistics/Customer");
@@ -115,9 +118,9 @@ public class PipelineYamlContractTests
         // B2C: private customer without a company — exactly the case Jürgen reported
         // as an empty recipient name on 2026-07-16.
         var dataContext = await RunToCkNode(toCk, """
-            {"item":{"id":"622075","orderNumber":"SO-1001","customerNumber":"K-77","orderDate":1782820560333,
+            {"current":{"item":{"id":"622075","orderNumber":"SO-1001","customerNumber":"K-77","orderDate":1782820560333,
               "orderItems":[]},
-             "customer":{"id":"77","customerNumber":"K-77","company":"","firstName":"Erika","lastName":"Muster"}}
+             "customer":{"id":"77","customerNumber":"K-77","company":"","firstName":"Erika","lastName":"Muster"}}}
             """);
 
         var namePath = Assert.IsType<string>(nameUpdate.ValuePath);
@@ -143,9 +146,9 @@ public class PipelineYamlContractTests
         var toCk = Assert.Single(all.OfType<WeClappToCkNodeConfiguration>());
 
         var dataContext = await RunToCkNode(toCk, """
-            {"item":{"id":"622075","orderNumber":"SO-1001","customerNumber":"K-77","orderDate":1782820560333,
+            {"current":{"item":{"id":"622075","orderNumber":"SO-1001","customerNumber":"K-77","orderDate":1782820560333,
               "orderItems":[]},
-             "customer":{"id":"77","customerNumber":"K-77","company":"","firstName":"Erika","lastName":"Muster"}}
+             "customer":{"id":"77","customerNumber":"K-77","company":"","firstName":"Erika","lastName":"Muster"}}}
             """);
 
         var ckPaths = new List<(string What, string Path)>();
@@ -180,6 +183,168 @@ public class PipelineYamlContractTests
         }
     }
 
+    // ---------- contract 5: converted pipeline yamls use passive triggers, no polling fields ----------
+
+    // The expected first-transformation type is parameterized per file: the batch/per-item
+    // WeClapp pipelines (as/ck/ai) fetch via WeClappFetchStep@1, the DILOS return-path
+    // pipelines (ar/be) fetch via DilosFileFetchStep@1 — each file gets an exact match against
+    // its own designated fetch-step type, not a loosened "one of either" check.
+    [Theory]
+    [InlineData("weclapp-articles-to-as.yaml", typeof(WeClappFetchStepNodeConfiguration))]
+    [InlineData("weclapp-articles-to-ck.yaml", typeof(WeClappFetchStepNodeConfiguration))]
+    [InlineData("weclapp-orders-to-ai.yaml", typeof(WeClappFetchStepNodeConfiguration))]
+    [InlineData("dilos-ar-to-weclapp.yaml", typeof(DilosFileFetchStepNodeConfiguration))]
+    [InlineData("dilos-be-to-weclapp.yaml", typeof(DilosFileFetchStepNodeConfiguration))]
+    public async Task ConvertedYaml_UsesPassiveTriggers_NoPollingFields(string file, Type expectedFirstStepType)
+    {
+        var root = await DeserializePipeline(file);
+        Assert.Collection(root.Triggers!,
+            t => Assert.IsType<FromPipelineTriggerEventNodeConfiguration>(t),
+            t => Assert.IsType<FromExecutePipelineCommandNodeConfiguration>(t));
+
+        var transformations = root.Transformations?.ToList() ?? [];
+        Assert.NotEmpty(transformations);
+        Assert.IsType(expectedFirstStepType, transformations[0]);
+
+        var raw = File.ReadAllText(FindRepoFile(Path.Combine("pipelines", file)));
+        Assert.DoesNotContain("pollingIntervalSeconds", raw);
+        Assert.DoesNotContain("runOnStart", raw);
+    }
+
+    // The Theory above hard-codes one InlineData row per shipped pipeline yaml — a future 6th
+    // yaml dropped into pipelines/ without a matching row would silently escape the
+    // passive-trigger ban instead of failing loudly. This proves the InlineData file set and the
+    // AllPipelineYamls glob stay in lockstep, the same way AllPipelineYamls itself keeps contracts
+    // 1/6 from missing a future file.
+    [Fact]
+    public void ConvertedYaml_UsesPassiveTriggers_TheoryCoversAllPipelineYamls()
+    {
+        var theoryMethod = typeof(PipelineYamlContractTests)
+            .GetMethod(nameof(ConvertedYaml_UsesPassiveTriggers_NoPollingFields))!;
+        var coveredFiles = theoryMethod.GetCustomAttributes<InlineDataAttribute>()
+            .SelectMany(attribute => attribute.GetData(theoryMethod))
+            .Select(row => (string)row[0]!)
+            .OrderBy(file => file, StringComparer.Ordinal)
+            .ToList();
+
+        var allFiles = AllPipelineYamls.OrderBy(file => file, StringComparer.Ordinal).ToList();
+
+        Assert.Equal(allFiles, coveredFiles);
+    }
+
+    // ---------- contract 6: every ForEach fan-out carries safe target-path/parallelism params ----------
+
+    // Machine-guards the two ForEach hazards: an omitted (or literal "$") targetPath defaults
+    // to "$" and REPLACES the whole document root with the (unordered) loop-merge result; an
+    // omitted/non-1 maxDegreeOfParallelism defaults to Environment.ProcessorCount and races the
+    // shared cross-tick state / export-dedup markers that every converted pipeline's per-item
+    // chain writes through.
+    [Fact]
+    public async Task AllPipelineYamls_EveryForEach_HasNonRootTargetPathAndSequentialDop()
+    {
+        var violations = new List<string>();
+
+        foreach (var yaml in AllPipelineYamls)
+        {
+            var root = await DeserializePipeline(yaml);
+            foreach (var forEach in Walk(root.Transformations).OfType<ForEachNodeConfiguration>())
+            {
+                if (forEach.TargetPath is null or "$")
+                {
+                    violations.Add($"{yaml}: ForEach '{forEach.Description}' TargetPath is " +
+                                    $"'{forEach.TargetPath ?? "null"}' — the default \"$\" REPLACES the document root");
+                }
+
+                if (forEach.MaxDegreeOfParallelism != 1)
+                {
+                    violations.Add($"{yaml}: ForEach '{forEach.Description}' MaxDegreeOfParallelism is " +
+                                    $"{forEach.MaxDegreeOfParallelism}, expected 1 — parallel iterations would race " +
+                                    "the shared cross-tick state / export-dedup markers");
+                }
+            }
+        }
+
+        Assert.Empty(violations);
+    }
+
+    // ---------- contract 7: every ForEach fan-out pins keyPath to $.current ----------
+
+    // DilosFileConfirm@1's Path defaults to "$.current" (the ForEach keyPath convention) and
+    // every per-item chain in every converted yaml reads $.current.* — a ForEach configured with
+    // a different keyPath would silently break every one of those paths without any structural
+    // test noticing (the yaml still deserializes, every node is still "present", it would just
+    // read nothing at runtime).
+    [Fact]
+    public async Task AllPipelineYamls_EveryForEach_KeyPathIsCurrent()
+    {
+        var violations = new List<string>();
+
+        foreach (var yaml in AllPipelineYamls)
+        {
+            var root = await DeserializePipeline(yaml);
+            foreach (var forEach in Walk(root.Transformations).OfType<ForEachNodeConfiguration>())
+            {
+                if (forEach.KeyPath != "$.current")
+                {
+                    violations.Add($"{yaml}: ForEach '{forEach.Description}' KeyPath is " +
+                                    $"'{forEach.KeyPath}', expected '$.current' — every per-item child " +
+                                    "path (DilosFileConfirm@1's default Path, WeClappToCk's $.current.item, …) " +
+                                    "assumes this convention");
+                }
+            }
+        }
+
+        Assert.Empty(violations);
+    }
+
+    // ---------- contract 8: DilosFileFetchStep and DilosFileConfirm agree on deleteAfterSuccess + serverConfiguration ----------
+
+    // The two nodes read/write the SAME DilosFileFetchState keys for one file element (the step
+    // gates the keep-mode skip / pending-delete retry, the confirm node performs the actual
+    // first-time delete) — every ar/be yaml already carries a comment saying deleteAfterSuccess
+    // MUST match; this machine-guards that invariant instead of leaving it comment-only, so the
+    // go-live flip from false to true cannot update one node and forget the other.
+    // serverConfiguration must also match — a drift there would mean DilosFileConfirm@1 deleting
+    // (or marking kept) against a DIFFERENT SFTP server than the one DilosFileFetchStep@1 listed
+    // the file from.
+    [Fact]
+    public async Task AllPipelineYamls_DilosFileFetchStepAndConfirm_DeleteAfterSuccessMatches()
+    {
+        var violations = new List<string>();
+
+        foreach (var yaml in AllPipelineYamls)
+        {
+            var root = await DeserializePipeline(yaml);
+            var nodes = Walk(root.Transformations).ToList();
+            var fetchSteps = nodes.OfType<DilosFileFetchStepNodeConfiguration>().ToList();
+            var confirms = nodes.OfType<DilosFileConfirmNodeConfiguration>().ToList();
+
+            if (fetchSteps.Count == 0 && confirms.Count == 0)
+            {
+                continue; // no DILOS return-path file nodes in this yaml at all (as/ck/ai)
+            }
+
+            var fetchStep = Assert.Single(fetchSteps);
+            var confirm = Assert.Single(confirms);
+
+            if (fetchStep.DeleteAfterSuccess != confirm.DeleteAfterSuccess)
+            {
+                violations.Add($"{yaml}: DilosFileFetchStep@1.deleteAfterSuccess=" +
+                                $"{fetchStep.DeleteAfterSuccess} but DilosFileConfirm@1.deleteAfterSuccess=" +
+                                $"{confirm.DeleteAfterSuccess} — the two must match or files get stuck");
+            }
+
+            if (fetchStep.ServerConfiguration != confirm.ServerConfiguration)
+            {
+                violations.Add($"{yaml}: DilosFileFetchStep@1.serverConfiguration=" +
+                                $"'{fetchStep.ServerConfiguration}' but DilosFileConfirm@1.serverConfiguration=" +
+                                $"'{confirm.ServerConfiguration}' — deleting/marking on a different server than listed");
+            }
+        }
+
+        Assert.Empty(violations);
+    }
+
     // ---------- helpers ----------
 
     private static async Task<NodeDefinitionRoot> DeserializePipeline(string fileName)
@@ -195,7 +360,10 @@ public class PipelineYamlContractTests
             .RegisterNodeConfiguration<DilosSftpWriteNodeConfiguration>()
             .RegisterNodeConfiguration<DilosFileFetchTriggerNodeConfiguration>()
             .RegisterNodeConfiguration<WeClappArWriteNodeConfiguration>()
-            .RegisterNodeConfiguration<WeClappBeWriteNodeConfiguration>();
+            .RegisterNodeConfiguration<WeClappBeWriteNodeConfiguration>()
+            .RegisterNodeConfiguration<WeClappFetchStepNodeConfiguration>()
+            .RegisterNodeConfiguration<DilosFileFetchStepNodeConfiguration>()
+            .RegisterNodeConfiguration<DilosFileConfirmNodeConfiguration>();
         var lookup = services.BuildServiceProvider().GetRequiredService<INodeQualifiedNameLookupService>();
 
         await using var stream = File.OpenRead(FindRepoFile(Path.Combine("pipelines", fileName)));
