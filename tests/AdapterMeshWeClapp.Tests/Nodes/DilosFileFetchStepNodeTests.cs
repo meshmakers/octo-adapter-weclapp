@@ -140,9 +140,9 @@ public class DilosFileFetchStepNodeTests
     [Fact]
     public async Task PendingDeleteRetry_FailureLeavesKeyPendingAndDoesNotBlockOtherFiles()
     {
-        // Beyond the brief's 7 required tests: proves the "mirror of :176-181" instruction
-        // extends to that block's failure isolation, not just its happy path — a failed
-        // retry-delete must stay retryable and must not stop other files from being listed.
+        // Retry-delete failure isolation: a failed retry-delete must stay retryable (not lost)
+        // and must not stop other files in the same listing from being processed — mirrors
+        // DilosFileFetchTriggerNode's own delete-retry isolation (DilosFileFetchTriggerNode.cs:176-181).
         var config = Configure("AR*TXT", deleteAfterSuccess: true);
         var pending = RemoteFile("AR1.TXT", ageMinutes: 20, length: 100);
         var ok = RemoteFile("AR2.TXT", ageMinutes: 20, length: 200);
@@ -207,13 +207,13 @@ public class DilosFileFetchStepNodeTests
     [Fact]
     public async Task SharedSingleton_OwnScopeTick_NeverPrunesOrSkipsAnotherScopesKeys()
     {
-        // Beyond the brief's required DilosFileFetchState-level two-pattern test: reproduces M1
-        // at the level the defect actually manifested in production — TWO pipelines' step nodes
-        // (ar, be) resolving the SAME DilosFileFetchState DI singleton (Program.cs), exactly like
-        // the real adapter. Before the scope fix this was the failing scenario: an ar-only
-        // IntersectWith call intersected BOTH global sets, discarding every be key an ar tick
-        // never listed — a be file already confirmed "kept on server" would be silently
-        // re-emitted and re-executed on the very next (unrelated) ar tick.
+        // Guards against cross-scope pruning of the shared singleton: TWO pipelines' step nodes
+        // (ar, be) resolve the SAME DilosFileFetchState DI singleton (Program.cs) — a tick
+        // listing only its own filePattern must never prune or skip another scope's keys.
+        // Without scoping, an ar-only IntersectWith call would intersect BOTH global sets,
+        // discarding every be key an ar tick never listed — a be file already confirmed "kept on
+        // server" would then be silently re-emitted and re-executed on be's OWN next tick (its
+        // kept-on-server mark having been wiped by the unrelated ar tick in between).
         var beConfig = Configure("BE*txt", deleteAfterSuccess: false);
         var beFile = RemoteFile("BE_20240205035403463.txt", ageMinutes: 20);
         _state.MarkKeptOnServer(ScopedKey(beConfig, beFile)); // be confirmed this kept, in an earlier tick
@@ -337,9 +337,9 @@ public class DilosFileConfirmNodeTests
     [Fact]
     public async Task ConfirmNode_DeleteMode_Failure_LeavesKeyPendingForRetry()
     {
-        // Beyond the brief's 7 required tests: proves "pending-delete bookkeeping" means
-        // mark-BEFORE-delete (crash/failure safety net), not mark-after — DilosFileFetchStep@1
-        // must find the key still pending and retry it on the next tick.
+        // Pending-delete bookkeeping means mark-BEFORE-delete (crash/failure safety net), not
+        // mark-after — DilosFileFetchStep@1 must find the key still pending and retry it on the
+        // next tick.
         Configure(deleteAfterSuccess: true);
         SetCurrentElement("keyD", fullPath: "/AR4.TXT");
         A.CallTo(() => _sftp.DeleteFile("/AR4.TXT")).Throws(new IOException("permission denied"));

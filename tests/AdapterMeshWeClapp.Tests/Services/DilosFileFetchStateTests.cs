@@ -6,7 +6,7 @@ namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Tests.Services;
 /// <see cref="DilosFileFetchState"/> is ONE DI singleton shared by every pipeline that uses
 /// <c>DilosFileFetchStep@1</c>/<c>DilosFileConfirm@1</c> — today that means BOTH the ar and the
 /// be pipeline resolve the same instance (<c>Program.cs</c>). <see cref="DilosFileFetchState.IntersectWith"/>
-/// must therefore prune only the keys that belong to the calling pipeline's OWN scope (M1): before
+/// must therefore prune only the keys that belong to the calling pipeline's OWN scope: before
 /// the scope parameter existed, an ar tick's <c>IntersectWith(files.Select(FileKey))</c> intersected
 /// BOTH global sets against ar's file list alone, discarding every be key ar never listed (and
 /// vice versa) — a keep-mode file would be re-emitted/re-executed on the very next alternating

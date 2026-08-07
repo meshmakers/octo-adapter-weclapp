@@ -27,7 +27,8 @@ dotnet test Octo.WeClappAdapter.slnx -c DebugL
 - `src/charts/octo-weclapp-adapter/` - Helm chart (deployed by the Communication Operator;
   httpGet probes on `/healthz/live|ready`)
 - `pipelines/` - tenant pipeline YAMLs (orders→AI per order; articles split into per-item
-  CK sync + batched AS delivery [`emitMode: Batch`, one file per cron tick]; AR/BE return path);
+  CK sync + batched AS delivery [`emitMode: Batch`, at most one file per Vienna calendar day —
+  K1 gate]; AR/BE return path);
   `scripts/om_setup_lkv.ps1` substitutes `${WECLAPP_API_KEY}` + `REPLACE-TENANT` baseUrl
 - `tests/Lkv.WeClapp.Core.Tests/` - xUnit against real LKV golden fixtures
 - `tests/AdapterMeshWeClapp.Tests/` - node/pipeline tests + env-gated live smokes (gates below)
