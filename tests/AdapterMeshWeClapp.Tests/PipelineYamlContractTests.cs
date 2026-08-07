@@ -297,13 +297,16 @@ public class PipelineYamlContractTests
         Assert.Empty(violations);
     }
 
-    // ---------- contract 8: DilosFileFetchStep and DilosFileConfirm agree on deleteAfterSuccess ----------
+    // ---------- contract 8: DilosFileFetchStep and DilosFileConfirm agree on deleteAfterSuccess + serverConfiguration ----------
 
     // The two nodes read/write the SAME DilosFileFetchState keys for one file element (the step
     // gates the keep-mode skip / pending-delete retry, the confirm node performs the actual
-    // first-time delete) — every ar/be yaml already carries a comment saying the two MUST match;
-    // this machine-guards the invariant instead of leaving it comment-only, so the go-live flip
-    // from false to true cannot update one node and forget the other.
+    // first-time delete) — every ar/be yaml already carries a comment saying deleteAfterSuccess
+    // MUST match; this machine-guards that invariant instead of leaving it comment-only, so the
+    // go-live flip from false to true cannot update one node and forget the other.
+    // serverConfiguration must also match — a drift there would mean DilosFileConfirm@1 deleting
+    // (or marking kept) against a DIFFERENT SFTP server than the one DilosFileFetchStep@1 listed
+    // the file from.
     [Fact]
     public async Task AllPipelineYamls_DilosFileFetchStepAndConfirm_DeleteAfterSuccessMatches()
     {
@@ -329,6 +332,13 @@ public class PipelineYamlContractTests
                 violations.Add($"{yaml}: DilosFileFetchStep@1.deleteAfterSuccess=" +
                                 $"{fetchStep.DeleteAfterSuccess} but DilosFileConfirm@1.deleteAfterSuccess=" +
                                 $"{confirm.DeleteAfterSuccess} — the two must match or files get stuck");
+            }
+
+            if (fetchStep.ServerConfiguration != confirm.ServerConfiguration)
+            {
+                violations.Add($"{yaml}: DilosFileFetchStep@1.serverConfiguration=" +
+                                $"'{fetchStep.ServerConfiguration}' but DilosFileConfirm@1.serverConfiguration=" +
+                                $"'{confirm.ServerConfiguration}' — deleting/marking on a different server than listed");
             }
         }
 

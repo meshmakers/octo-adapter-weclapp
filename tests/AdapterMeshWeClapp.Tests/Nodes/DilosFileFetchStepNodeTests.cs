@@ -177,6 +177,34 @@ public class DilosFileFetchStepNodeTests
     }
 
     [Fact]
+    public async Task VanishedKeptFile_IsForgottenByIntersectWith()
+    {
+        var config = Configure("AR*TXT", deleteAfterSuccess: false);
+        var vanished = RemoteFile("AR_gone.TXT", ageMinutes: 20);
+        _state.MarkKeptOnServer(ScopedKey(config, vanished)); // kept from an earlier tick
+        ListingReturns(); // the file is no longer on the server this tick
+        var sut = CreateSut();
+
+        await sut.ProcessObjectAsync(_dataContext, _nodeContext);
+
+        Assert.False(_state.WasKeptOnServer(ScopedKey(config, vanished)));
+    }
+
+    [Fact]
+    public async Task VanishedPendingDeleteFile_IsForgottenByIntersectWith()
+    {
+        var config = Configure("AR*TXT", deleteAfterSuccess: true);
+        var vanished = RemoteFile("AR_gone.TXT", ageMinutes: 20);
+        _state.MarkPendingDelete(ScopedKey(config, vanished)); // pending from an earlier tick
+        ListingReturns(); // the file is no longer on the server this tick
+        var sut = CreateSut();
+
+        await sut.ProcessObjectAsync(_dataContext, _nodeContext);
+
+        Assert.False(_state.HasPendingDelete(ScopedKey(config, vanished)));
+    }
+
+    [Fact]
     public async Task SharedSingleton_OwnScopeTick_NeverPrunesOrSkipsAnotherScopesKeys()
     {
         // Beyond the brief's required DilosFileFetchState-level two-pattern test: reproduces M1
