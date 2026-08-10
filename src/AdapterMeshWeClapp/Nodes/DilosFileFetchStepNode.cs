@@ -16,7 +16,7 @@ namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Nodes;
 /// (<c>FromPipelineTriggerEvent@1</c>) drives execution instead of a poll loop.
 /// </summary>
 [NodeName("DilosFileFetchStep", 1)]
-public record DilosFileFetchStepNodeConfiguration : NodeConfiguration
+public record DilosFileFetchStepNodeConfiguration : NodeConfiguration, IDilosFileFetchConfiguration
 {
     /// <summary>Name of the tenant GlobalConfiguration entry holding the SFTP connection
     /// settings (same JSON shape as SftpUpload@1, e.g. "LkvSftp" shared for both directions).</summary>
@@ -58,8 +58,8 @@ public record DilosFileFetchStepNodeConfiguration : NodeConfiguration
 /// retry a delete that <c>DilosFileConfirm@1</c> attempted in an earlier tick and failed
 /// (<see cref="DilosFileFetchState.HasPendingDelete"/>) — that file is deleted right here during
 /// listing, WITHOUT being emitted or re-executed, mirroring
-/// <see cref="DilosFileFetchTriggerNode"/>'s own delete-retry
-/// (<c>DilosFileFetchTriggerNode.cs:176-181</c>). Cross-tick memory of both kinds lives in the
+/// <see cref="DilosFileFetchTriggerNode"/>'s own delete-retry in its
+/// <c>FetchOnceAsync</c>. Cross-tick memory of both kinds lives in the
 /// injected <see cref="DilosFileFetchState"/> DI singleton, not on this node instance — the
 /// pipeline engine constructs a fresh node per chain (per tick), so instance fields would lose
 /// their state between ticks. A pod restart clears the singleton exactly like it used to clear
@@ -68,8 +68,8 @@ public record DilosFileFetchStepNodeConfiguration : NodeConfiguration
 /// <para/>
 /// The SAME singleton instance is shared by every pipeline wired to this node (e.g. ar AND be),
 /// so every key this step reads or writes is namespaced with a scope prefix built from its own
-/// config (<see cref="ScopePrefix"/>) — without it, one pipeline's tick would prune another
-/// pipeline's keys via <see cref="DilosFileFetchState.IntersectWith"/>.
+/// config (<see cref="DilosFileFetchCore.ScopePrefix"/>) — without it, one pipeline's tick would
+/// prune another pipeline's keys via <see cref="DilosFileFetchState.PruneScopeTo"/>.
 /// </summary>
 [NodeConfiguration(typeof(DilosFileFetchStepNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
@@ -89,25 +89,22 @@ public class DilosFileFetchStepNode(
 
         using var sftp = sftpFileSystemFactory.Connect(settings);
 
-        var files = sftp.ListFiles(config.RemoteDirectory)
-            .Where(f => !f.IsDirectory && DilosFileFetchTriggerNode.GlobMatch(f.Name, config.FilePattern))
-            .OrderBy(f => f.Name, StringComparer.Ordinal)
-            .ToList();
+        var files = DilosFileFetchCore.ListMatchingFiles(sftp, config);
 
-        var scopePrefix = ScopePrefix(config);
+        var scopePrefix = DilosFileFetchCore.ScopePrefix(config);
 
         // Forget THIS scope's keys for files that vanished from the server, so the singleton
         // stays bounded without touching another pipeline's keys sharing the same singleton
         // (the DI singleton is shared across every pipeline wired to DilosFileFetchStep@1 —
         // see DilosFileFetchState's class summary).
-        state.IntersectWith(scopePrefix, files.Select(f => scopePrefix + FileKey(f)));
+        state.PruneScopeTo(scopePrefix, files.Select(f => scopePrefix + DilosFileFetchCore.FileKey(f)));
 
         var now = DateTime.UtcNow;
         var emitted = new JsonArray();
 
         foreach (var file in files)
         {
-            var key = scopePrefix + FileKey(file);
+            var key = scopePrefix + DilosFileFetchCore.FileKey(file);
             try
             {
                 // Both checks are gated on the CURRENT mode: after a config flip a stale key
@@ -163,16 +160,4 @@ public class DilosFileFetchStepNode(
 
         await next(dataContext, nodeContext);
     }
-
-    /// <summary>The per-pipeline scope prefix namespacing this step's keys in the shared
-    /// <see cref="DilosFileFetchState"/> singleton, so its keys can never collide with — or be
-    /// pruned by — a DIFFERENT pipeline's <c>DilosFileFetchStep@1</c> (e.g. ar vs be) sharing the
-    /// same singleton. Deliberately built only from THIS step's own config, not from any global
-    /// or tenant identifier: two chains with the same server/directory/pattern are, by
-    /// definition, the same logical fetch scope.</summary>
-    private static string ScopePrefix(DilosFileFetchStepNodeConfiguration config) =>
-        $"{config.ServerConfiguration}|{config.RemoteDirectory}|{config.FilePattern}|";
-
-    private static string FileKey(SftpFileEntry file) =>
-        $"{file.Name}|{file.Length}|{file.LastWriteTimeUtc.Ticks}";
 }

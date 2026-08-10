@@ -68,14 +68,13 @@ public class DilosFileFetchStepNodeTests
     private void ListingReturns(params SftpFileEntry[] entries) =>
         A.CallTo(() => _sftp.ListFiles("/")).Returns(entries);
 
-    private static string FileKey(SftpFileEntry file) => $"{file.Name}|{file.Length}|{file.LastWriteTimeUtc.Ticks}";
-
     /// <summary>The namespaced key <c>DilosFileFetchStepNode</c> actually reads/writes/emits:
     /// a scope prefix built from the step's OWN config, followed by the file's bare
-    /// <see cref="FileKey"/> as a suffix — the FileKey-parity claim of the pre-scoping tests now
-    /// applies to this suffix, not to the full emitted/stored key.</summary>
+    /// <see cref="DilosFileFetchCore.FileKey"/> as a suffix — composed from the SAME
+    /// <see cref="DilosFileFetchCore"/> helpers the node uses, so these tests pin the node's
+    /// wiring (scope + key composition), not a re-declared key format.</summary>
     private static string ScopedKey(DilosFileFetchStepNodeConfiguration config, SftpFileEntry file) =>
-        $"{config.ServerConfiguration}|{config.RemoteDirectory}|{config.FilePattern}|{FileKey(file)}";
+        DilosFileFetchCore.ScopePrefix(config) + DilosFileFetchCore.FileKey(file);
 
     [Fact]
     public async Task EmitsFiles_NameOrdered_RespectingMinFileAge_WithKeyAndFullPath()
@@ -142,7 +141,7 @@ public class DilosFileFetchStepNodeTests
     {
         // Retry-delete failure isolation: a failed retry-delete must stay retryable (not lost)
         // and must not stop other files in the same listing from being processed — mirrors
-        // DilosFileFetchTriggerNode's own delete-retry isolation (DilosFileFetchTriggerNode.cs:176-181).
+        // DilosFileFetchTriggerNode's own delete-retry isolation in FetchOnceAsync.
         var config = Configure("AR*TXT", deleteAfterSuccess: true);
         var pending = RemoteFile("AR1.TXT", ageMinutes: 20, length: 100);
         var ok = RemoteFile("AR2.TXT", ageMinutes: 20, length: 200);
@@ -177,7 +176,7 @@ public class DilosFileFetchStepNodeTests
     }
 
     [Fact]
-    public async Task VanishedKeptFile_IsForgottenByIntersectWith()
+    public async Task VanishedKeptFile_IsForgottenByPruneScopeTo()
     {
         var config = Configure("AR*TXT", deleteAfterSuccess: false);
         var vanished = RemoteFile("AR_gone.TXT", ageMinutes: 20);
@@ -191,7 +190,7 @@ public class DilosFileFetchStepNodeTests
     }
 
     [Fact]
-    public async Task VanishedPendingDeleteFile_IsForgottenByIntersectWith()
+    public async Task VanishedPendingDeleteFile_IsForgottenByPruneScopeTo()
     {
         var config = Configure("AR*TXT", deleteAfterSuccess: true);
         var vanished = RemoteFile("AR_gone.TXT", ageMinutes: 20);
@@ -210,7 +209,7 @@ public class DilosFileFetchStepNodeTests
         // Guards against cross-scope pruning of the shared singleton: TWO pipelines' step nodes
         // (ar, be) resolve the SAME DilosFileFetchState DI singleton (Program.cs) — a tick
         // listing only its own filePattern must never prune or skip another scope's keys.
-        // Without scoping, an ar-only IntersectWith call would intersect BOTH global sets,
+        // Without scoping, an ar-only prune call would intersect BOTH global sets,
         // discarding every be key an ar tick never listed — a be file already confirmed "kept on
         // server" would then be silently re-emitted and re-executed on be's OWN next tick (its
         // kept-on-server mark having been wiped by the unrelated ar tick in between).

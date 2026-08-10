@@ -1,5 +1,4 @@
 using System.Text.Json.Nodes;
-using System.Text.RegularExpressions;
 using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Services;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
@@ -15,7 +14,7 @@ namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Nodes;
 /// trigger nodes touches files) — this is the inbound counterpart to SftpUpload@1.
 /// </summary>
 [NodeName("DilosFileFetch", 1)]
-public record DilosFileFetchTriggerNodeConfiguration : TriggerNodeConfiguration
+public record DilosFileFetchTriggerNodeConfiguration : TriggerNodeConfiguration, IDilosFileFetchConfiguration
 {
     /// <summary>Name of the tenant GlobalConfiguration entry holding the SFTP connection
     /// settings (same JSON shape as SftpUpload@1, e.g. "LkvSftp" shared for both directions).</summary>
@@ -147,13 +146,10 @@ public class DilosFileFetchTriggerNode(
 
         using var sftp = sftpFileSystemFactory.Connect(settings);
 
-        var files = sftp.ListFiles(config.RemoteDirectory)
-            .Where(f => !f.IsDirectory && GlobMatch(f.Name, config.FilePattern))
-            .OrderBy(f => f.Name, StringComparer.Ordinal)
-            .ToList();
+        var files = DilosFileFetchCore.ListMatchingFiles(sftp, config);
 
         // Forget keys of files that vanished from the server, so the sets stay bounded.
-        var currentKeys = files.Select(FileKey).ToList();
+        var currentKeys = files.Select(DilosFileFetchCore.FileKey).ToList();
         _executedButNotDeleted.IntersectWith(currentKeys);
         _executedKeptOnServer.IntersectWith(currentKeys);
 
@@ -161,7 +157,7 @@ public class DilosFileFetchTriggerNode(
 
         foreach (var file in files)
         {
-            var key = FileKey(file);
+            var key = DilosFileFetchCore.FileKey(file);
             try
             {
                 // Both memory sets are gated on the CURRENT mode: after a config flip the
@@ -212,13 +208,4 @@ public class DilosFileFetchTriggerNode(
         }
     }
 
-    private static string FileKey(SftpFileEntry file) =>
-        $"{file.Name}|{file.Length}|{file.LastWriteTimeUtc.Ticks}";
-
-    /// <summary>Billbee-compatible glob: '*' → any run, '?' → one char, anchored, case-insensitive.</summary>
-    internal static bool GlobMatch(string fileName, string pattern)
-    {
-        var regex = "^" + Regex.Escape(pattern).Replace(@"\*", ".*").Replace(@"\?", ".") + "$";
-        return Regex.IsMatch(fileName, regex, RegexOptions.IgnoreCase);
-    }
 }
