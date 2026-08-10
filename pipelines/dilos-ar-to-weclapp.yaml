@@ -38,7 +38,8 @@ transformations:
     description: per-item chain, one former execution per element
     iterationPath: $.files
     keyPath: $.current
-    mergePath: $.current             # aligned with keyPath — default $.key would merge nothing
+    # no mergePath: the default ($.key) merges nothing — nothing may read $.loopResult anyway,
+    # and merging $.current would deep-clone every item’s full content into the result array.
     targetPath: $.loopResult         # NEVER omit: default "$" REPLACES the document root.
                                      # Merge-result ORDER is unspecified (ConcurrentBag) — nothing may read $.loopResult.
     maxDegreeOfParallelism: 1        # NEVER omit: default 0 = Environment.ProcessorCount (parallel!)

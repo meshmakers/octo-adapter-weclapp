@@ -64,7 +64,9 @@ public record DilosFileFetchStepNodeConfiguration : NodeConfiguration, IDilosFil
 /// pipeline engine constructs a fresh node per chain (per tick), so instance fields would lose
 /// their state between ticks. A pod restart clears the singleton exactly like it used to clear
 /// the trigger's instance fields: a kept file is re-emitted and re-executed once more, relying
-/// on downstream idempotency — identical to today's restart behavior.
+/// on downstream idempotency — identical to today's restart behavior. A pipeline redeploy,
+/// unlike with the legacy trigger's per-deployment instance, does NOT clear the singleton
+/// (see <see cref="DilosFileFetchState"/>).
 /// <para/>
 /// The SAME singleton instance is shared by every pipeline wired to this node (e.g. ar AND be),
 /// so every key this step reads or writes is namespaced with a scope prefix built from its own
@@ -87,68 +89,88 @@ public class DilosFileFetchStepNode(
 
         var settings = etlContext.GlobalConfiguration.ResolveSftpSettings(config.ServerConfiguration);
 
-        using var sftp = sftpFileSystemFactory.Connect(settings);
-
-        var files = DilosFileFetchCore.ListMatchingFiles(sftp, config);
+        // A dry-run must leave no trace: no remote deletes and no cross-tick state writes —
+        // only the read-and-emit surface runs, so the downstream chain can be probed safely
+        // (same contract as the write nodes, e.g. DilosSftpWriteNode).
+        var isDryRun = nodeContext.PipelineExecutionMode?.IsDryRun == true;
 
         var scopePrefix = DilosFileFetchCore.ScopePrefix(config);
-
-        // Forget THIS scope's keys for files that vanished from the server, so the singleton
-        // stays bounded without touching another pipeline's keys sharing the same singleton
-        // (the DI singleton is shared across every pipeline wired to DilosFileFetchStep@1 —
-        // see DilosFileFetchState's class summary).
-        state.PruneScopeTo(scopePrefix, files.Select(f => scopePrefix + DilosFileFetchCore.FileKey(f)));
-
         var now = DateTime.UtcNow;
         var emitted = new JsonArray();
+        List<SftpFileEntry> files;
 
-        foreach (var file in files)
+        // The listing session must be CLOSED before next() runs: the downstream ForEach executes
+        // in this same call stack, and in delete mode DilosFileConfirm@1 opens its own session
+        // per file — keeping the listing session open across that would hold two concurrent
+        // sessions against a partner server that may cap concurrent logins.
+        using (var sftp = sftpFileSystemFactory.Connect(settings))
         {
-            var key = scopePrefix + DilosFileFetchCore.FileKey(file);
-            try
+            files = DilosFileFetchCore.ListMatchingFiles(sftp, config);
+
+            // Forget THIS scope's keys for files that vanished from the server, so the singleton
+            // stays bounded without touching another pipeline's keys sharing the same singleton
+            // (the DI singleton is shared across every pipeline wired to DilosFileFetchStep@1 —
+            // see DilosFileFetchState's class summary).
+            if (!isDryRun)
             {
-                // Both checks are gated on the CURRENT mode: after a config flip a stale key
-                // from the OTHER mode must neither suppress a real emission (a keep-mode key
-                // surviving a switch to delete mode) nor delete a file in keep mode (a stale
-                // delete-retry key) — downstream idempotency covers re-executions, exactly like
-                // the trigger this replaces.
-                if (!config.DeleteAfterSuccess && state.WasKeptOnServer(key))
-                {
-                    continue; // keep mode: already confirmed, stays on the server unchanged
-                }
-
-                if (config.DeleteAfterSuccess && state.HasPendingDelete(key))
-                {
-                    // DilosFileConfirm@1 processed this file in an earlier tick; only its
-                    // delete failed — retry just the delete, never re-emit/re-execute the file.
-                    sftp.DeleteFile(file.FullPath);
-                    state.ClearPendingDelete(key);
-                    continue;
-                }
-
-                if ((now - file.LastWriteTimeUtc).TotalSeconds < config.MinFileAgeSeconds)
-                {
-                    continue; // possibly still being written — pick it up next tick
-                }
-
-                var content = sftp.DownloadText(file.FullPath);
-                emitted.Add(new JsonObject
-                {
-                    ["fileName"] = file.Name,
-                    ["content"] = content,
-                    ["fullPath"] = file.FullPath,
-                    ["key"] = key,
-                    ["lastWriteTimeUtc"] = file.LastWriteTimeUtc,
-                });
+                state.PruneScopeTo(scopePrefix, files.Select(f => scopePrefix + DilosFileFetchCore.FileKey(f)));
             }
-            catch (Exception ex)
+
+            foreach (var file in files)
             {
-                // Per-file isolation during listing (a corrupt file, a permission glitch on ONE
-                // remote entry, or a failed retry-delete) must not stop the others from being
-                // listed and emitted — the file stays on the server and is retried next tick,
-                // exactly like the trigger this replaces.
-                logger.LogError(ex, "DilosFileFetchStep: listing '{FileName}' failed", file.Name);
-                nodeContext.Error("DilosFileFetchStep: listing '{0}' failed: {1}", file.Name, ex.Message);
+                var key = scopePrefix + DilosFileFetchCore.FileKey(file);
+                try
+                {
+                    // Both checks are gated on the CURRENT mode: after a config flip a stale key
+                    // from the OTHER mode must neither suppress a real emission (a keep-mode key
+                    // surviving a switch to delete mode) nor delete a file in keep mode (a stale
+                    // delete-retry key) — downstream idempotency covers re-executions, exactly like
+                    // the trigger this replaces.
+                    if (!config.DeleteAfterSuccess && state.WasKeptOnServer(key))
+                    {
+                        continue; // keep mode: already confirmed, stays on the server unchanged
+                    }
+
+                    if (config.DeleteAfterSuccess && state.HasPendingDelete(key))
+                    {
+                        // DilosFileConfirm@1 processed this file in an earlier tick; only its
+                        // delete failed — retry just the delete, never re-emit/re-execute the file.
+                        if (isDryRun)
+                        {
+                            nodeContext.Info("DilosFileFetchStep dry-run: would retry delete of '{0}'",
+                                file.Name);
+                            continue;
+                        }
+
+                        sftp.DeleteFile(file.FullPath);
+                        state.ClearPendingDelete(key);
+                        continue;
+                    }
+
+                    if ((now - file.LastWriteTimeUtc).TotalSeconds < config.MinFileAgeSeconds)
+                    {
+                        continue; // possibly still being written — pick it up next tick
+                    }
+
+                    var content = sftp.DownloadText(file.FullPath);
+                    emitted.Add(new JsonObject
+                    {
+                        ["fileName"] = file.Name,
+                        ["content"] = content,
+                        ["fullPath"] = file.FullPath,
+                        ["key"] = key,
+                        ["lastWriteTimeUtc"] = file.LastWriteTimeUtc,
+                    });
+                }
+                catch (Exception ex)
+                {
+                    // Per-file isolation during listing (a corrupt file, a permission glitch on ONE
+                    // remote entry, or a failed retry-delete) must not stop the others from being
+                    // listed and emitted — the file stays on the server and is retried next tick,
+                    // exactly like the trigger this replaces.
+                    logger.LogError(ex, "DilosFileFetchStep: listing '{FileName}' failed", file.Name);
+                    nodeContext.Error("DilosFileFetchStep: listing '{0}' failed: {1}", file.Name, ex.Message);
+                }
             }
         }
 

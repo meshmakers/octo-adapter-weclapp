@@ -15,6 +15,7 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Control;
 using Meshmakers.Octo.Sdk.Common.Services;
 using Microsoft.Extensions.DependencyInjection;
+using static Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Tests.PipelineYamlWalk;
 
 namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Tests;
 
@@ -161,7 +162,23 @@ public class AiExportGateTests
         Assert.Contains(children, n => n is CreateUpdateInfoNodeConfiguration);
         Assert.Contains(children, n => n is CreateAssociationUpdateNodeConfiguration);
         Assert.Equal(persistIndex, children.Count - 1);
+
+        // Deep census: the flat asserts above cover the three levels the yaml has TODAY, but a
+        // nested container (a second ForEach/If/Switch) could smuggle a delivery/persist node
+        // past every one of them — anywhere in the file, every render/deliver/persist/update
+        // node must live inside the ONE gate's subtree. Count equality suffices: the gate
+        // subtree is a subset of the whole tree, so equal counts mean none outside.
+        var insideGate = Walk(gate.Transformations).Count(IsRenderDeliverOrPersist);
+        var anywhere = Walk(root.Transformations).Count(IsRenderDeliverOrPersist);
+        Assert.Equal(anywhere, insideGate);
     }
+
+    private static bool IsRenderDeliverOrPersist(NodeConfiguration n) =>
+        n is DilosRenderNodeConfiguration
+            or DilosSftpWriteNodeConfiguration
+            or ApplyChangesNodeConfiguration2
+            or CreateUpdateInfoNodeConfiguration
+            or CreateAssociationUpdateNodeConfiguration;
 
     private static string FindRepoFile(string relativePath)
     {

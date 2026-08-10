@@ -49,6 +49,15 @@ internal static class DilosFileFetchCore
     /// Ordinal name order — the shared listing surface of both fetch nodes.</summary>
     internal static List<SftpFileEntry> ListMatchingFiles(ISftpFileSystem sftp, IDilosFileFetchConfiguration config)
     {
+        if (string.IsNullOrEmpty(config.FilePattern))
+        {
+            // C# 'required' is not enforced by the pipeline YAML deserializer (strict mode only
+            // rejects UNKNOWN properties) — without this guard a missing filePattern surfaces as
+            // a NullReferenceException from the glob regex on every non-empty listing.
+            throw new WeClappPipelineExecutionException(
+                "DilosFileFetch: 'filePattern' is not configured — the pipeline YAML must set it (e.g. \"AR*TXT\")");
+        }
+
         return sftp.ListFiles(config.RemoteDirectory)
             .Where(f => !f.IsDirectory && GlobMatch(f.Name, config.FilePattern))
             .OrderBy(f => f.Name, StringComparer.Ordinal)
@@ -70,6 +79,16 @@ internal static class DilosFileFetchCore
     /// by definition, the same logical fetch scope.</summary>
     internal static string ScopePrefix(IDilosFileFetchConfiguration config)
     {
-        return $"{config.ServerConfiguration}|{config.RemoteDirectory}|{config.FilePattern}|";
+        return $"{Escape(config.ServerConfiguration)}|{Escape(config.RemoteDirectory)}|{Escape(config.FilePattern)}|";
+    }
+
+    /// <summary>'|' separates both the scope components and the <see cref="FileKey"/> fields, and
+    /// <see cref="Services.DilosFileFetchState.PruneScopeTo"/> matches scopes by StartsWith — a
+    /// literal '|' (or a trailing '\') inside a component must not be able to shift component
+    /// boundaries, or two different server/directory/pattern triples could collide on one prefix
+    /// and silently prune each other's keys.</summary>
+    private static string Escape(string value)
+    {
+        return value.Replace(@"\", @"\\").Replace("|", @"\|");
     }
 }

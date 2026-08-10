@@ -3,6 +3,7 @@ using FakeItEasy;
 using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Nodes;
 using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Services;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Execution;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter;
 using Microsoft.Extensions.Logging;
@@ -204,6 +205,34 @@ public class DilosFileFetchStepNodeTests
     }
 
     [Fact]
+    public async Task DryRun_StillEmitsFiles_ButNeverDeletesPrunesOrClearsState()
+    {
+        // A dry-run execution (manual FromExecutePipelineCommand@1 probe) must leave no trace:
+        // no remote deletes and no cross-tick state writes — only the read-and-emit surface
+        // runs, mirroring the dry-run contract of the write nodes (DilosSftpWriteNode.cs:84).
+        var config = Configure("AR*TXT", deleteAfterSuccess: true);
+        var pending = RemoteFile("AR1.TXT", ageMinutes: 20, length: 100);
+        var fresh = RemoteFile("AR2.TXT", ageMinutes: 20, length: 200);
+        var vanished = RemoteFile("AR_gone.TXT", ageMinutes: 20);
+        ListingReturns(pending, fresh);
+        _state.MarkPendingDelete(ScopedKey(config, pending)); // real earlier tick: delete failed
+        _state.MarkPendingDelete(ScopedKey(config, vanished)); // real earlier tick: file now gone
+        A.CallTo(() => _sftp.DownloadText("/AR2.TXT")).Returns("content");
+        A.CallTo(() => _nodeContext.PipelineExecutionMode)
+            .Returns(new DefaultPipelineExecutionMode { IsDryRun = true });
+        var sut = CreateSut();
+
+        await sut.ProcessObjectAsync(_dataContext, _nodeContext);
+
+        A.CallTo(() => _sftp.DeleteFile(A<string>._)).MustNotHaveHappened(); // no retry-delete
+        Assert.True(_state.HasPendingDelete(ScopedKey(config, pending))); // key untouched
+        Assert.True(_state.HasPendingDelete(ScopedKey(config, vanished))); // no pruning either
+        Assert.NotNull(_capturedFiles);
+        var only = Assert.Single(_capturedFiles!); // fresh file still emitted for probing
+        Assert.Equal("AR2.TXT", only!["fileName"]!.ToString());
+    }
+
+    [Fact]
     public async Task SharedSingleton_OwnScopeTick_NeverPrunesOrSkipsAnotherScopesKeys()
     {
         // Guards against cross-scope pruning of the shared singleton: TWO pipelines' step nodes
@@ -330,6 +359,42 @@ public class DilosFileConfirmNodeTests
         Assert.True(_state.WasKeptOnServer("keyC"));
         A.CallTo(() => _sftpFactory.Connect(A<SftpConnectionSettings>._)).MustNotHaveHappened();
         A.CallTo(() => _sftp.DeleteFile(A<string>._)).MustNotHaveHappened();
+        A.CallTo(() => _next(_dataContext, _nodeContext)).MustHaveHappenedOnceExactly();
+    }
+
+    [Fact]
+    public async Task ConfirmNode_DryRun_KeepMode_NeverMarksState()
+    {
+        // A dry-run confirms nothing: the write nodes upstream skipped their writes, so marking
+        // the file "kept on server" would make every later REAL tick skip a file that was never
+        // actually delivered — silent data loss for the pod's lifetime.
+        Configure(deleteAfterSuccess: false);
+        SetCurrentElement("keyE");
+        A.CallTo(() => _nodeContext.PipelineExecutionMode)
+            .Returns(new DefaultPipelineExecutionMode { IsDryRun = true });
+        var sut = CreateSut();
+
+        await sut.ProcessObjectAsync(_dataContext, _nodeContext);
+
+        Assert.False(_state.WasKeptOnServer("keyE"));
+        A.CallTo(() => _next(_dataContext, _nodeContext)).MustHaveHappenedOnceExactly();
+    }
+
+    [Fact]
+    public async Task ConfirmNode_DryRun_DeleteMode_NeverTouchesServerOrState()
+    {
+        // Deleting during a dry-run would consume an LKV file whose content was never written
+        // to WeClapp — the file must survive for the later real run.
+        Configure(deleteAfterSuccess: true);
+        SetCurrentElement("keyF", fullPath: "/AR9.TXT");
+        A.CallTo(() => _nodeContext.PipelineExecutionMode)
+            .Returns(new DefaultPipelineExecutionMode { IsDryRun = true });
+        var sut = CreateSut();
+
+        await sut.ProcessObjectAsync(_dataContext, _nodeContext);
+
+        A.CallTo(() => _sftp.DeleteFile(A<string>._)).MustNotHaveHappened();
+        Assert.False(_state.HasPendingDelete("keyF"));
         A.CallTo(() => _next(_dataContext, _nodeContext)).MustHaveHappenedOnceExactly();
     }
 

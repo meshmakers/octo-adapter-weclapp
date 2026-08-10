@@ -143,7 +143,7 @@ asserts `DilosFileFetchStep@1`/`DilosFileConfirm@1` carry the same `deleteAfterS
 - English code + XML docs; DILOS original field names + 1-based field index in XML docs
 - Commit messages: Conventional Commits scoped to the work item —
   `<type>(AB#4228): <meaningful description>` (types used on this branch: `feat`, `fix`, `test`,
-  `docs`, `style`)
+  `docs`, `style`, `refactor`)
 
 ## Pre-Commit Checklist (ALL steps MUST pass)
 1. `dotnet format Octo.WeClappAdapter.slnx --verify-no-changes`

@@ -8,14 +8,16 @@ namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Services;
 /// on <see cref="Nodes.DilosFileFetchTriggerNode"/> (constructed once for the lifetime of the
 /// polling loop) would lose their state between ticks if they stayed on the node; they move
 /// here instead. A pod restart clears this singleton exactly like restarting the old trigger
-/// cleared its instance fields — same behavior, only the storage location changed.
+/// cleared its instance fields. A pipeline-level REdeploy does NOT: the platform constructs a
+/// fresh trigger instance per deployment (which reset the legacy fields), while this singleton
+/// survives until the pod itself restarts — stale marks therefore outlive a redeploy.
 /// <para/>
 /// ONE singleton instance is shared by EVERY pipeline that wires up these two nodes — today
 /// that means both the ar AND the be pipeline resolve the SAME instance, unlike the legacy
 /// trigger, where each pipeline's <c>DilosFileFetchTriggerNode</c> owned its own instance
 /// fields. Both sets are therefore keyed by a per-pipeline SCOPED key: a scope prefix
-/// (<c>{ServerConfiguration}|{RemoteDirectory}|{FilePattern}|</c>,
-/// <see cref="Nodes.DilosFileFetchCore.ScopePrefix"/> over the step's own config) followed by
+/// (<c>{ServerConfiguration}|{RemoteDirectory}|{FilePattern}|</c> with '\'/'|' escaped inside
+/// components, <see cref="Nodes.DilosFileFetchCore.ScopePrefix"/> over the step's own config) followed by
 /// the file's <see cref="Nodes.DilosFileFetchCore.FileKey"/>
 /// (<c>{Name}|{Length}|{LastWriteTimeUtc.Ticks}</c>)
 /// — so ar's and be's keys never collide even though they share one <c>HashSet&lt;string&gt;</c>

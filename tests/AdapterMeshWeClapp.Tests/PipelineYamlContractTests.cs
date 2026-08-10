@@ -17,6 +17,7 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Control;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Triggers;
 using Meshmakers.Octo.Sdk.Common.Services;
 using Microsoft.Extensions.DependencyInjection;
+using static Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Tests.PipelineYamlWalk;
 
 namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Tests;
 
@@ -33,12 +34,21 @@ public class PipelineYamlContractTests
 {
     // Enumerated from the repo so a future pipeline yaml cannot silently escape the
     // guard (the strict deserializer fails loudly on unregistered node types instead).
-    private static string[] AllPipelineYamls =>
-        Directory.GetFiles(Path.GetDirectoryName(FindRepoFile(Path.Combine("pipelines",
-                "weclapp-articles-to-ck.yaml")))!, "*.yaml")
-            .Select(Path.GetFileName)
-            .Cast<string>()
-            .ToArray();
+    // BOTH extensions: a pipeline saved as .yml must not slip past every contract here —
+    // the enumeration feeds them all, including the theory-lockstep meta-test.
+    private static string[] AllPipelineYamls
+    {
+        get
+        {
+            var pipelinesDir = Path.GetDirectoryName(FindRepoFile(Path.Combine("pipelines",
+                "weclapp-articles-to-ck.yaml")))!;
+            return Directory.GetFiles(pipelinesDir, "*.yaml")
+                .Concat(Directory.GetFiles(pipelinesDir, "*.yml"))
+                .Select(Path.GetFileName)
+                .Cast<string>()
+                .ToArray();
+        }
+    }
 
     // ---------- contract 1: every attribute update declares its value type ----------
 
@@ -345,6 +355,49 @@ public class PipelineYamlContractTests
         Assert.Empty(violations);
     }
 
+    // ---------- contract 9: DilosFileConfirm@1 is the LAST child of the per-file ForEach ----------
+
+    // Child order IS execution order (middleware chain — a throw aborts the remainder): if the
+    // confirm ever moved before the write, keep mode would mark a file kept before its write ran
+    // (a later write failure then skips the file on every future tick), and delete mode would
+    // delete the LKV file before the write — until this test the invariant lived only in the
+    // yaml comments ("DilosFileConfirm@1 is the LAST child").
+    [Fact]
+    public async Task ArBeYamls_DilosFileConfirm_IsTheLastPerFileForEachChild()
+    {
+        var violations = new List<string>();
+        var checkedYamls = 0;
+
+        foreach (var yaml in AllPipelineYamls)
+        {
+            var root = await DeserializePipeline(yaml);
+            var nodes = Walk(root.Transformations).ToList();
+            if (!nodes.OfType<DilosFileConfirmNodeConfiguration>().Any())
+            {
+                continue; // no DILOS return-path confirm in this yaml (as/ck/ai)
+            }
+
+            checkedYamls++;
+            var forEach = Assert.Single(nodes.OfType<ForEachNodeConfiguration>());
+            var children = forEach.Transformations?.ToList() ?? new List<NodeConfiguration>();
+
+            if (children.Count(c => c is DilosFileConfirmNodeConfiguration) != 1)
+            {
+                violations.Add($"{yaml}: exactly ONE DilosFileConfirm@1 must confirm each file element");
+            }
+
+            if (children.Count == 0 || children[^1] is not DilosFileConfirmNodeConfiguration)
+            {
+                violations.Add($"{yaml}: DilosFileConfirm@1 must be the LAST child of the per-file " +
+                               "ForEach — anything after it would run on an already confirmed (possibly " +
+                               "deleted) file, anything before the write chain confirms an unwritten file");
+            }
+        }
+
+        Assert.Empty(violations);
+        Assert.Equal(2, checkedYamls); // ar + be — the return-path yamls must not lose the confirm
+    }
+
     // ---------- helpers ----------
 
     private static async Task<NodeDefinitionRoot> DeserializePipeline(string fileName)
@@ -369,41 +422,6 @@ public class PipelineYamlContractTests
         await using var stream = File.OpenRead(FindRepoFile(Path.Combine("pipelines", fileName)));
         return await new YamlPipelineConfigurationSerializer(lookup).DeserializeAsync(stream)
                ?? throw new InvalidOperationException($"'{fileName}' deserialized to null");
-    }
-
-    // Descends into EVERY children-bearing container (If/Switch/ForEach/For/Group/…, via
-    // IChildNodeConfiguration) plus the Switch-specific Cases/Default collections — a
-    // CreateUpdateInfo hidden in any container must not escape the value-type guard.
-    private static IEnumerable<NodeConfiguration> Walk(IEnumerable<NodeConfiguration>? nodes)
-    {
-        foreach (var node in nodes ?? [])
-        {
-            yield return node;
-
-            if (node is IChildNodeConfiguration container)
-            {
-                foreach (var child in Walk(container.Transformations))
-                {
-                    yield return child;
-                }
-            }
-
-            if (node is SwitchNodeConfiguration switchNode)
-            {
-                foreach (var child in Walk(switchNode.Default))
-                {
-                    yield return child;
-                }
-
-                foreach (var switchCase in switchNode.Cases)
-                {
-                    foreach (var child in Walk(switchCase.Transformations))
-                    {
-                        yield return child;
-                    }
-                }
-            }
-        }
     }
 
     private static async Task<IDataContext> RunToCkNode(WeClappToCkNodeConfiguration config, string documentJson)
