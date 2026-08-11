@@ -2,10 +2,12 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using FakeItEasy;
 using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Nodes;
+using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Services;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration.DependencyInjection;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.Common.Services;
+using Meshmakers.Octo.Sdk.MeshAdapter;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
@@ -16,12 +18,15 @@ public class WeClappFetchStepNodeTests
     private readonly IDataContext _dataContext = A.Fake<IDataContext>();
     private readonly INodeContext _nodeContext = A.Fake<INodeContext>();
     private readonly IHttpClientFactory _httpClientFactory = A.Fake<IHttpClientFactory>();
+    private readonly IMeshEtlContext _etlContext = A.Fake<IMeshEtlContext>();
+    private readonly IGlobalConfiguration _globalConfiguration = A.Fake<IGlobalConfiguration>();
     private readonly NodeDelegate _next = A.Fake<NodeDelegate>();
 
     private WeClappFetchStepNode CreateSut(FakeHttpMessageHandler handler, TimeProvider? timeProvider = null)
     {
         A.CallTo(() => _httpClientFactory.CreateClient(A<string>._)).Returns(new HttpClient(handler));
-        return new WeClappFetchStepNode(_next, _httpClientFactory,
+        A.CallTo(() => _etlContext.GlobalConfiguration).Returns(_globalConfiguration);
+        return new WeClappFetchStepNode(_next, _httpClientFactory, _etlContext,
             A.Fake<ILogger<WeClappFetchStepNode>>(), timeProvider);
     }
 
@@ -198,7 +203,9 @@ public class WeClappFetchStepNodeTests
             A.Fake<IPipelineLogger>(), dataContext);
         var nodeContext = rootContext.RegisterChildNode("WeClappFetchStep", 0, config, dataContext);
 
-        var sut = new WeClappFetchStepNode(A.Fake<NodeDelegate>(), httpClientFactory,
+        var etlContext = A.Fake<IMeshEtlContext>();
+        A.CallTo(() => etlContext.GlobalConfiguration).Returns(A.Fake<IGlobalConfiguration>());
+        var sut = new WeClappFetchStepNode(A.Fake<NodeDelegate>(), httpClientFactory, etlContext,
             A.Fake<ILogger<WeClappFetchStepNode>>());
 
         await sut.ProcessObjectAsync(dataContext, nodeContext);
@@ -297,6 +304,71 @@ public class WeClappFetchStepNodeTests
         await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
             () => sut.ProcessObjectAsync(_dataContext, _nodeContext));
 
+        Assert.Empty(handler.Requests);
+        AssertNextNotCalled();
+    }
+
+    // --- WeClapp access via GlobalConfiguration (apiConfiguration) -----------------------
+
+    [Fact]
+    public async Task ApiConfiguration_ResolvesAccessFromGlobalConfiguration()
+    {
+        // The step is the cron-path counterpart of the trigger: the SAME apiConfiguration
+        // resolution must apply, or moving a pipeline to the passive triggers would silently
+        // drop the tenant-level key management.
+        var config = new WeClappFetchStepNodeConfiguration
+        {
+            ApiConfiguration = "WeClappApi",
+            Entity = "article",
+            EmitMode = "PerItem",
+            RetryBackoffBaseSeconds = 0,
+        };
+        A.CallTo(() => _nodeContext.GetNodeConfiguration<WeClappFetchStepNodeConfiguration>()).Returns(config);
+        A.CallTo(() => _globalConfiguration.IsDefined("WeClappApi")).Returns(true);
+        A.CallTo(() => _globalConfiguration.GetValue<WeClappConnectionSettings>("WeClappApi"))
+            .Returns(new WeClappConnectionSettings
+            {
+                BaseUrl = "https://tenant.weclapp.com/webapp/api/v1",
+                ApiKey = "tenant-key",
+            });
+
+        string? requestUrl = null;
+        string? sentKey = null;
+        var handler = new FakeHttpMessageHandler((req, _) =>
+        {
+            requestUrl = req.RequestUri!.ToString();
+            sentKey = req.Headers.TryGetValues("AuthenticationToken", out var values)
+                ? values.FirstOrDefault()
+                : null;
+            return FakeHttpMessageHandler.Json("""{"result":[]}""");
+        });
+        var sut = CreateSut(handler);
+
+        await sut.ProcessObjectAsync(_dataContext, _nodeContext);
+
+        Assert.StartsWith("https://tenant.weclapp.com/webapp/api/v1/article", requestUrl);
+        Assert.Equal("tenant-key", sentKey);
+        AssertNextCalledOnce();
+    }
+
+    [Fact]
+    public async Task NoAccessConfigured_FailsWithResolverError_BeforeAnyRequest()
+    {
+        // Neither apiConfiguration nor inline baseUrl/apiKey: the resolver's clear message
+        // must surface instead of a null-URL HTTP failure.
+        var config = new WeClappFetchStepNodeConfiguration
+        {
+            Entity = "article",
+            EmitMode = "PerItem",
+        };
+        A.CallTo(() => _nodeContext.GetNodeConfiguration<WeClappFetchStepNodeConfiguration>()).Returns(config);
+        var handler = new FakeHttpMessageHandler((_, _) => FakeHttpMessageHandler.Json("""{"result":[]}"""));
+        var sut = CreateSut(handler);
+
+        var ex = await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
+            () => sut.ProcessObjectAsync(_dataContext, _nodeContext));
+
+        Assert.Contains("apiConfiguration", ex.Message);
         Assert.Empty(handler.Requests);
         AssertNextNotCalled();
     }
