@@ -10,12 +10,19 @@ namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Nodes;
 /// </summary>
 public abstract record WeClappWriteNodeConfiguration : NodeConfiguration
 {
-    /// <summary>WeClapp API base, e.g. "https://{tenant}.weclapp.com/webapp/api/v1".</summary>
-    public required string BaseUrl { get; set; }
+    /// <summary>Name of the tenant GlobalConfiguration entry with the WeClapp access settings
+    /// ({ baseUrl, apiKey }, e.g. "WeClappApi" — shared with the fetch trigger). When set,
+    /// it takes precedence over the inline <see cref="BaseUrl"/>/<see cref="ApiKey"/>; the key
+    /// then lives once per tenant instead of in every pipeline definition.</summary>
+    public string? ApiConfiguration { get; set; }
 
-    /// <summary>WeClapp API token (sent as "AuthenticationToken" header). Comes from the
-    /// pipeline deployment configuration — never hardcode or log it.</summary>
-    public required string ApiKey { get; set; }
+    /// <summary>WeClapp API base, e.g. "https://{tenant}.weclapp.com/webapp/api/v1".
+    /// Optional when <see cref="ApiConfiguration"/> is set.</summary>
+    public string? BaseUrl { get; set; }
+
+    /// <summary>WeClapp API token (sent as "AuthenticationToken" header) — never hardcode or
+    /// log it. Optional when <see cref="ApiConfiguration"/> is set.</summary>
+    public string? ApiKey { get; set; }
 
     /// <summary>Data context path of the DILOS file name (trigger document contract).</summary>
     public string FileNamePath { get; set; } = "$.fileName";

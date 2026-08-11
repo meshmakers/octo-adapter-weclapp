@@ -1,43 +1,114 @@
-# Pipeline: WeClapp articles → ONE DILOS AS file per poll (daily article master delivery).
-# The trigger runs in emitMode: Batch and emits a single execution shaped
-# { "items": [ …all articles… ] } — golden precedent is ONE AS file per run
-# (AS20240206020204.txt, 46 lines); per-item execution would produce N single-line
-# files per poll. CK persistence of articles lives in weclapp-articles-to-ck.yaml
-# (per-item) — split on purpose: two simple pipelines instead of one nested one,
-# and the double poll is irrelevant at a daily interval.
+# Pipeline: WeClapp articles → ONE DILOS AS file per Vienna calendar day (article master
+# delivery). WeClappFetchStep@1 runs in emitMode: Batch and seeds a single document shaped
+# { "items": [ …all articles… ], "meta": { exportKind, exportDate } } — golden precedent
+# is ONE AS file per run (AS20240206020204.txt, 46 lines); per-item execution would produce
+# N single-line files per run. CK persistence of articles lives in weclapp-articles-to-ck.yaml
+# (per-item) — split on purpose: two simple pipelines instead of one nested one.
 #
-# File name: DilosRender emits AS<yyyyMMddHHmmss>.txt (Vienna local time, Billbee
-# precedent) into $.dilosAsFileName; DilosSftpWrite reads it via fileNamePath.
-# System articles (LOADING_EQUIPMENT) are excluded by the AS render itself — this
-# pipeline has no WeClappToCk stage that would otherwise drop them.
+# Delivery dedup (K1): the pipeline runs hourly via the platform cron trigger
+# (FromPipelineTriggerEvent@1), but a per-day CK marker (Industry.Logistics/ExportRun, keyed
+# on meta.exportKind + meta.exportDate) gates the render/upload so at most ONE AS file is
+# delivered per Vienna calendar day. The marker is persisted by ApplyChanges@2 as the LAST
+# step — only after a successful upload (at-least-once: a crash between upload and persist
+# re-delivers on the next tick). Pattern mirrors the AI dedup gate (weclapp-orders-to-ai.yaml).
 #
-# NOTE: the trigger enriches each article's supplySources reference stubs with the full
-# articleSupplySource entities (EK prices) — one extra entity fetch per poll
+# Redeploy determinism (K2): no start-tick by design (FromPipelineTriggerEvent) — a (re)deploy
+# or Enabled flip never fires an immediate execution (3 AS incidents were caused by exactly
+# that under the old poll-loop trigger). Edge behavior (unchanged): with hourly cron ticks the
+# delivery time settles on the FIRST tick after Vienna midnight (00:00–01:00, in line with the
+# golden precedent AS…020204 at 02:02); across the day boundary two deliveries in short
+# succession are possible (yesterday's late run + today's early one) — deliberately accepted.
+#
+# File name: DilosRender emits AS<yyyyMMddHHmmss>.txt (Vienna local time, Billbee precedent)
+# into $.dilosAsFileName; DilosSftpWrite reads it via fileNamePath. System articles
+# (LOADING_EQUIPMENT) are excluded by the AS render itself — this pipeline has no WeClappToCk
+# stage that would otherwise drop them.
+#
+# NOTE: WeClappFetchStep@1 enriches each article's supplySources reference stubs with the full
+# articleSupplySource entities (EK prices) — one extra entity fetch per run
 # (customer-verified 2026-07-08; commit 0f521a2).
 # Encoding: delivered via DilosSftpWrite@1 as ISO-8859-1 (golden format; 32/48 customer
 # articles carry non-ASCII — the built-in SftpUpload@1 would write UTF-8 and corrupt them).
 
 triggers:
-  - type: WeClappFetch@1
+  - type: FromPipelineTriggerEvent@1
+  - type: FromExecutePipelineCommand@1
+
+transformations:
+  - type: WeClappFetchStep@1
+    description: Fetch all WeClapp articles for today's AS batch (cron-driven; replaces the old WeClappFetch@1 poll-loop trigger)
     baseUrl: https://REPLACE-TENANT.weclapp.com/webapp/api/v1
     apiKey: ${WECLAPP_API_KEY}
     entity: article
-    emitMode: Batch               # one execution per poll: { items: [ all articles ] }
+    emitMode: Batch               # one execution per run: { items: [ all articles ], meta: {...} }
+    exportKind: AS                # keys the per-day delivery marker (Industry.Logistics/ExportRun)
     pageSize: 100
-    pollingIntervalSeconds: 86400
+    # Cost note: each run also pulls articleSupplySource (EK enrichment) — accepted 23.07.
 
-transformations:
-  - type: DilosRender@1
-    description: Render ALL article lines into one AS file (golden precedent, one file per run)
-    mode: AS
-    path: $.items
-    targetPath: $.dilosAs
-    fileNameTargetPath: $.dilosAsFileName   # AS<yyyyMMddHHmmss>.txt, Vienna local time
+  # --- K1 delivery-dedup gate: at most ONE AS delivery per Vienna calendar day.
+  # GetOrCreate only QUERIES (fresh id + ModOperation=Insert on miss — source-verified,
+  # GetOrCreateRtEntitiesByTypeNode.cs:40-56); multiple fieldFilters combine as AND
+  # (RtEntityQueryOptions default LogicalOperators.And). The marker entity is persisted
+  # by ApplyChanges@2 as the LAST step, i.e. only after a successful upload
+  # (at-least-once — a crash between upload and persist re-delivers on the next tick).
+  # Unknown ckTypeId (tenant without Industry.Logistics 1.1.0) => the platform THROWS before
+  # querying (CkCache: "Ensure that the corresponding construction kit library is imported")
+  # => pipeline error, NO delivery. Fail-loud verified 2026-07-23 against platform sources.
+  - type: GetOrCreateRtEntitiesByType@1
+    description: Probe today's AS export marker (query only — see gate note)
+    ckTypeId: Industry.Logistics/ExportRun
+    fieldFilters:
+      - attributePath: ExportKind
+        operator: Equals
+        comparisonValuePath: $.meta.exportKind
+      - attributePath: ExportDate
+        operator: Equals
+        comparisonValuePath: $.meta.exportDate
+    rtIdTargetPath: $.rt.asExportRunRtId
+    ckTypeIdTargetPath: $.rt.asExportRunCkTypeId
+    modOperationPath: $.rt.asExportRunModOperation
 
-  # --- File delivery (own DilosSftpWrite@1 — ISO-8859-1, golden format) ---
-  - type: DilosSftpWrite@1
-    description: Deliver the AS file to the LKV SFTP root as ISO-8859-1
-    serverConfiguration: LkvSftp        # SAME tenant GlobalConfiguration as the return path
-    remoteDirectory: /
-    fileNamePath: $.dilosAsFileName
-    path: $.dilosAs
+  - type: If@1
+    description: Deliver only when no marker for today exists (Insert = not delivered today)
+    path: $.rt.asExportRunModOperation
+    operator: Equal
+    value: 0                    # UpdateKind.Insert — same proven literal as the AI gate
+    valueType: Enum
+    transformations:
+      - type: DilosRender@1
+        description: Render ALL article lines into one AS file (golden precedent, one file per run)
+        mode: AS
+        path: $.items
+        targetPath: $.dilosAs
+        fileNameTargetPath: $.dilosAsFileName   # AS<yyyyMMddHHmmss>.txt, Vienna local time
+
+      - type: DilosSftpWrite@1
+        description: Deliver the AS file to the LKV SFTP root as ISO-8859-1
+        serverConfiguration: LkvSftp        # SAME tenant GlobalConfiguration as the return path
+        remoteDirectory: /
+        fileNamePath: $.dilosAsFileName
+        path: $.dilosAs
+
+      # attributeValueType is REQUIRED per update (staging finding 2026-07-16 — without it
+      # the update is silently dropped and the marker never persists).
+      - type: CreateUpdateInfo@1
+        description: Today's export marker — written ONLY after a successful upload
+        path: $.meta
+        rtIdPath: $.rt.asExportRunRtId
+        ckTypeId: Industry.Logistics/ExportRun
+        updateKindPath: $.rt.asExportRunModOperation
+        attributeUpdates:
+          - attributeName: ExportKind
+            attributeValueType: String
+            valuePath: $.meta.exportKind
+          - attributeName: ExportDate
+            attributeValueType: String
+            valuePath: $.meta.exportDate
+        targetPath: $.updates
+        targetValueWriteMode: Append
+
+      # ApplyChanges@1 is [NodeDeprecated] — @2 is the current node (the AI gate uses it
+      # too); associationUpdatesPath is optional/null-safe, the AS gate has no associations.
+      - type: ApplyChanges@2
+        description: Persist the marker (export dedup) — LAST step by contract
+        entityUpdatesPath: $.updates

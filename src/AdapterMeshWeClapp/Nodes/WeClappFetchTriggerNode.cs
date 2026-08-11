@@ -1,4 +1,7 @@
+using System.Globalization;
 using System.Text.Json.Nodes;
+using Lkv.WeClapp.Core;
+using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Services;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.Services;
@@ -13,14 +16,21 @@ namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Nodes;
 /// paging via page/pageSize until an empty page, filter vocabulary -eq/-ne/-in.
 /// </summary>
 [NodeName("WeClappFetch", 1)]
-public record WeClappFetchTriggerNodeConfiguration : TriggerNodeConfiguration
+public record WeClappFetchTriggerNodeConfiguration : TriggerNodeConfiguration, IWeClappFetchConfiguration
 {
-    /// <summary>WeClapp API base, e.g. "https://{tenant}.weclapp.com/webapp/api/v1".</summary>
-    public required string BaseUrl { get; set; }
+    /// <summary>Name of the tenant GlobalConfiguration entry with the WeClapp access settings
+    /// ({ baseUrl, apiKey }, e.g. "WeClappApi" — shared with the write-back nodes). When set,
+    /// it takes precedence over the inline <see cref="BaseUrl"/>/<see cref="ApiKey"/>; the key
+    /// then lives once per tenant instead of in every pipeline definition.</summary>
+    public string? ApiConfiguration { get; set; }
 
-    /// <summary>WeClapp API token (sent as "AuthenticationToken" header). Comes from the
-    /// pipeline deployment configuration — never hardcode or log it.</summary>
-    public required string ApiKey { get; set; }
+    /// <summary>WeClapp API base, e.g. "https://{tenant}.weclapp.com/webapp/api/v1".
+    /// Optional when <see cref="ApiConfiguration"/> is set.</summary>
+    public string? BaseUrl { get; set; }
+
+    /// <summary>WeClapp API token (sent as "AuthenticationToken" header) — never hardcode or
+    /// log it. Optional when <see cref="ApiConfiguration"/> is set.</summary>
+    public string? ApiKey { get; set; }
 
     /// <summary>WeClapp entity to pull: "article" or "salesOrder" (orders are joined with
     /// their customer; orderItems are part of the default salesOrder response — live-verified,
@@ -36,16 +46,28 @@ public record WeClappFetchTriggerNodeConfiguration : TriggerNodeConfiguration
     /// <summary>Seconds between polls (design: articles daily, orders every 15 min — configure per pipeline).</summary>
     public int PollingIntervalSeconds { get; set; } = 900;
 
+    /// <summary>When false, the polling loop delays FIRST and fetches only after the first
+    /// interval — a (re)deploy then never triggers an immediate fetch/delivery (P2
+    /// redeploy determinism; the as pipeline sets false). Default true keeps the
+    /// fetch-first behavior for idempotent pipelines (ck) and gated ones (ai).</summary>
+    public bool RunOnStart { get; set; } = true;
+
     /// <summary>How fetched documents start pipeline executions: "PerItem" (default — one
     /// execution per document, the AI/CK shape) or "Batch" (one execution per poll shaped
-    /// <c>{ "items": [ … ] }</c> — the AS collector shape; golden precedent is ONE AS file
-    /// per run with all articles). Batch is only valid for entity "article".</summary>
+    /// <c>{ "items": [ … ], "meta": { exportKind, exportDate } }</c> — the AS collector shape;
+    /// golden precedent is ONE AS file per run with all articles, and meta carries the keys
+    /// of the per-day delivery-dedup marker). Batch is only valid for entity "article".</summary>
     public string EmitMode { get; set; } = "PerItem";
 
     /// <summary>Resolve supply-source reference stubs into full articleSupplySource entities
     /// (EK prices; one extra entity fetch per poll). The AS delivery needs them (EK-Preis
     /// field); pipelines that do not read prices (CK sync) set false and skip the fetch.</summary>
     public bool EnrichSupplySources { get; set; } = true;
+
+    /// <summary>Marker kind emitted as $.meta.exportKind in Batch mode — the delivery-dedup
+    /// gate keys its per-day CK marker (Industry.Logistics/ExportRun) on it. Only used
+    /// with emitMode Batch.</summary>
+    public string ExportKind { get; set; } = "AS";
 
     /// <summary>Retry attempts for transient HTTP failures (5xx/408/429/network), exponential backoff.</summary>
     public int MaxRetries { get; set; } = 4;
@@ -66,8 +88,10 @@ public record WeClappFetchTriggerNodeConfiguration : TriggerNodeConfiguration
 // ReSharper disable once ClassNeverInstantiated.Global
 public class WeClappFetchTriggerNode(
     ILogger<WeClappFetchTriggerNode> logger,
-    IHttpClientFactory httpClientFactory) : ITriggerPipelineNode
+    IHttpClientFactory httpClientFactory,
+    TimeProvider? timeProvider = null) : ITriggerPipelineNode
 {
+    private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
     private CancellationTokenSource? _cancellationTokenSource;
     private Task? _pollingTask;
 
@@ -79,9 +103,26 @@ public class WeClappFetchTriggerNode(
         var token = _cancellationTokenSource.Token;
 
         context.NodeContext.Info("WeClappFetch: polling '{0}' every {1}s", config.Entity, config.PollingIntervalSeconds);
+        if (!config.RunOnStart)
+        {
+            context.NodeContext.Info("WeClappFetch: first poll delayed by {0}s (runOnStart=false)",
+                config.PollingIntervalSeconds);
+        }
 
         _pollingTask = Task.Run(async () =>
         {
+            if (!config.RunOnStart)
+            {
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(config.PollingIntervalSeconds), token);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+            }
+
             while (!token.IsCancellationRequested)
             {
                 try
@@ -154,16 +195,19 @@ public class WeClappFetchTriggerNode(
                 "orders stay per-item (one golden AI file per order)");
         }
 
+        var settings = context.GlobalConfiguration.ResolveWeClappSettings(
+            config.ApiConfiguration, config.BaseUrl, config.ApiKey);
+
         var http = httpClientFactory.CreateClient(nameof(WeClappFetchTriggerNode));
 
         switch (config.Entity)
         {
             case "article":
-                await FetchArticlesAsync(http, config, context, cancellationToken);
+                await FetchArticlesAsync(http, config, settings, context, _timeProvider, cancellationToken);
                 break;
 
             case "salesOrder":
-                await FetchOrdersAsync(http, config, context, cancellationToken);
+                await FetchOrdersAsync(http, config, settings, context, cancellationToken);
                 break;
 
             default:
@@ -173,43 +217,14 @@ public class WeClappFetchTriggerNode(
     }
 
     private static async Task FetchArticlesAsync(HttpClient http, WeClappFetchTriggerNodeConfiguration config,
-        ITriggerContext context, CancellationToken cancellationToken)
+        WeClappConnectionSettings settings, ITriggerContext context, TimeProvider timeProvider,
+        CancellationToken cancellationToken)
     {
-        var articles = await FetchAllPagesAsync(http, config, "article", config.AdditionalQuery, cancellationToken);
-
-        // EK enrichment: raw articles embed only supply-source REFERENCE STUBS
-        // ({articleSupplySourceId}); the purchase prices live on the separate
-        // articleSupplySource entity, which has no articleId of its own
-        // (customer-verified 2026-07-08). One entity fetch per poll resolves the stubs.
-        Dictionary<string, JsonNode>? sourcesById = null;
-        if (config.EnrichSupplySources && articles.Any(a => a["supplySources"]?.AsArray() is { Count: > 0 }))
-        {
-            var sources = await FetchAllPagesAsync(http, config, "articleSupplySource", "", cancellationToken);
-            sourcesById = sources
-                .Where(s => s["id"] is not null)
-                .ToDictionary(s => s["id"]!.ToString(), s => s);
-        }
-
-        JsonNode Enrich(JsonNode article)
-        {
-            var item = article.DeepClone();
-            if (sourcesById is not null && item["supplySources"]?.AsArray() is { Count: > 0 } stubs)
-            {
-                var resolved = new JsonArray();
-                foreach (var stub in stubs.OfType<JsonObject>())
-                {
-                    if (stub["articleSupplySourceId"]?.ToString() is { } refId &&
-                        sourcesById.TryGetValue(refId, out var source))
-                    {
-                        resolved.Add(source.DeepClone());
-                    }
-                }
-
-                item["supplySources"] = resolved;
-            }
-
-            return item;
-        }
+        // Paging + EK enrichment (supply-source stub resolution) is shared with
+        // WeClappFetchStep@1 via WeClappFetchCore — each returned node is already a fresh,
+        // unparented deep clone, safe to attach directly below without a further clone.
+        var articles = await WeClappFetchCore.FetchEnrichedArticlesAsync(http, config, settings,
+            config.AdditionalQuery, cancellationToken);
 
         if (config.EmitMode == "Batch")
         {
@@ -221,50 +236,36 @@ public class WeClappFetchTriggerNode(
                 return;
             }
 
-            var items = new JsonArray();
-            foreach (var article in articles)
+            var (items, meta) = WeClappFetchCore.BuildBatchDocumentParts(articles, config.ExportKind, timeProvider);
+            await ExecutePipelineAsync(context, new JsonObject
             {
-                items.Add(Enrich(article));
-            }
-
-            await ExecutePipelineAsync(context, new JsonObject { ["items"] = items });
+                ["items"] = items,
+                ["meta"] = meta,
+            });
             return;
         }
 
         foreach (var article in articles)
         {
-            var document = new JsonObject { ["item"] = Enrich(article) };
+            var document = new JsonObject { ["item"] = article };
             await ExecutePipelineAsync(context, document);
         }
     }
 
     private static async Task FetchOrdersAsync(HttpClient http, WeClappFetchTriggerNodeConfiguration config,
-        ITriggerContext context, CancellationToken cancellationToken)
+        WeClappConnectionSettings settings, ITriggerContext context, CancellationToken cancellationToken)
     {
-        // orderItems are included in the default salesOrder response (live-verified).
-        var orders = await FetchAllPagesAsync(http, config, "salesOrder", config.AdditionalQuery, cancellationToken);
+        // Paging + customer join/cache is shared with WeClappFetchStep@1 via WeClappFetchCore —
+        // each returned tuple element is already a fresh, unparented deep clone.
+        var orders = await WeClappFetchCore.FetchOrdersWithCustomersAsync(http, config, settings,
+            config.AdditionalQuery, cancellationToken);
 
-        var customerCache = new Dictionary<string, JsonNode?>();
-
-        foreach (var order in orders)
+        foreach (var (order, customer) in orders)
         {
-            var customerId = order["customerId"]?.ToString() ?? "";
-            JsonNode? customer = null;
-            if (customerId.Length > 0)
-            {
-                if (!customerCache.TryGetValue(customerId, out customer))
-                {
-                    var matches = await FetchAllPagesAsync(http, config, "customer", $"id-eq={customerId}",
-                        cancellationToken);
-                    customer = matches.FirstOrDefault();
-                    customerCache[customerId] = customer;
-                }
-            }
-
             var document = new JsonObject
             {
-                ["item"] = order.DeepClone(),
-                ["customer"] = customer?.DeepClone(),
+                ["item"] = order,
+                ["customer"] = customer,
             };
             await ExecutePipelineAsync(context, document);
         }
@@ -276,13 +277,156 @@ public class WeClappFetchTriggerNode(
             new ExecutePipelineOptions(DateTime.UtcNow) { ExternalReceivedDateTime = DateTime.UtcNow },
             document);
     }
+}
 
-    private static async Task<List<JsonNode>> FetchAllPagesAsync(HttpClient http,
-        WeClappFetchTriggerNodeConfiguration config, string entity, string additionalQuery,
+/// <summary>
+/// Configuration surface <see cref="WeClappFetchCore"/> needs to drive WeClapp's paging/retry
+/// loop and the EK supply-source enrichment — implemented by both
+/// <see cref="WeClappFetchTriggerNodeConfiguration"/> (the legacy polling trigger) and
+/// <c>WeClappFetchStepNodeConfiguration</c> (the cron-trigger-redesign step node,
+/// AB#4228/G2), so the two node families share one fetch implementation without either
+/// depending on the other's configuration type.
+/// </summary>
+internal interface IWeClappFetchConfiguration
+{
+    /// <summary>Page size for the paging loop. The API endpoint and key are NOT part of this
+    /// surface — they arrive as a resolved <see cref="WeClappConnectionSettings"/> (tenant
+    /// GlobalConfiguration entry or inline node fields, see
+    /// <see cref="WeClappConnectionSettingsResolver"/>).</summary>
+    int PageSize { get; }
+
+    /// <summary>Retry attempts for transient HTTP failures (5xx/408/429/network).</summary>
+    int MaxRetries { get; }
+
+    /// <summary>Backoff base in seconds (delay = base * 2^(attempt-1)).</summary>
+    double RetryBackoffBaseSeconds { get; }
+
+    /// <summary>Resolve supply-source reference stubs into full articleSupplySource entities.</summary>
+    bool EnrichSupplySources { get; }
+}
+
+/// <summary>
+/// WeClapp fetch/paging/retry/enrichment logic shared by <see cref="WeClappFetchTriggerNode"/>
+/// (legacy polling trigger) and <c>WeClappFetchStepNode</c> (cron-trigger-redesign step node,
+/// AB#4228/G2) — extracted so neither duplicates the other's paging loop, retry discipline or
+/// EK supply-source enrichment. Config-generalized via <see cref="IWeClappFetchConfiguration"/>.
+/// </summary>
+internal static class WeClappFetchCore
+{
+    /// <summary>Fetches all article pages and resolves EK supply-source stubs into full
+    /// entities (raw articles embed only reference stubs — <c>{articleSupplySourceId}</c>;
+    /// purchase prices live on the separate articleSupplySource entity, which has no
+    /// articleId of its own, customer-verified 2026-07-08 — one extra entity fetch per call
+    /// resolves them). Each returned node is a fresh, unparented deep clone — safe to attach
+    /// anywhere (a batch array element or a per-item "item" wrapper) without a further clone.</summary>
+    public static async Task<List<JsonNode>> FetchEnrichedArticlesAsync(HttpClient http,
+        IWeClappFetchConfiguration config, WeClappConnectionSettings settings, string additionalQuery,
         CancellationToken cancellationToken)
     {
+        var articles = await FetchAllPagesAsync(http, config, settings, "article", additionalQuery,
+            cancellationToken);
+
+        Dictionary<string, JsonNode>? sourcesById = null;
+        if (config.EnrichSupplySources && articles.Any(a => a["supplySources"]?.AsArray() is { Count: > 0 }))
+        {
+            var sources = await FetchAllPagesAsync(http, config, settings, "articleSupplySource", "",
+                cancellationToken);
+            sourcesById = sources
+                .Where(s => s["id"] is not null)
+                .ToDictionary(s => s["id"]!.ToString(), s => s);
+        }
+
+        return articles.Select(article => Enrich(article, sourcesById)).ToList();
+    }
+
+    private static JsonNode Enrich(JsonNode article, Dictionary<string, JsonNode>? sourcesById)
+    {
+        var item = article.DeepClone();
+        if (sourcesById is not null && item["supplySources"]?.AsArray() is { Count: > 0 } stubs)
+        {
+            var resolved = new JsonArray();
+            foreach (var stub in stubs.OfType<JsonObject>())
+            {
+                if (stub["articleSupplySourceId"]?.ToString() is { } refId &&
+                    sourcesById.TryGetValue(refId, out var source))
+                {
+                    resolved.Add(source.DeepClone());
+                }
+            }
+
+            item["supplySources"] = resolved;
+        }
+
+        return item;
+    }
+
+    /// <summary>Fetches all sales orders and joins each one with its customer (customer
+    /// resolved via the verified <c>id-eq</c> filter and cached per call, since many orders
+    /// share the same customer). Each returned tuple element is a fresh, unparented deep
+    /// clone — safe to attach anywhere without a further clone.</summary>
+    public static async Task<List<(JsonNode Order, JsonNode? Customer)>> FetchOrdersWithCustomersAsync(
+        HttpClient http, IWeClappFetchConfiguration config, WeClappConnectionSettings settings,
+        string additionalQuery, CancellationToken cancellationToken)
+    {
+        // orderItems are included in the default salesOrder response (live-verified).
+        var orders = await FetchAllPagesAsync(http, config, settings, "salesOrder", additionalQuery,
+            cancellationToken);
+
+        var customerCache = new Dictionary<string, JsonNode?>();
+        var result = new List<(JsonNode Order, JsonNode? Customer)>();
+
+        foreach (var order in orders)
+        {
+            var customerId = order["customerId"]?.ToString() ?? "";
+            JsonNode? customer = null;
+            if (customerId.Length > 0)
+            {
+                if (!customerCache.TryGetValue(customerId, out customer))
+                {
+                    var matches = await FetchAllPagesAsync(http, config, settings, "customer", $"id-eq={customerId}",
+                        cancellationToken);
+                    customer = matches.FirstOrDefault();
+                    customerCache[customerId] = customer;
+                }
+            }
+
+            result.Add((order.DeepClone(), customer?.DeepClone()));
+        }
+
+        return result;
+    }
+
+    /// <summary>Builds the <c>$.items</c> array and <c>$.meta</c> object of the AS collector
+    /// (Batch) shape from an already-enriched article list: <paramref name="articles"/> are
+    /// attached to <c>items</c> as-is (already fresh, unparented clones from
+    /// <see cref="FetchEnrichedArticlesAsync"/>); <c>meta</c> carries <paramref name="exportKind"/>
+    /// and the Vienna calendar date of <paramref name="timeProvider"/>'s current instant — the
+    /// delivery-dedup gate's per-day marker key.</summary>
+    public static (JsonArray Items, JsonObject Meta) BuildBatchDocumentParts(List<JsonNode> articles,
+        string exportKind, TimeProvider timeProvider)
+    {
+        var items = new JsonArray();
+        foreach (var article in articles)
+        {
+            items.Add(article);
+        }
+
+        var viennaNow = TimeZoneInfo.ConvertTime(timeProvider.GetUtcNow(), ViennaTime.Zone);
+        var meta = new JsonObject
+        {
+            ["exportKind"] = exportKind,
+            ["exportDate"] = viennaNow.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+        };
+
+        return (items, meta);
+    }
+
+    public static async Task<List<JsonNode>> FetchAllPagesAsync(HttpClient http,
+        IWeClappFetchConfiguration config, WeClappConnectionSettings settings, string entity,
+        string additionalQuery, CancellationToken cancellationToken)
+    {
         var results = new List<JsonNode>();
-        var baseUrl = config.BaseUrl.TrimEnd('/');
+        var baseUrl = settings.BaseUrl.TrimEnd('/');
         var page = 1;
 
         while (true)
@@ -290,7 +434,7 @@ public class WeClappFetchTriggerNode(
             var url = $"{baseUrl}/{entity}?page={page}&pageSize={config.PageSize}"
                       + (additionalQuery.Length > 0 ? "&" + additionalQuery : "");
 
-            var json = await GetWithRetryAsync(http, url, config, cancellationToken);
+            var json = await GetWithRetryAsync(http, url, config, settings.ApiKey, cancellationToken);
             var result = JsonNode.Parse(json)?["result"]?.AsArray()
                          ?? throw new WeClappPipelineExecutionException(
                              $"WeClapp response for '{entity}' page {page} has no 'result' array");
@@ -313,8 +457,8 @@ public class WeClappFetchTriggerNode(
         return results;
     }
 
-    private static async Task<string> GetWithRetryAsync(HttpClient http, string url,
-        WeClappFetchTriggerNodeConfiguration config, CancellationToken cancellationToken)
+    public static async Task<string> GetWithRetryAsync(HttpClient http, string url,
+        IWeClappFetchConfiguration config, string apiKey, CancellationToken cancellationToken)
     {
         string? lastError = null;
         var attempts = Math.Max(1, config.MaxRetries); // a misconfigured 0 must still try once
@@ -324,7 +468,7 @@ public class WeClappFetchTriggerNode(
             try
             {
                 using var request = new HttpRequestMessage(HttpMethod.Get, url);
-                request.Headers.Add("AuthenticationToken", config.ApiKey);
+                request.Headers.Add("AuthenticationToken", apiKey);
                 using var response = await http.SendAsync(request, cancellationToken);
 
                 if (response.IsSuccessStatusCode)
@@ -359,7 +503,7 @@ public class WeClappFetchTriggerNode(
             $"WeClapp request failed after {attempts} attempts ({lastError}) for {url}");
     }
 
-    private static string Truncate(string value, int maxLength)
+    public static string Truncate(string value, int maxLength)
     {
         if (value.Length <= maxLength)
         {

@@ -43,14 +43,23 @@ await adapterBuilder.RunAsync(args, builder =>
             });
     }
 
-    // SFTP seam for the DilosFileFetch trigger (AR/BE return path) — SSH.NET-backed in
-    // production, faked in tests.
+    // SFTP seam for the DILOS AR/BE return path — shared by the legacy DilosFileFetch trigger
+    // AND its cron-trigger replacements DilosFileFetchStep@1/DilosFileConfirm@1 — SSH.NET-backed
+    // in production, faked in tests.
     builder.Services.AddSingleton<ISftpFileSystemFactory, SshNetSftpFileSystemFactory>();
+
+    // Cross-tick memory for DilosFileFetchStep@1 / DilosFileConfirm@1 (AR/BE return path,
+    // AB#4228/G2 cron-trigger redesign) — nodes are constructed fresh per pipeline chain (per
+    // tick), so the poll-loop instance fields the legacy DilosFileFetch trigger relies on would
+    // lose their state between ticks; this singleton replaces them.
+    builder.Services.AddSingleton<DilosFileFetchState>();
 
     // Add mesh adapter nodes and services to the container:
     // outbound ingestion design (WeClappFetch → WeClappToCk → DilosRender →
     // DilosSftpWrite) plus the AR/BE return path (DilosFileFetch → WeClappArWrite /
-    // WeClappBeWrite).
+    // WeClappBeWrite) — both still registered as the legacy poll-loop triggers, alongside their
+    // cron-trigger counterparts WeClappFetchStep@1 and DilosFileFetchStep@1/DilosFileConfirm@1
+    // (the latter pair sharing cross-tick state through the DilosFileFetchState singleton above).
     builder.Services.AddOctoMeshAdapter()
         .RegisterTriggerNode<WeClappFetchTriggerNode>()
         .RegisterTriggerNode<DilosFileFetchTriggerNode>()
@@ -58,7 +67,10 @@ await adapterBuilder.RunAsync(args, builder =>
         .RegisterNode<DilosRenderNode>()
         .RegisterNode<DilosSftpWriteNode>()
         .RegisterNode<WeClappArWriteNode>()
-        .RegisterNode<WeClappBeWriteNode>();
+        .RegisterNode<WeClappBeWriteNode>()
+        .RegisterNode<WeClappFetchStepNode>()
+        .RegisterNode<DilosFileFetchStepNode>()
+        .RegisterNode<DilosFileConfirmNode>();
 
 }, app =>
 {
