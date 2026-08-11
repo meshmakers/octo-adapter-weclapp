@@ -15,6 +15,7 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Control;
 using Meshmakers.Octo.Sdk.Common.Services;
 using Microsoft.Extensions.DependencyInjection;
+using static Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Tests.PipelineYamlWalk;
 
 namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Tests;
 
@@ -104,7 +105,8 @@ public class AiExportGateTests
             .RegisterNodeConfiguration<WeClappFetchTriggerNodeConfiguration>()
             .RegisterNodeConfiguration<WeClappToCkNodeConfiguration>()
             .RegisterNodeConfiguration<DilosRenderNodeConfiguration>()
-            .RegisterNodeConfiguration<DilosSftpWriteNodeConfiguration>();
+            .RegisterNodeConfiguration<DilosSftpWriteNodeConfiguration>()
+            .RegisterNodeConfiguration<WeClappFetchStepNodeConfiguration>();
         var lookup = services.BuildServiceProvider().GetRequiredService<INodeQualifiedNameLookupService>();
 
         NodeDefinitionRoot root;
@@ -116,17 +118,31 @@ public class AiExportGateTests
 
         var top = root.Transformations?.ToList() ?? new List<NodeConfiguration>();
 
-        // The read-only lookups stay OUTSIDE the gate…
-        Assert.Contains(top, n => n is GetOrCreateRtEntitiesByTypeNodeConfiguration);
-        // …but nothing that renders, delivers or persists may run unconditionally:
+        // Nothing that renders, delivers or persists may sit at the top level either — every
+        // such node belongs INSIDE the per-item ForEach's gate, never beside or after it.
         Assert.DoesNotContain(top, n => n is DilosRenderNodeConfiguration);
         Assert.DoesNotContain(top, n => n is DilosSftpWriteNodeConfiguration);
         Assert.DoesNotContain(top, n => n is ApplyChangesNodeConfiguration2);
         Assert.DoesNotContain(top, n => n is CreateUpdateInfoNodeConfiguration);
         Assert.DoesNotContain(top, n => n is CreateAssociationUpdateNodeConfiguration);
 
+        // WeClappFetchStep@1 seeds $.orders; the former per-execution chain now runs once
+        // per element inside ForEach@1 (AB#4228 trigger separation) — everything below
+        // descends into its children instead of the pipeline's top level.
+        var forEach = Assert.Single(top.OfType<ForEachNodeConfiguration>());
+        var perItem = forEach.Transformations?.ToList() ?? new List<NodeConfiguration>();
+
+        // The read-only lookups stay OUTSIDE the gate…
+        Assert.Contains(perItem, n => n is GetOrCreateRtEntitiesByTypeNodeConfiguration);
+        // …but nothing that renders, delivers or persists may run unconditionally:
+        Assert.DoesNotContain(perItem, n => n is DilosRenderNodeConfiguration);
+        Assert.DoesNotContain(perItem, n => n is DilosSftpWriteNodeConfiguration);
+        Assert.DoesNotContain(perItem, n => n is ApplyChangesNodeConfiguration2);
+        Assert.DoesNotContain(perItem, n => n is CreateUpdateInfoNodeConfiguration);
+        Assert.DoesNotContain(perItem, n => n is CreateAssociationUpdateNodeConfiguration);
+
         // One gate, configured exactly like the semantics tests prove it works:
-        var gate = Assert.Single(top.OfType<IfNodeConfiguration>());
+        var gate = Assert.Single(perItem.OfType<IfNodeConfiguration>());
         var expected = GateConfiguration(transformations: null);
         Assert.Equal(expected.Path, gate.Path);
         Assert.Equal(expected.Operator, gate.Operator);
@@ -146,7 +162,23 @@ public class AiExportGateTests
         Assert.Contains(children, n => n is CreateUpdateInfoNodeConfiguration);
         Assert.Contains(children, n => n is CreateAssociationUpdateNodeConfiguration);
         Assert.Equal(persistIndex, children.Count - 1);
+
+        // Deep census: the flat asserts above cover the three levels the yaml has TODAY, but a
+        // nested container (a second ForEach/If/Switch) could smuggle a delivery/persist node
+        // past every one of them — anywhere in the file, every render/deliver/persist/update
+        // node must live inside the ONE gate's subtree. Count equality suffices: the gate
+        // subtree is a subset of the whole tree, so equal counts mean none outside.
+        var insideGate = Walk(gate.Transformations).Count(IsRenderDeliverOrPersist);
+        var anywhere = Walk(root.Transformations).Count(IsRenderDeliverOrPersist);
+        Assert.Equal(anywhere, insideGate);
     }
+
+    private static bool IsRenderDeliverOrPersist(NodeConfiguration n) =>
+        n is DilosRenderNodeConfiguration
+            or DilosSftpWriteNodeConfiguration
+            or ApplyChangesNodeConfiguration2
+            or CreateUpdateInfoNodeConfiguration
+            or CreateAssociationUpdateNodeConfiguration;
 
     private static string FindRepoFile(string relativePath)
     {
