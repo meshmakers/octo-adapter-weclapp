@@ -1,7 +1,9 @@
 using System.Text.Json.Nodes;
+using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Services;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+using Meshmakers.Octo.Sdk.MeshAdapter;
 using Microsoft.Extensions.Logging;
 
 namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Nodes;
@@ -16,12 +18,19 @@ namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Nodes;
 [NodeName("WeClappFetchStep", 1)]
 public record WeClappFetchStepNodeConfiguration : NodeConfiguration, IWeClappFetchConfiguration
 {
-    /// <summary>WeClapp API base, e.g. "https://{tenant}.weclapp.com/webapp/api/v1".</summary>
-    public required string BaseUrl { get; set; }
+    /// <summary>Name of the tenant GlobalConfiguration entry with the WeClapp access settings
+    /// ({ baseUrl, apiKey }, e.g. "WeClappApi" — shared with the write-back nodes). When set,
+    /// it takes precedence over the inline <see cref="BaseUrl"/>/<see cref="ApiKey"/>; the key
+    /// then lives once per tenant instead of in every pipeline definition.</summary>
+    public string? ApiConfiguration { get; set; }
 
-    /// <summary>WeClapp API token (sent as "AuthenticationToken" header). Comes from the
-    /// pipeline deployment configuration — never hardcode or log it.</summary>
-    public required string ApiKey { get; set; }
+    /// <summary>WeClapp API base, e.g. "https://{tenant}.weclapp.com/webapp/api/v1".
+    /// Optional when <see cref="ApiConfiguration"/> is set.</summary>
+    public string? BaseUrl { get; set; }
+
+    /// <summary>WeClapp API token (sent as "AuthenticationToken" header) — never hardcode or
+    /// log it. Optional when <see cref="ApiConfiguration"/> is set.</summary>
+    public string? ApiKey { get; set; }
 
     /// <summary>WeClapp entity to pull: "article" or "salesOrder" (orders are joined with
     /// their customer; orderItems are part of the default salesOrder response).</summary>
@@ -78,6 +87,7 @@ public record WeClappFetchStepNodeConfiguration : NodeConfiguration, IWeClappFet
 public class WeClappFetchStepNode(
     NodeDelegate next,
     IHttpClientFactory httpClientFactory,
+    IMeshEtlContext etlContext,
     ILogger<WeClappFetchStepNode> logger,
     TimeProvider? timeProvider = null) : IPipelineNode
 {
@@ -106,14 +116,20 @@ public class WeClappFetchStepNode(
         // gzip-compressed responses and only fail on staging.
         var http = httpClientFactory.CreateClient(nameof(WeClappFetchTriggerNode));
 
+        // Same resolution as the legacy trigger and the write-back nodes: a tenant
+        // GlobalConfiguration entry (apiConfiguration) wins over inline baseUrl/apiKey,
+        // and a half-configured entry fails loud instead of silently falling back.
+        var settings = etlContext.GlobalConfiguration.ResolveWeClappSettings(
+            config.ApiConfiguration, config.BaseUrl, config.ApiKey);
+
         switch (config.Entity)
         {
             case "article":
-                await FetchArticlesAsync(http, config, dataContext, _timeProvider);
+                await FetchArticlesAsync(http, config, settings, dataContext, _timeProvider);
                 break;
 
             case "salesOrder":
-                await FetchOrdersAsync(http, config, dataContext);
+                await FetchOrdersAsync(http, config, settings, dataContext);
                 break;
 
             default:
@@ -128,10 +144,10 @@ public class WeClappFetchStepNode(
     }
 
     private static async Task FetchArticlesAsync(HttpClient http, WeClappFetchStepNodeConfiguration config,
-        IDataContext dataContext, TimeProvider timeProvider)
+        WeClappConnectionSettings settings, IDataContext dataContext, TimeProvider timeProvider)
     {
-        var articles = await WeClappFetchCore.FetchEnrichedArticlesAsync(http, config, config.AdditionalQuery,
-            CancellationToken.None);
+        var articles = await WeClappFetchCore.FetchEnrichedArticlesAsync(http, config, settings,
+            config.AdditionalQuery, CancellationToken.None);
 
         if (config.EmitMode == "Batch")
         {
@@ -155,10 +171,10 @@ public class WeClappFetchStepNode(
     }
 
     private static async Task FetchOrdersAsync(HttpClient http, WeClappFetchStepNodeConfiguration config,
-        IDataContext dataContext)
+        WeClappConnectionSettings settings, IDataContext dataContext)
     {
-        var orders = await WeClappFetchCore.FetchOrdersWithCustomersAsync(http, config, config.AdditionalQuery,
-            CancellationToken.None);
+        var orders = await WeClappFetchCore.FetchOrdersWithCustomersAsync(http, config, settings,
+            config.AdditionalQuery, CancellationToken.None);
 
         var wrapped = new JsonArray();
         foreach (var (order, customer) in orders)

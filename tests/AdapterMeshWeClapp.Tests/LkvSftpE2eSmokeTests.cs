@@ -192,7 +192,8 @@ public class LkvSftpE2eSmokeTests(ITestOutputHelper output)
             A.CallTo(() => arNodeContext.Error(A<string>._, A<object[]>._)).Invokes(call =>
                 output.WriteLine($"  arWrite ERROR: {NodeLogCapture.Format(call)}"));
             var arWriteNode = new WeClappArWriteNode(A.Fake<NodeDelegate>(),
-                A.Fake<ILogger<WeClappArWriteNode>>(), LiveHttpClientFactory());
+                A.Fake<ILogger<WeClappArWriteNode>>(), LiveHttpClientFactory(),
+                A.Fake<Meshmakers.Octo.Sdk.MeshAdapter.IMeshEtlContext>());
 
             var triggerContext = A.Fake<ITriggerContext>();
             var triggerNodeContext = A.Fake<INodeContext>();
@@ -325,7 +326,8 @@ public class LkvSftpE2eSmokeTests(ITestOutputHelper output)
             A.CallTo(() => beNodeContext.Error(A<string>._, A<object[]>._)).Invokes(call =>
                 output.WriteLine($"  beWrite ERROR: {NodeLogCapture.Format(call)}"));
             var beWriteNode = new WeClappBeWriteNode(A.Fake<NodeDelegate>(),
-                A.Fake<ILogger<WeClappBeWriteNode>>(), LiveHttpClientFactory());
+                A.Fake<ILogger<WeClappBeWriteNode>>(), LiveHttpClientFactory(),
+                A.Fake<Meshmakers.Octo.Sdk.MeshAdapter.IMeshEtlContext>());
 
             var triggerContext = A.Fake<ITriggerContext>();
             var triggerNodeContext = A.Fake<INodeContext>();
