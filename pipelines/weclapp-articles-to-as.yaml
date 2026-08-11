@@ -1,57 +1,56 @@
 # Pipeline: WeClapp articles → ONE DILOS AS file per Vienna calendar day (article master
-# delivery). The trigger runs in emitMode: Batch and emits a single execution shaped
+# delivery). WeClappFetchStep@1 runs in emitMode: Batch and seeds a single document shaped
 # { "items": [ …all articles… ], "meta": { exportKind, exportDate } } — golden precedent
 # is ONE AS file per run (AS20240206020204.txt, 46 lines); per-item execution would produce
-# N single-line files per poll. CK persistence of articles lives in weclapp-articles-to-ck.yaml
+# N single-line files per run. CK persistence of articles lives in weclapp-articles-to-ck.yaml
 # (per-item) — split on purpose: two simple pipelines instead of one nested one.
 #
-# Delivery dedup (K1): the trigger polls hourly (pollingIntervalSeconds: 3600), but a per-day
-# CK marker (Industry.Logistics/ExportRun, keyed on meta.exportKind + meta.exportDate) gates
-# the render/upload so at most ONE AS file is delivered per Vienna calendar day. The marker is
-# persisted by ApplyChanges@2 as the LAST step — only after a successful upload (at-least-once:
-# a crash between upload and persist re-delivers on the next poll). Pattern mirrors the AI dedup
-# gate (weclapp-orders-to-ai.yaml).
+# Delivery dedup (K1): the pipeline runs hourly via the platform cron trigger
+# (FromPipelineTriggerEvent@1), but a per-day CK marker (Industry.Logistics/ExportRun, keyed
+# on meta.exportKind + meta.exportDate) gates the render/upload so at most ONE AS file is
+# delivered per Vienna calendar day. The marker is persisted by ApplyChanges@2 as the LAST
+# step — only after a successful upload (at-least-once: a crash between upload and persist
+# re-delivers on the next tick). Pattern mirrors the AI dedup gate (weclapp-orders-to-ai.yaml).
 #
-# Redeploy determinism (K2): runOnStart: false makes the loop delay FIRST — a (re)deploy never
-# triggers an immediate poll (3 AS incidents were exactly that). Edge behavior: with delay-first
-# + hourly polling the delivery time settles on the FIRST poll after Vienna midnight (00:00–01:00,
-# in line with the golden precedent AS…020204 at 02:02); across the day boundary two deliveries
-# in short succession are possible (yesterday's late run + today's early one) — deliberately accepted.
+# Redeploy determinism (K2): no start-tick by design (FromPipelineTriggerEvent) — a (re)deploy
+# or Enabled flip never fires an immediate execution (3 AS incidents were caused by exactly
+# that under the old poll-loop trigger). Edge behavior (unchanged): with hourly cron ticks the
+# delivery time settles on the FIRST tick after Vienna midnight (00:00–01:00, in line with the
+# golden precedent AS…020204 at 02:02); across the day boundary two deliveries in short
+# succession are possible (yesterday's late run + today's early one) — deliberately accepted.
 #
 # File name: DilosRender emits AS<yyyyMMddHHmmss>.txt (Vienna local time, Billbee precedent)
 # into $.dilosAsFileName; DilosSftpWrite reads it via fileNamePath. System articles
 # (LOADING_EQUIPMENT) are excluded by the AS render itself — this pipeline has no WeClappToCk
 # stage that would otherwise drop them.
 #
-# NOTE: the trigger enriches each article's supplySources reference stubs with the full
-# articleSupplySource entities (EK prices) — one extra entity fetch per poll
+# NOTE: WeClappFetchStep@1 enriches each article's supplySources reference stubs with the full
+# articleSupplySource entities (EK prices) — one extra entity fetch per run
 # (customer-verified 2026-07-08; commit 0f521a2).
 # Encoding: delivered via DilosSftpWrite@1 as ISO-8859-1 (golden format; 32/48 customer
 # articles carry non-ASCII — the built-in SftpUpload@1 would write UTF-8 and corrupt them).
 
 triggers:
-  - type: WeClappFetch@1
+  - type: FromPipelineTriggerEvent@1
+  - type: FromExecutePipelineCommand@1
+
+transformations:
+  - type: WeClappFetchStep@1
+    description: Fetch all WeClapp articles for today's AS batch (cron-driven; replaces the old WeClappFetch@1 poll-loop trigger)
     baseUrl: https://REPLACE-TENANT.weclapp.com/webapp/api/v1
     apiKey: ${WECLAPP_API_KEY}
     entity: article
-    emitMode: Batch               # one execution per poll: { items: [ all articles ], meta: {...} }
+    emitMode: Batch               # one execution per run: { items: [ all articles ], meta: {...} }
     exportKind: AS                # keys the per-day delivery marker (Industry.Logistics/ExportRun)
     pageSize: 100
-    # K2: delay-first — a (re)deploy never triggers an immediate poll (3 AS incidents were
-    # exactly this mechanism). K1 (gate below) makes frequent polling delivery-safe: max ONE
-    # delivery per Vienna calendar day, so hourly polling only fights starvation
-    # (delay-first + frequent redeploys would otherwise postpone the daily run forever).
-    # Cost note: each poll also pulls articleSupplySource (EK enrichment) — accepted 23.07.
-    runOnStart: false
-    pollingIntervalSeconds: 3600
+    # Cost note: each run also pulls articleSupplySource (EK enrichment) — accepted 23.07.
 
-transformations:
   # --- K1 delivery-dedup gate: at most ONE AS delivery per Vienna calendar day.
   # GetOrCreate only QUERIES (fresh id + ModOperation=Insert on miss — source-verified,
   # GetOrCreateRtEntitiesByTypeNode.cs:40-56); multiple fieldFilters combine as AND
   # (RtEntityQueryOptions default LogicalOperators.And). The marker entity is persisted
   # by ApplyChanges@2 as the LAST step, i.e. only after a successful upload
-  # (at-least-once — a crash between upload and persist re-delivers on the next poll).
+  # (at-least-once — a crash between upload and persist re-delivers on the next tick).
   # Unknown ckTypeId (tenant without Industry.Logistics 1.1.0) => the platform THROWS before
   # querying (CkCache: "Ensure that the corresponding construction kit library is imported")
   # => pipeline error, NO delivery. Fail-loud verified 2026-07-23 against platform sources.

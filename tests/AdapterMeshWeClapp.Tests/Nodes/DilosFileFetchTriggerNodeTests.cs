@@ -72,7 +72,7 @@ public class DilosFileFetchTriggerNodeTests
     [InlineData("AR????????.TXT", "AR0000694.TXT", false)]
     public void GlobMatch_UsesBillbeeSemantics(string pattern, string fileName, bool expected)
     {
-        Assert.Equal(expected, DilosFileFetchTriggerNode.GlobMatch(fileName, pattern));
+        Assert.Equal(expected, DilosFileFetchCore.GlobMatch(fileName, pattern));
     }
 
     [Fact]

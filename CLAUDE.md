@@ -17,15 +17,18 @@ dotnet test Octo.WeClappAdapter.slnx -c DebugL
 
 ## Project Structure
 - `src/AdapterMeshWeClapp/` - Mesh adapter host (cloud, connects directly to OctoMesh
-  repositories) + all custom pipeline nodes (outbound: `WeClappFetch@1`, `WeClappToCk@1`,
-  `DilosRender@1`, `DilosSftpWrite@1` [ISO-8859-1 delivery]; return path: `DilosFileFetch@1`,
-  `WeClappArWrite@1`, `WeClappBeWrite@1`)
+  repositories) + all custom pipeline nodes (outbound: `WeClappFetchStep@1`, `WeClappToCk@1`,
+  `DilosRender@1`, `DilosSftpWrite@1` [ISO-8859-1 delivery]; return path: `DilosFileFetchStep@1`,
+  `DilosFileConfirm@1`, `WeClappArWrite@1`, `WeClappBeWrite@1`; legacy poll-trigger nodes
+  `WeClappFetch@1`/`DilosFileFetch@1` stay registered for rollback, see "Pipeline Trigger
+  Architecture" below)
 - `src/Lkv.WeClapp.Core/` - plain core lib: WeClapp DTOs/JSON, WeClapp→DILOS value rules,
   DILOS AS/AI writers, DILOS AR/BE parsers + write-back planners (fail-loud, golden-file verified)
 - `src/charts/octo-weclapp-adapter/` - Helm chart (deployed by the Communication Operator;
   httpGet probes on `/healthz/live|ready`)
 - `pipelines/` - tenant pipeline YAMLs (orders→AI per order; articles split into per-item
-  CK sync + batched AS delivery [`emitMode: Batch`, one file per poll]; AR/BE return path);
+  CK sync + batched AS delivery [`emitMode: Batch`, at most one file per Vienna calendar day —
+  K1 gate]; AR/BE return path);
   `scripts/om_setup_lkv.ps1` substitutes `${WECLAPP_API_KEY}` + `REPLACE-TENANT` baseUrl
 - `tests/Lkv.WeClapp.Core.Tests/` - xUnit against real LKV golden fixtures
 - `tests/AdapterMeshWeClapp.Tests/` - node/pipeline tests + env-gated live smokes (gates below)
@@ -44,9 +47,54 @@ dotnet test Octo.WeClappAdapter.slnx -c DebugL
 - Node logs are message templates with args (`nodeContext.Info("... {0}", x)`) — NEVER
   interpolated strings: `INodeContext` forwards to structured logging, so a literal `{...}`
   (JSON body, URL) corrupts the template
-- Redeploy determinism (P2): the AS batch pipeline runs delay-first (`runOnStart: false`) and
-  gates delivery on a per-day CK marker (`Industry.Logistics/ExportRun`), so a (re)deploy emits
-  no immediate or duplicate AS file; ck/ai keep `runOnStart: true` (ck idempotent, ai gated)
+- Redeploy determinism (P2 — superseded by "Pipeline Trigger Architecture" below): no pipeline
+  has `runOnStart`/`pollingIntervalSeconds` anymore; nothing fires on (re)deploy or pod restart
+  by construction. AS still gates delivery on a per-day CK marker
+  (`Industry.Logistics/ExportRun`, at most one file per Vienna calendar day)
+
+## Pipeline Trigger Architecture
+All 5 pipeline YAMLs carry two passive triggers — `FromPipelineTriggerEvent@1` (cron,
+subscribes a per-pipeline queue and calls `ExecuteAsync` directly) and
+`FromExecutePipelineCommand@1` (manual/API run, e.g. for Härtetest probing). Neither is a poll
+loop: a redeploy or pod restart fires no execution. A fetch step
+(`WeClappFetchStep@1`/`DilosFileFetchStep@1`) runs first and seeds the data context at a fixed
+root path — always the array, even `[]` (a missing/non-array path aborts a downstream
+`ForEach@1` with `PathMustBeArray`); a per-item `ForEach@1` then fans the former per-execution
+chain out over that array, one iteration per element.
+
+**Canonical ForEach block** (use exactly this shape — deviating breaks the guard test below):
+```yaml
+  - type: ForEach@1
+    iterationPath: $.orders          # or $.articles / $.files
+    keyPath: $.current
+    mergePath: $.current             # aligned with keyPath — default $.key merges nothing (no
+                                      # child writes $.key; nulls are filtered, $.loopResult stays empty)
+    targetPath: $.loopResult         # NEVER omit: default "$" REPLACES the document root
+    maxDegreeOfParallelism: 1        # NEVER omit: default 0 = Environment.ProcessorCount (parallel!)
+    transformations:
+      # former chain, item segment replaced: $.item → $.current.item etc.
+```
+Merge-result order under `$.loopResult` is unspecified (`ConcurrentBag`) — **nothing may read
+`$.loopResult`**; every child writes through the data context instead (`ApplyChanges@1/@2`,
+`DilosSftpWrite@1`, `WeClappArWrite@1`, ...).
+
+**Activation:** importing a `System.Communication/PipelineTrigger` RT entity schedules NOTHING
+by itself — schedules materialize only via `octo-cli -c DeployTriggers` (or tenant start). Run
+it after every RT import that carries `PipelineTrigger` entities; an `Enabled` flip via
+re-import likewise only bites at the next `DeployTriggers`/tenant restart.
+
+**Guard tests** (`tests/AdapterMeshWeClapp.Tests/PipelineYamlContractTests.cs`) pin this against
+the shipped YAMLs: `ConvertedYaml_UsesPassiveTriggers_NoPollingFields` asserts both passive
+triggers in order, the correct first fetch-step type per file, and that
+`pollingIntervalSeconds`/`runOnStart` appear nowhere in the raw text (including comments);
+`ConvertedYaml_UsesPassiveTriggers_TheoryCoversAllPipelineYamls` keeps that Theory's
+`[InlineData]` rows in lockstep with the pipelines actually shipped, so a future 6th yaml cannot
+silently escape the ban; `AllPipelineYamls_EveryForEach_HasNonRootTargetPathAndSequentialDop`
+asserts every `ForEach@1` has a non-null, non-`"$"` `targetPath` and
+`maxDegreeOfParallelism == 1`; `AllPipelineYamls_EveryForEach_KeyPathIsCurrent` pins every
+`ForEach@1`'s `keyPath` to `$.current`; `AllPipelineYamls_DilosFileFetchStepAndConfirm_DeleteAfterSuccessMatches`
+asserts `DilosFileFetchStep@1`/`DilosFileConfirm@1` carry the same `deleteAfterSuccess` AND
+`serverConfiguration` in every ar/be yaml.
 
 ## Domain Gotchas (golden-file verified — do not "fix" without evidence)
 - DILOS AR/BE use **comma** decimals; AI/AS use dot. Both verified against real files.
@@ -58,16 +106,19 @@ dotnet test Octo.WeClappAdapter.slnx -c DebugL
   SKU) — parsers fail loud on mismatch by design.
 
 ## AR/BE Return Path (SFTP → WeClapp)
-- `DilosFileFetch@1` polls the LKV SFTP (credentials via tenant GlobalConfiguration
-  entry `LkvSftp`, same JSON shape as `SftpUpload@1`) and starts ONE pipeline execution
-  per file `{fileName, content}`; with `deleteAfterSuccess: true` the remote file is
-  deleted only AFTER the awaited execution succeeded → the downstream write MUST stay
-  idempotent. The DEFAULT is the safe side (false = keep files): a dry-run execution
-  succeeds without writing, deleting would consume the LKV file with no effect — flip
-  `deleteAfterSuccess: true` together with `dryRun: false` for go-live. Importing a
-  pipeline YAML that uses a config key the DEPLOYED image does not know yet fails the
-  pipeline registration (the SDK YAML deserializer rejects unknown properties) → deploy
-  the new image before importing updated YAMLs.
+- `DilosFileFetchStep@1` lists the LKV SFTP (credentials via tenant GlobalConfiguration
+  entry `LkvSftp`, same JSON shape as `SftpUpload@1`) once per cron tick and seeds `$.files`
+  with every matching, ready file (always the array, even `[]`); a per-file `ForEach@1`
+  (`keyPath: $.current`) then fans out the write chain — `WeClappArWrite@1`/`WeClappBeWrite@1`
+  followed by `DilosFileConfirm@1` as the LAST child. `DilosFileConfirm@1`, not the fetch step,
+  performs the actual keep/delete: with `deleteAfterSuccess: true` it deletes the remote file
+  only AFTER the write succeeded → the write MUST stay idempotent. The DEFAULT is the safe side
+  (false = keep files): a dry-run execution succeeds without writing, deleting would consume the
+  LKV file with no effect — flip `deleteAfterSuccess: true` together with `dryRun: false` for
+  go-live (`DilosFileFetchStep@1` and `DilosFileConfirm@1` must carry the SAME value). Importing
+  a pipeline YAML that uses a config key the DEPLOYED image does not know yet fails the pipeline
+  registration (the SDK YAML deserializer rejects unknown properties) → deploy the new image
+  before importing updated YAMLs.
 - `WeClappArWrite@1`: AR K* Auftragsnummer1 = WeClapp `salesOrder.id` (404 = dead-letter
   log, file still consumed). Idempotency: SHIPPED shipment with same tracking = skip;
   reuse non-CANCELLED; else `createShipment`. Quantities match by **articleId, never by
@@ -90,7 +141,9 @@ dotnet test Octo.WeClappAdapter.slnx -c DebugL
 - `TreatWarningsAsErrors`, nullable enabled, `LangVersion latestmajor` (Directory.Build.props)
 - Configurations: `Debug`, `Release`, `DebugL` (local NuGet at `../nuget/`, version `999.0.0`)
 - English code + XML docs; DILOS original field names + 1-based field index in XML docs
-- Commit messages: `AB#4228: <meaningful description>`
+- Commit messages: Conventional Commits scoped to the work item —
+  `<type>(AB#4228): <meaningful description>` (types used on this branch: `feat`, `fix`, `test`,
+  `docs`, `style`, `refactor`)
 
 ## Pre-Commit Checklist (ALL steps MUST pass)
 1. `dotnet format Octo.WeClappAdapter.slnx --verify-no-changes`

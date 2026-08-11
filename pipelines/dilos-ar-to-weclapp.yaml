@@ -1,28 +1,61 @@
 # Pipeline: DILOS AR shipment confirmations (LKV SFTP) → WeClapp shipments (tracking, parcels,
-# delivered quantities, status SHIPPED last). One pipeline execution per fetched file
-# ({fileName, content}); with deleteAfterSuccess: true the trigger deletes the remote file
-# only after this pipeline completed successfully — safe because the write is idempotent
-# (replay-skip on an already SHIPPED shipment with the same tracking number; unknown orders
-# are dead-letter-logged and do not block the file). During the dry-run phase the delete
-# stays off: a dry-run succeeds without writing, deleting would consume the file for nothing.
+# delivered quantities, status SHIPPED last). DilosFileFetchStep@1 lists the LKV SFTP server
+# (cron-driven; replaces the old DilosFileFetch@1 poll-loop trigger) and seeds $.files = one
+# element per matching, ready file; a ForEach@1 runs the former per-execution chain once per
+# element (one iteration per file) — the write is idempotent (replay-skip on an already SHIPPED
+# shipment with the same tracking number; unknown orders are dead-letter-logged and do not
+# block the file), so re-running a kept file on the next tick is safe. DilosFileConfirm@1 is the
+# LAST child: with deleteAfterSuccess: true it deletes the remote file only after the write
+# succeeded — safe for the same idempotency reason. During the dry-run phase the delete stays
+# off: a dry-run succeeds without writing, deleting would consume the file for nothing.
+#
+# DeleteAfterSuccess consistency: DilosFileFetchStep@1 and DilosFileConfirm@1 below MUST carry
+# the SAME value — the step gates the keep-mode skip / pending-delete retry, the confirm node
+# performs the actual first-time delete; a mismatch leaves files stuck in an inconsistent state.
 #
 # SFTP credentials come from the tenant GlobalConfiguration entry "LkvSftp" (same JSON shape
 # as SftpUpload@1: {host, port, username, password|privateKey, ...}) — never from this YAML.
 # ${WECLAPP_API_KEY} is substituted at deploy time (see scripts/om_setup_lkv.ps1).
 
 triggers:
-  - type: DilosFileFetch@1
+  - type: FromPipelineTriggerEvent@1
+  - type: FromExecutePipelineCommand@1
+
+transformations:
+  - type: DilosFileFetchStep@1
+    description: List LKV SFTP for AR shipment-confirmation files (cron-driven; replaces the old DilosFileFetch@1 poll-loop trigger)
     serverConfiguration: LkvSftp
     remoteDirectory: "/"          # Billbee production default; per-mandate subdirectory TBD with LKV
     filePattern: AR*TXT           # golden names: AR00006946.TXT, AR20240205143134947.TXT
-    pollingIntervalSeconds: 900   # Billbee parity: */15 min
     minFileAgeSeconds: 60
+    # deleteAfterSuccess MUST match DilosFileConfirm@1's deleteAfterSuccess below — this step
+    # gates the keep-mode skip / pending-delete retry, the confirm node performs the actual
+    # first-time delete; a mismatch leaves files stuck in an inconsistent state.
     deleteAfterSuccess: false     # dry-run below writes nothing — deleting would consume the
                                   # LKV file with no effect; flip to true TOGETHER with dryRun
 
-transformations:
-  - type: WeClappArWrite@1
-    description: Write AR shipments back to WeClapp (create/update shipment, tracking, SHIPPED last)
-    baseUrl: https://REPLACE-TENANT.weclapp.com/webapp/api/v1
-    apiKey: ${WECLAPP_API_KEY}
-    dryRun: true                  # validate-only until the trial write smoke passed; flip for go-live
+  - type: ForEach@1
+    description: per-item chain, one former execution per element
+    iterationPath: $.files
+    keyPath: $.current
+    # no mergePath: the default ($.key) merges nothing — nothing may read $.loopResult anyway,
+    # and merging $.current would deep-clone every item’s full content into the result array.
+    targetPath: $.loopResult         # NEVER omit: default "$" REPLACES the document root.
+                                     # Merge-result ORDER is unspecified (ConcurrentBag) — nothing may read $.loopResult.
+    maxDegreeOfParallelism: 1        # NEVER omit: default 0 = Environment.ProcessorCount (parallel!)
+    transformations:
+      - type: WeClappArWrite@1
+        description: Write AR shipments back to WeClapp (create/update shipment, tracking, SHIPPED last)
+        baseUrl: https://REPLACE-TENANT.weclapp.com/webapp/api/v1
+        apiKey: ${WECLAPP_API_KEY}
+        fileNamePath: $.current.fileName
+        contentPath: $.current.content
+        dryRun: true                  # validate-only until the trial write smoke passed; flip for go-live
+
+      - type: DilosFileConfirm@1
+        description: Confirm the AR file — keep it on the server (dry-run) or delete it once dryRun is off
+        serverConfiguration: LkvSftp
+        # deleteAfterSuccess MUST match DilosFileFetchStep@1's deleteAfterSuccess above (see note there).
+        deleteAfterSuccess: false
+        path: $.current             # the ONE current file element — never $.files (would resolve to
+                                    # the whole array via ForEach's parent-fallback and delete unrun files)
