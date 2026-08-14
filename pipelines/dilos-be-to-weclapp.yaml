@@ -45,8 +45,13 @@ transformations:
     # no mergePath: the default ($.key) merges nothing — nothing may read $.loopResult anyway,
     # and merging $.current would deep-clone every item’s full content into the result array.
     targetPath: $.loopResult         # NEVER omit: default "$" REPLACES the document root.
-                                     # Merge-result ORDER is unspecified (ConcurrentBag) — nothing may read $.loopResult.
+                                     # Merge results keep source order since AB#4760; nothing reads $.loopResult anyway.
     maxDegreeOfParallelism: 1        # NEVER omit: default 0 = Environment.ProcessorCount (parallel!)
+    continueOnError: true            # AB#4785 (needs SDK >= r3.4.90): a structurally broken file no
+                                     # longer starves the files behind it — its error is logged and
+                                     # collected, the remaining files are processed, and the run still
+                                     # fails at the end (failure counters stay loud). The broken file
+                                     # stays unconfirmed and is retried next tick.
     transformations:
       - type: WeClappBeWrite@1
         description: Reconcile the BE stock snapshot into WeClapp via delta movement bookings
