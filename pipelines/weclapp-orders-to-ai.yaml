@@ -4,7 +4,6 @@
 #
 # WeClapp access comes from the tenant GlobalConfiguration entry "WeClappApi"
 # (apiConfiguration below), SFTP access from the entry "LkvSftp".
-# Attribute mapping source: WECLAPP-4228-MAPPING.md.
 
 triggers:
   - type: FromPipelineTriggerEvent@1
