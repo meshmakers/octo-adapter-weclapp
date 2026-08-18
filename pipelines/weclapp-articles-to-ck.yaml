@@ -1,15 +1,10 @@
-# Pipeline: WeClapp articles → CK entities (Industry.Logistics/Article upsert, daily).
-# Split from the AS file delivery (weclapp-articles-to-as.yaml): CK sync stays per-item —
-# WeClappFetchStep@1 (emitMode PerItem) seeds $.articles = [{ item }, …] and a ForEach@1
-# runs the former per-execution chain once per element (one iteration per article); the AS
-# file is one Batch execution per run — two simple pipelines instead of one nested one.
-# Deployment + WeClapp access (apiConfiguration: WeClappApi) identical to
-# weclapp-orders-to-ai.yaml (see its header for the source-verification status of the
-# built-in sections).
+# Pipeline: WeClapp articles → CK entities (Industry.Logistics/Article upsert).
+# Split from the AS file delivery (weclapp-articles-to-as.yaml): CK sync runs per item,
+# the AS file is one batch per run. Deployment + WeClapp access (apiConfiguration:
+# WeClappApi) identical to weclapp-orders-to-ai.yaml.
 #
-# NOTE: supply-source enrichment is OFF here — this pipeline maps no purchase prices
-# into CK, so the (expensive) full articleSupplySource pull would be discarded. The AS
-# delivery pipeline keeps it on (EK-Preis field).
+# Supply-source enrichment is OFF here — this pipeline maps no purchase prices into CK;
+# the AS delivery pipeline keeps it on (EK-Preis field).
 
 triggers:
   - type: FromPipelineTriggerEvent@1
@@ -17,22 +12,21 @@ triggers:
 
 transformations:
   - type: WeClappFetchStep@1
-    description: Fetch all WeClapp articles for CK sync (cron-driven; replaces the old WeClappFetch@1 poll-loop trigger)
+    description: Fetch all WeClapp articles for CK sync
     apiConfiguration: WeClappApi   # tenant GlobalConfiguration entry { baseUrl, apiKey }
     entity: article
-    emitMode: PerItem              # $.articles = array of { item } — one ForEach iteration below per element
+    emitMode: PerItem              # $.articles = array of { item }, one ForEach iteration per element
     enrichSupplySources: false     # CK maps no EK prices — skip the heaviest fetch
     pageSize: 100
 
   - type: ForEach@1
-    description: per-item chain, one former execution per element
+    description: Process one article per iteration
     iterationPath: $.articles
     keyPath: $.current
-    # no mergePath: the default ($.key) merges nothing — nothing may read $.loopResult anyway,
-    # and merging $.current would deep-clone every item’s full content into the result array.
-    targetPath: $.loopResult         # NEVER omit: default "$" REPLACES the document root.
-                                     # Merge-result ORDER is unspecified (ConcurrentBag) — nothing may read $.loopResult.
-    maxDegreeOfParallelism: 1        # NEVER omit: default 0 = Environment.ProcessorCount (parallel!)
+    # mergePath stays unset and nothing may read $.loopResult — children write through
+    # the data context instead.
+    targetPath: $.loopResult         # NEVER omit: default "$" replaces the document root
+    maxDegreeOfParallelism: 1        # NEVER omit: default 0 = fully parallel
     transformations:
       - type: WeClappToCk@1
         description: WeClapp article → CK-shaped document (system articles filtered)
@@ -40,14 +34,12 @@ transformations:
         path: $.current.item
         targetPath: $.ck
 
-      # --- CK persistence (built-ins; field names source-verified 2026-07-09,
-      #     first tenant run pending — see weclapp-orders-to-ai.yaml header) ---
       - type: GetOrCreateRtEntitiesByType@1
         description: Upsert the Article by its WeClapp id (= DILOS Artikelnummer / AS key)
         ckTypeId: Industry.Logistics/Article
         fieldFilters:
           - attributePath: ArticleNumber
-            operator: Equals                      # FieldFilterOperatorDto member (source-verified)
+            operator: Equals                      # FieldFilterOperatorDto member
             comparisonValuePath: $.ck.ArticleNumber   # WeClappToCk writes the CkArticle FLAT at $.ck
         rtIdTargetPath: $.rt.articleRtId
         ckTypeIdTargetPath: $.rt.articleCkTypeId
@@ -59,9 +51,8 @@ transformations:
         rtIdPath: $.rt.articleRtId
         ckTypeId: Industry.Logistics/Article
         updateKindPath: $.rt.articleModOperation
-        # attributeValueType is REQUIRED per update — a missing type is a debug-only error
-        # and the update is silently dropped (ApplyChanges then logs "No update infos found").
-        # No Sku here: neither the CK Article type nor CkArticle carries one.
+        # attributeValueType is REQUIRED per update — without it the update is silently
+        # dropped. No Sku: neither the CK Article type nor CkArticle carries one.
         attributeUpdates:
           - attributeName: ArticleNumber
             attributeValueType: String
@@ -73,7 +64,7 @@ transformations:
             attributeValueType: String
             valuePath: $.ck.Ean
         targetPath: $.updates
-        targetValueWriteMode: Append      # collect into ONE list — the Overwrite default keeps only the last update
+        targetValueWriteMode: Append      # NEVER omit: the Overwrite default keeps only the LAST update
 
       - type: ApplyChanges@1
         description: Persist the article upsert

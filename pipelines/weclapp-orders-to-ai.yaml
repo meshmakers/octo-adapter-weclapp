@@ -1,36 +1,10 @@
-# Pipeline: WeClapp sales orders → CK entities + DILOS AI file content (one file per order,
-# file name = Auftragsnummer1; golden precedent). WeClappFetchStep@1 seeds $.orders =
-# [{ item, customer }, …] (cron-driven; replaces the old WeClappFetch@1 poll-loop trigger)
-# and a ForEach@1 runs the former per-execution chain once per element. Deployed to the
-# tenant via AdminPanel (pipeline YAML per DEVELOPMENT.md of octo-adapter-demos).
+# Pipeline: WeClapp sales orders → CK entities + DILOS AI file content (one file per
+# order, file name = Auftragsnummer1). WeClappFetchStep@1 seeds $.orders (cron-driven);
+# a ForEach@1 processes one order per iteration.
 #
-# WeClapp access (baseUrl + API key) comes from the tenant GlobalConfiguration entry
-# "WeClappApi" (apiConfiguration below, same pattern as "LkvSftp" for SFTP) — the key
-# never enters the repo or the deployed pipeline definition.
-#
-# NOTE (spike status): the custom-node chain is proven end-to-end by
-# PipelineChainIntegrationTests. The built-in sections below are spelled out with field
-# names source-verified against octo-mesh-adapter MeshNodes.Sdk (2026-07-09):
-# GetOrCreateRtEntitiesByType@1 (CkTypeId/FieldFilters[attributePath,operator,
-# comparisonValuePath]/RtIdTargetPath/CkTypeIdTargetPath/ModOperationPath),
-# CreateUpdateInfo@1 (RtIdPath/CkTypeId/UpdateKindPath/AttributeUpdates[attributeName,
-# attributeValueType (REQUIRED — silently dropped without it), valuePath]/TargetPath),
-# CreateAssociationUpdate@1 (UpdateKind Create|Delete,
-# Origin/Target RtIdPath+CkTypeId, AssociationRoleId), ApplyChanges@1 (Path = a
-# List<EntityUpdateInfo>).
-# Source-verified 2026-07-11 (was "confirm at the tenant" before):
-# - FieldFilter operator enum = FieldFilterOperatorDto: Equals|NotEquals|LessThan|
-#   LessEqualThan|GreaterThan|GreaterEqualThan|In|NotIn — an "EqualTo" literal does NOT
-#   exist and would fail the YAML deserialization.
-# - Every update-collecting node MUST set targetValueWriteMode: Append — the
-#   TargetPathNodeConfiguration default is Overwrite, which would keep only the LAST
-#   update (DataContext.Set: Append creates the list on the first write, then appends).
-# - Entity updates (EntityUpdateInfo) and association updates (AssociationUpdateInfo)
-#   are DIFFERENT types in SEPARATE lists: ApplyChanges@1 reads only entity updates;
-#   ApplyChanges@2 takes entityUpdatesPath + associationUpdatesPath — used below.
-# The first tenant run (2026-07-16, staging) happened and surfaced the attributeValueType
-# and path-shape contracts now pinned by PipelineYamlContractTests. STILL OPEN: extending
-# the attribute list per type to the full mapping (source: WECLAPP-4228-MAPPING.md).
+# WeClapp access comes from the tenant GlobalConfiguration entry "WeClappApi"
+# (apiConfiguration below), SFTP access from the entry "LkvSftp".
+# Attribute mapping source: WECLAPP-4228-MAPPING.md.
 
 triggers:
   - type: FromPipelineTriggerEvent@1
@@ -38,24 +12,22 @@ triggers:
 
 transformations:
   - type: WeClappFetchStep@1
-    description: Fetch confirmed WeClapp orders for AI delivery (cron-driven; replaces the old WeClappFetch@1 poll-loop trigger)
+    description: Fetch confirmed WeClapp orders for AI delivery
     apiConfiguration: WeClappApi   # tenant GlobalConfiguration entry { baseUrl, apiKey }
-    entity: salesOrder    # orderItems are part of the default response (live-verified 2026-07-04)
-    # Hand-over filter: only confirmed orders go to LKV. Technically forced — WeClapp
-    # allows createShipment (needed for the AR return path) only in this status
-    # (real-write-proven 2026-07-07), and the customer's stock of orders is CLOSED.
+    entity: salesOrder    # orderItems are part of the default response
+    # Only confirmed orders go to LKV — WeClapp allows createShipment (needed for the
+    # AR return path) only in this status.
     additionalQuery: status-eq=ORDER_CONFIRMATION_PRINTED
     pageSize: 100
 
   - type: ForEach@1
-    description: per-item chain, one former execution per element
+    description: Process one order per iteration
     iterationPath: $.orders
     keyPath: $.current
-    # no mergePath: the default ($.key) merges nothing — nothing may read $.loopResult anyway,
-    # and merging $.current would deep-clone every item’s full content into the result array.
-    targetPath: $.loopResult         # NEVER omit: default "$" REPLACES the document root.
-                                     # Merge-result ORDER is unspecified (ConcurrentBag) — nothing may read $.loopResult.
-    maxDegreeOfParallelism: 1        # NEVER omit: default 0 = Environment.ProcessorCount (parallel!)
+    # mergePath stays unset and nothing may read $.loopResult — children write through
+    # the data context instead.
+    targetPath: $.loopResult         # NEVER omit: default "$" replaces the document root
+    maxDegreeOfParallelism: 1        # NEVER omit: default 0 = fully parallel
     transformations:
       - type: WeClappToCk@1
         description: WeClapp order + customer → CK-shaped document
@@ -64,20 +36,16 @@ transformations:
         customerPath: $.current.customer
         targetPath: $.ck
 
-      # --- Export dedup: lookups OUTSIDE the gate (read-only), everything that renders,
-      # delivers or persists INSIDE it. GetOrCreate… only queries the repository — on a miss
-      # it merely generates a fresh id and sets ModOperation=Insert in the data context; the
-      # actual write happens in ApplyChanges. The persisted CK Order therefore doubles as the
-      # export marker: it is written ONLY after a successful upload (at-least-once — a crash
-      # between upload and persist re-delivers on the next tick; the 15-minute cron schedule
-      # makes the race window irrelevant). Without the gate, the same order would be
-      # re-delivered every tick until its WeClapp status changes.
+      # --- Export dedup: lookups outside the gate (query-only), everything that renders,
+      # delivers or persists inside it. The persisted CK Order doubles as the export
+      # marker and is written ONLY after a successful upload (at-least-once: a crash
+      # between upload and persist re-delivers on the next tick).
       - type: GetOrCreateRtEntitiesByType@1
         description: Look up the Customer by its WeClapp customer number (query only, see gate note)
         ckTypeId: Industry.Logistics/Customer
         fieldFilters:
           - attributePath: CustomerNumber
-            operator: Equals                      # FieldFilterOperatorDto member (source-verified)
+            operator: Equals                      # FieldFilterOperatorDto member
             comparisonValuePath: $.ck.Customer.CustomerNumber
         rtIdTargetPath: $.rt.customerRtId
         ckTypeIdTargetPath: $.rt.customerCkTypeId
@@ -98,12 +66,11 @@ transformations:
         description: Deliver only orders whose CK entity does not exist yet (ModOperation Insert = never exported)
         path: $.rt.orderModOperation
         operator: Equal
-        value: 0                    # UpdateKind.Insert — literal proven against the production
-        valueType: Enum             # data-context write in AiExportGateTests
+        value: 0                    # UpdateKind.Insert (never exported yet)
+        valueType: Enum
         transformations:
-          # attributeValueType is REQUIRED per update — a missing type is a debug-only error
-          # and the update is silently dropped (ApplyChanges then logs "No update infos found";
-          # staging finding 2026-07-16 — without it this whole gate never persists its marker).
+          # attributeValueType is REQUIRED per update — without it the update is silently
+          # dropped and the gate never persists its marker.
           - type: CreateUpdateInfo@1
             description: Customer attribute values onto the upserted entity (full list → WECLAPP-4228-MAPPING.md)
             path: $.ck.Customer
@@ -116,11 +83,10 @@ transformations:
                 valuePath: $.ck.Customer.CustomerNumber
               - attributeName: Name
                 attributeValueType: String
-                # CkCustomer.Name carries the B2C fallback (company OR "first last") —
-                # Contact.CompanyName is empty for private customers.
+                # CkCustomer.Name carries the B2C fallback (company name OR "first last")
                 valuePath: $.ck.Customer.Name
             targetPath: $.updates
-            targetValueWriteMode: Append      # collect into ONE list — the Overwrite default keeps only the last update
+            targetValueWriteMode: Append      # NEVER omit: the Overwrite default keeps only the LAST update
 
           - type: CreateUpdateInfo@1
             description: Order attribute values (full list → WECLAPP-4228-MAPPING.md)
@@ -149,9 +115,8 @@ transformations:
             targetRtIdPath: $.rt.customerRtId
             targetCkTypeId: Industry.Logistics/Customer
             associationRoleId: Industry.Logistics/OrderCustomer
-            # AssociationUpdateInfo is a DIFFERENT type than the entity updates — it gets its
-            # own list; ApplyChanges@2 consumes both lists separately (ApplyChanges@1 reads
-            # ONLY List<EntityUpdateInfo> and would lose/reject the association).
+            # Association updates are a DIFFERENT type than entity updates — own list;
+            # ApplyChanges@2 consumes both lists separately.
             targetPath: $.associationUpdates
             targetValueWriteMode: Append
 
@@ -161,13 +126,11 @@ transformations:
             submandant: "51696697501"   # REPLACE per tenant: WeClapp-Mandanten-Kennung (LKV maps it)
             path: $.current.item
             targetPath: $.dilosAi
-            fileNameTargetPath: $.dilosAiFileName   # AI<Auftragsnummer1>.txt = the WeClapp id, the
-                                                    # SAME number as the K* line — NOT the shop orderNumber
+            fileNameTargetPath: $.dilosAiFileName   # AI<Auftragsnummer1>.txt — the WeClapp id,
+                                                    # NOT the shop orderNumber
 
-          # --- File delivery (own DilosSftpWrite@1 — ISO-8859-1, golden format) ---
-          # The golden (DILOS-import-proven) AI/AS files are ISO-8859-1 with LF; the built-in
-          # SftpUpload@1 writes UTF-8, which corrupts umlauts (45/89 customers carry non-ASCII).
-          # Non-Latin-1 characters are replaced with '?' and reported loudly by the node.
+          # ISO-8859-1 delivery (DILOS file format) — the built-in SftpUpload@1 would write
+          # UTF-8 and corrupt umlauts; non-Latin-1 characters are replaced with '?'.
           - type: DilosSftpWrite@1
             description: Deliver the AI file to the LKV SFTP root as ISO-8859-1 (delete-side handled by LKV)
             serverConfiguration: LkvSftp        # SAME tenant GlobalConfiguration as the return path
@@ -175,8 +138,8 @@ transformations:
             fileNamePath: $.dilosAiFileName
             path: $.dilosAi
 
-          # Persisting the CK entities IS the export marker — it MUST stay the last step so a
-          # failed upload leaves no marker behind (the order is retried on the next tick).
+          # Persisting the CK entities IS the export marker — MUST stay the last step so a
+          # failed upload leaves no marker (the order is retried on the next tick).
           - type: ApplyChanges@2
             description: Persist order + customer AFTER successful delivery (export marker, at-least-once)
             entityUpdatesPath: $.updates
