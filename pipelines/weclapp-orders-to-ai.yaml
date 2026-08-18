@@ -4,8 +4,9 @@
 # and a ForEach@1 runs the former per-execution chain once per element. Deployed to the
 # tenant via AdminPanel (pipeline YAML per DEVELOPMENT.md of octo-adapter-demos).
 #
-# ${WECLAPP_API_KEY} is substituted at deploy time from the local environment variable
-# WECLAPP_TRIAL_API_KEY (see scripts/om_setup_lkv.ps1) — the key never enters the repo.
+# WeClapp access (baseUrl + API key) comes from the tenant GlobalConfiguration entry
+# "WeClappApi" (apiConfiguration below, same pattern as "LkvSftp" for SFTP) — the key
+# never enters the repo or the deployed pipeline definition.
 #
 # NOTE (spike status): the custom-node chain is proven end-to-end by
 # PipelineChainIntegrationTests. The built-in sections below are spelled out with field
@@ -38,8 +39,7 @@ triggers:
 transformations:
   - type: WeClappFetchStep@1
     description: Fetch confirmed WeClapp orders for AI delivery (cron-driven; replaces the old WeClappFetch@1 poll-loop trigger)
-    baseUrl: https://REPLACE-TENANT.weclapp.com/webapp/api/v1
-    apiKey: ${WECLAPP_API_KEY}
+    apiConfiguration: WeClappApi   # tenant GlobalConfiguration entry { baseUrl, apiKey }
     entity: salesOrder    # orderItems are part of the default response (live-verified 2026-07-04)
     # Hand-over filter: only confirmed orders go to LKV. Technically forced — WeClapp
     # allows createShipment (needed for the AR return path) only in this status

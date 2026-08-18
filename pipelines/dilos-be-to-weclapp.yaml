@@ -18,8 +18,8 @@
 # inconsistent state.
 #
 # SFTP credentials come from the tenant GlobalConfiguration entry "LkvSftp" (shared with
-# the outbound SftpUpload@1 and the AR pipeline). ${WECLAPP_API_KEY} is substituted at
-# deploy time (see scripts/om_setup_lkv.ps1).
+# the outbound SftpUpload@1 and the AR pipeline); WeClapp access comes from the entry
+# "WeClappApi" (apiConfiguration below) the same way.
 
 triggers:
   - type: FromPipelineTriggerEvent@1
@@ -55,8 +55,7 @@ transformations:
     transformations:
       - type: WeClappBeWrite@1
         description: Reconcile the BE stock snapshot into WeClapp via delta movement bookings
-        baseUrl: https://REPLACE-TENANT.weclapp.com/webapp/api/v1
-        apiKey: ${WECLAPP_API_KEY}
+        apiConfiguration: WeClappApi  # tenant GlobalConfiguration entry { baseUrl, apiKey }
         fileNamePath: $.current.fileName
         contentPath: $.current.content
         warehouseId: "4239"           # trial Main warehouse (default place 4244); customer id TBD

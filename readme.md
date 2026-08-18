@@ -27,9 +27,10 @@ template.
 - `src/charts/octo-weclapp-adapter` — Helm chart; deployed by the Communication
   Operator, probes `/healthz/live` + `/healthz/ready`
 - `pipelines/` — tenant pipeline YAMLs (3× outbound: orders→AI per order,
-  articles→CK per item, articles→AS as at most one batched file per Vienna calendar day; 2× return path);
-  `scripts/om_setup_lkv.ps1` prepares them (substitutes `${WECLAPP_API_KEY}` and
-  the `REPLACE-TENANT` baseUrl)
+  articles→CK per item, articles→AS as at most one batched file per Vienna calendar day; 2× return path).
+  The YAMLs deploy as-is — they carry no tenant-specific values: WeClapp access comes from
+  the tenant GlobalConfiguration entry `WeClappApi` (`apiConfiguration`), SFTP access from
+  the entry `LkvSftp`; `scripts/om_setup_lkv.ps1` bootstraps the tenant
   - **Trigger architecture:** every pipeline carries two passive triggers —
     `FromPipelineTriggerEvent@1` (cron, subscribes a per-pipeline queue) and
     `FromExecutePipelineCommand@1` (manual/API run). A fetch step

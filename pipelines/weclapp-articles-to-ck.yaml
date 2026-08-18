@@ -3,8 +3,9 @@
 # WeClappFetchStep@1 (emitMode PerItem) seeds $.articles = [{ item }, …] and a ForEach@1
 # runs the former per-execution chain once per element (one iteration per article); the AS
 # file is one Batch execution per run — two simple pipelines instead of one nested one.
-# Deployment + key handling identical to weclapp-orders-to-ai.yaml (see its header for the
-# source-verification status of the built-in sections).
+# Deployment + WeClapp access (apiConfiguration: WeClappApi) identical to
+# weclapp-orders-to-ai.yaml (see its header for the source-verification status of the
+# built-in sections).
 #
 # NOTE: supply-source enrichment is OFF here — this pipeline maps no purchase prices
 # into CK, so the (expensive) full articleSupplySource pull would be discarded. The AS
@@ -17,8 +18,7 @@ triggers:
 transformations:
   - type: WeClappFetchStep@1
     description: Fetch all WeClapp articles for CK sync (cron-driven; replaces the old WeClappFetch@1 poll-loop trigger)
-    baseUrl: https://REPLACE-TENANT.weclapp.com/webapp/api/v1
-    apiKey: ${WECLAPP_API_KEY}
+    apiConfiguration: WeClappApi   # tenant GlobalConfiguration entry { baseUrl, apiKey }
     entity: article
     emitMode: PerItem              # $.articles = array of { item } — one ForEach iteration below per element
     enrichSupplySources: false     # CK maps no EK prices — skip the heaviest fetch

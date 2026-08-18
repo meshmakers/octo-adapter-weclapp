@@ -37,8 +37,7 @@ triggers:
 transformations:
   - type: WeClappFetchStep@1
     description: Fetch all WeClapp articles for today's AS batch (cron-driven; replaces the old WeClappFetch@1 poll-loop trigger)
-    baseUrl: https://REPLACE-TENANT.weclapp.com/webapp/api/v1
-    apiKey: ${WECLAPP_API_KEY}
+    apiConfiguration: WeClappApi  # tenant GlobalConfiguration entry { baseUrl, apiKey }
     entity: article
     emitMode: Batch               # one execution per run: { items: [ all articles ], meta: {...} }
     exportKind: AS                # keys the per-day delivery marker (Industry.Logistics/ExportRun)

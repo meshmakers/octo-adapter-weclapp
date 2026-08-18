@@ -15,7 +15,7 @@
 #
 # SFTP credentials come from the tenant GlobalConfiguration entry "LkvSftp" (same JSON shape
 # as SftpUpload@1: {host, port, username, password|privateKey, ...}) — never from this YAML.
-# ${WECLAPP_API_KEY} is substituted at deploy time (see scripts/om_setup_lkv.ps1).
+# WeClapp access comes from the entry "WeClappApi" (apiConfiguration below) the same way.
 
 triggers:
   - type: FromPipelineTriggerEvent@1
@@ -51,11 +51,10 @@ transformations:
     transformations:
       - type: WeClappArWrite@1
         description: Write AR shipments back to WeClapp (create/update shipment, tracking, SHIPPED last)
-        baseUrl: https://REPLACE-TENANT.weclapp.com/webapp/api/v1
-        apiKey: ${WECLAPP_API_KEY}
+        apiConfiguration: WeClappApi  # tenant GlobalConfiguration entry { baseUrl, apiKey }
         fileNamePath: $.current.fileName
         contentPath: $.current.content
-        dryRun: true                  # validate-only until the trial write smoke passed; flip for go-live
+        dryRun: true                  # validate-only; flip for go-live TOGETHER with both deleteAfterSuccess values
 
       - type: DilosFileConfirm@1
         description: Confirm the AR file — keep it on the server (dry-run) or delete it once dryRun is off
