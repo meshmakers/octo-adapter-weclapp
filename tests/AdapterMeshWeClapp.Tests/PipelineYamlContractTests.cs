@@ -398,6 +398,38 @@ public class PipelineYamlContractTests
         Assert.Equal(2, checkedYamls); // ar + be — the return-path yamls must not lose the confirm
     }
 
+    // ---------- contract: WeClapp access comes ONLY from the tenant GlobalConfiguration ----------
+
+    // Since AB#4845 every pipeline references the tenant entry via apiConfiguration; the inline
+    // baseUrl/apiKey properties still exist on the nodes as back-compat, so nothing but this test
+    // stops a "quick tenant test" commit from putting a literal API key back into a shipped
+    // pipeline definition. Raw-text scan on purpose: it catches commented-out leftovers too and
+    // does not depend on the local SDK feed being able to deserialize the yamls.
+    [Fact]
+    public void AllPipelineYamls_UseApiConfigurationOnly_NoInlineCredentialsOrPlaceholders()
+    {
+        Assert.True(AllPipelineYamls.Length >= 5,
+            "pipeline yaml enumeration must find the shipped pipelines");
+
+        foreach (var yaml in AllPipelineYamls)
+        {
+            var raw = File.ReadAllText(FindRepoFile(Path.Combine("pipelines", yaml)));
+
+            // Property syntax with colon: the entry-shape note "{ baseUrl, apiKey }" in the
+            // apiConfiguration comments is legitimate documentation and must not trip this.
+            Assert.DoesNotContain("apiKey:", raw, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("baseUrl:", raw, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("${", raw); // no substitution placeholders of any kind
+
+            if (raw.Contains("WeClappFetchStep@1", StringComparison.Ordinal) ||
+                raw.Contains("WeClappArWrite@1", StringComparison.Ordinal) ||
+                raw.Contains("WeClappBeWrite@1", StringComparison.Ordinal))
+            {
+                Assert.Contains("apiConfiguration: WeClappApi", raw, StringComparison.Ordinal);
+            }
+        }
+    }
+
     // ---------- helpers ----------
 
     private static async Task<NodeDefinitionRoot> DeserializePipeline(string fileName)
