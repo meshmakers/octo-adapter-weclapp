@@ -28,10 +28,10 @@ dotnet test Octo.WeClappAdapter.slnx -c DebugL
   httpGet probes on `/healthz/live|ready`)
 - `pipelines/` - tenant pipeline YAMLs (orders→AI per order; articles split into per-item
   CK sync + batched AS delivery [`emitMode: Batch`, at most one file per Vienna calendar day —
-  K1 gate]; AR/BE return path); the YAMLs carry no credentials or connection data —
-  WeClapp access comes from the tenant GlobalConfiguration entry `WeClappApi`
-  (`apiConfiguration`), SFTP from `LkvSftp`; still tenant-specific and marked in the
-  YAMLs: AI submandant + BE warehouseId; `scripts/om_setup_lkv.ps1` bootstraps the tenant
+  K1 gate]; AR/BE return path); the YAMLs carry no credentials — WeClapp access comes
+  from the tenant GlobalConfiguration entry `WeClappApi` (`apiConfiguration`), SFTP from
+  `LkvSftp`; still tenant-specific and marked REPLACE/TBD in the YAMLs: AI submandant,
+  BE warehouseId, AR/BE `remoteDirectory`; `scripts/om_setup_lkv.ps1` bootstraps the tenant
 - `tests/Lkv.WeClapp.Core.Tests/` - xUnit against real LKV golden fixtures
 - `tests/AdapterMeshWeClapp.Tests/` - node/pipeline tests + env-gated live smokes (gates below)
 - `docs/superpowers/` - design specs and implementation plans
@@ -71,8 +71,8 @@ former per-execution chain out over that array, one iteration per element
   - type: ForEach@1
     iterationPath: $.orders          # or $.articles / $.files
     keyPath: $.current
-    # no mergePath: the default ($.key) merges nothing into $.loopResult — and merging
-    # $.current would deep-clone every item's full content into the result array
+    # no mergePath: the default ($.key) merges nothing as long as no child writes $.key —
+    # and merging $.current would deep-clone every item's full content into the result array
     targetPath: $.loopResult         # NEVER omit: default "$" REPLACES the document root
     maxDegreeOfParallelism: 1        # NEVER omit: default 0 = Environment.ProcessorCount (parallel!)
     transformations:

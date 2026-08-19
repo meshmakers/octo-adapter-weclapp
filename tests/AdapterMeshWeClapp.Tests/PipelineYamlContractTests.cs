@@ -415,13 +415,21 @@ public class PipelineYamlContractTests
         {
             var raw = File.ReadAllText(FindRepoFile(Path.Combine("pipelines", yaml)));
 
-            // Property syntax with colon: the entry-shape note "{ baseUrl, apiKey }" in the
-            // apiConfiguration comments is legitimate documentation and must not trip this.
-            Assert.DoesNotContain("apiKey:", raw, StringComparison.OrdinalIgnoreCase);
-            Assert.DoesNotContain("baseUrl:", raw, StringComparison.OrdinalIgnoreCase);
-            Assert.DoesNotContain("${", raw); // no substitution placeholders of any kind
+            // Key-position syntax, including YAML-legal spellings a plain substring would miss
+            // ("apiKey :", quoted "apiKey"). The entry-shape note "{ baseUrl, apiKey }" in the
+            // apiConfiguration comments carries no colon and is legitimate documentation.
+            Assert.DoesNotMatch("(?i)[\"']?\\bapiKey[\"']?\\s*:", raw);
+            Assert.DoesNotMatch("(?i)[\"']?\\bbaseUrl[\"']?\\s*:", raw);
+            // Deliberately absolute — never re-document the retired ${...} substitution
+            // mechanism inside a pipeline yaml, not even in a comment.
+            Assert.DoesNotContain("${", raw);
 
+            // Per-FILE gate (a raw-text scan cannot attribute properties to nodes): every yaml
+            // with any WeClapp node — the legacy trigger included — must reference the tenant
+            // entry. A per-NODE assert through the typed config layer should follow once the
+            // local SDK feed is >= r3.4.91 and the ar/be yamls deserialize again.
             if (raw.Contains("WeClappFetchStep@1", StringComparison.Ordinal) ||
+                raw.Contains("WeClappFetch@1", StringComparison.Ordinal) ||
                 raw.Contains("WeClappArWrite@1", StringComparison.Ordinal) ||
                 raw.Contains("WeClappBeWrite@1", StringComparison.Ordinal))
             {

@@ -28,11 +28,11 @@ template.
   Operator, probes `/healthz/live` + `/healthz/ready`
 - `pipelines/` — tenant pipeline YAMLs (3× outbound: orders→AI per order,
   articles→CK per item, articles→AS as at most one batched file per Vienna calendar day; 2× return path).
-  The YAMLs carry no credentials or connection data: WeClapp access comes from the tenant
-  GlobalConfiguration entry `WeClappApi` (`apiConfiguration`), SFTP access from the entry
-  `LkvSftp`. Two business values remain tenant-specific and are marked in the YAMLs — the
-  AI submandant and the BE warehouseId (review before deploying to a new tenant);
-  `scripts/om_setup_lkv.ps1` bootstraps the tenant
+  The YAMLs carry no credentials: WeClapp access comes from the tenant GlobalConfiguration
+  entry `WeClappApi` (`apiConfiguration`), SFTP access from the entry `LkvSftp`. Three
+  values remain tenant-specific and are marked REPLACE/TBD in the YAMLs — the AI
+  submandant, the BE warehouseId and the AR/BE SFTP `remoteDirectory` (review before
+  deploying to a new tenant); `scripts/om_setup_lkv.ps1` bootstraps the tenant
   - **Trigger architecture:** every pipeline carries two passive triggers —
     `FromPipelineTriggerEvent@1` (cron, subscribes a per-pipeline queue) and
     `FromExecutePipelineCommand@1` (manual/API run). A fetch step

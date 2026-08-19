@@ -1,10 +1,11 @@
-# Sets up the WeClapp adapter runtime entity at the lkv tenant (test-2). The pipeline
+﻿# Sets up the WeClapp adapter runtime entity at the lkv tenant (test-2). The pipeline
 # YAMLs in ../pipelines carry no credentials or connection data: WeClapp access comes
 # from the tenant GlobalConfiguration entry "WeClappApi" (referenced via
 # apiConfiguration), SFTP access from the entry "LkvSftp" (referenced via
-# serverConfiguration). Two business values remain tenant-specific and are marked
-# REPLACE/TBD in the YAMLs - the AI submandant (weclapp-orders-to-ai.yaml) and the BE
-# warehouseId (dilos-be-to-weclapp.yaml) - review them before deploying to a NEW tenant.
+# serverConfiguration). Three values remain tenant-specific and are marked REPLACE/TBD
+# in the YAMLs - the AI submandant (weclapp-orders-to-ai.yaml), the BE warehouseId
+# (dilos-be-to-weclapp.yaml) and the AR/BE SFTP remoteDirectory (per-mandate
+# subdirectory TBD with LKV) - review them before deploying to a NEW tenant.
 #
 # Prerequisites:
 #   - octo-cli context 'test-2_lkv' active and authenticated (Register-OctoCliContext)
@@ -33,9 +34,14 @@ if (-not $env:WECLAPP_CUSTOMER_BASEURL) {
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Definition
 
-# 1. Enable the communication feature + create the adapter runtime entity
+# 1. Enable the communication feature + create the adapter runtime entity.
+#    $ErrorActionPreference does not stop native commands - check the exit code
+#    explicitly (octo-cli exit codes can be optimistic, so ALSO read the output;
+#    a non-zero code is always fatal here).
 octo-cli -c EnableCommunication
+if ($LASTEXITCODE -ne 0) { throw "EnableCommunication failed (exit $LASTEXITCODE) - read the octo-cli output above." }
 octo-cli -c ImportRt -f (Join-Path $scriptRoot "_general/rt-adapter-weclapp.yaml") -w
+if ($LASTEXITCODE -ne 0) { throw "ImportRt of the adapter entity failed (exit $LASTEXITCODE) - read the octo-cli output above." }
 
 # 2. Remaining setup happens at the tenant (Studio/AdminPanel) - print the checklist with
 #    the concrete values (the API key itself is never printed).
@@ -53,8 +59,10 @@ Write-Host "    adapter 'WeClapp Mesh Adapter (LKV)', associate both entries wit
 Write-Host "    pipeline (Uses association, from the pipeline), then REDEPLOY the"
 Write-Host "    pipelines: configurations are snapshotted per pipeline registration, so"
 Write-Host "    an association added after a deploy takes effect only on the next one."
+Write-Host "    Redeploy via AdminPanel or: octo-cli -c DeployPipeline -id <pipelineRtId>"
+Write-Host "    (octo-cli -c DeployDataFlow -id <dataFlowRtId> redeploys a whole flow)."
 Write-Host "    For a NEW tenant, first review the REPLACE/TBD values in the YAMLs"
-Write-Host "    (AI submandant, BE warehouseId)."
+Write-Host "    (AI submandant, BE warehouseId, AR/BE remoteDirectory)."
 Write-Host " 4. Ensure the PipelineTrigger runtime entities (cron schedules) exist at the"
 Write-Host "    tenant - they are not part of this repo - then run:"
 Write-Host "      octo-cli -c DeployTriggers"
