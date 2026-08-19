@@ -36,7 +36,7 @@ transformations:
     # the data context instead.
     targetPath: $.loopResult         # NEVER omit: default "$" replaces the document root
     maxDegreeOfParallelism: 1        # NEVER omit: default 0 = fully parallel
-    continueOnError: true            # needs SDK >= r3.4.90: a broken file is logged, the
+    continueOnError: true            # needs SDK >= r3.4.91: a broken file is logged, the
                                      # remaining files still run, the run fails at the end;
                                      # the broken file stays unconfirmed and is retried
     transformations:
