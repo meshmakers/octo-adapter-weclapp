@@ -1,25 +1,18 @@
 # Pipeline: DILOS BE stock snapshots (LKV SFTP) → WeClapp stock movement deltas.
-# warehouseStock is GET-only in the WeClapp API (v1 and v2), so the node books
-# bookIncomingMovement / bookOutgoingMovement per BE-vs-current difference. Idempotent by
-# construction: re-processing the same file yields delta 0, so the delete-after-success
-# protocol (DilosFileConfirm@1 below) is safe once enabled. During the dry-run phase the
-# delete stays off (a dry-run succeeds without writing). GES (blocked) lines and unknown
-# articles are skipped loudly (golden files contain 0 GES lines; semantics not agreed yet).
+# warehouseStock is GET-only in the WeClapp API, so the node books bookIncomingMovement /
+# bookOutgoingMovement per BE-vs-current difference. Idempotent by construction:
+# re-processing the same file yields delta 0. GES (blocked) lines and unknown articles
+# are skipped loudly. DilosFileFetchStep@1 seeds $.files (one element per matching,
+# ready file); a ForEach@1 processes one file per iteration.
 #
-# DilosFileFetchStep@1 lists the LKV SFTP server (cron-driven; replaces the old
-# DilosFileFetch@1 poll-loop trigger) and seeds $.files = one element per matching, ready
-# file; a ForEach@1 runs the former per-execution chain once per element (one iteration per
-# file). DilosFileConfirm@1 is the LAST child: with deleteAfterSuccess: true it deletes the
-# remote file only after the write succeeded — safe by the same idempotency argument.
+# DilosFileFetchStep@1 and DilosFileConfirm@1 MUST carry the SAME deleteAfterSuccess —
+# the step gates the keep-mode skip / pending-delete retry, the confirm node (LAST
+# child) performs the actual delete, only after a successful write; a mismatch leaves
+# files stuck. Keep both false while dryRun is on: DilosFileConfirm@1 never sees the
+# write node's dryRun — it would delete the LKV file although nothing was written.
 #
-# DeleteAfterSuccess consistency: DilosFileFetchStep@1 and DilosFileConfirm@1 below MUST
-# carry the SAME value — the step gates the keep-mode skip / pending-delete retry, the
-# confirm node performs the actual first-time delete; a mismatch leaves files stuck in an
-# inconsistent state.
-#
-# SFTP credentials come from the tenant GlobalConfiguration entry "LkvSftp" (shared with
-# the outbound SftpUpload@1 and the AR pipeline). ${WECLAPP_API_KEY} is substituted at
-# deploy time (see scripts/om_setup_lkv.ps1).
+# SFTP access comes from the tenant GlobalConfiguration entry "LkvSftp", WeClapp access
+# from "WeClappApi" (apiConfiguration below) — never from this YAML.
 
 triggers:
   - type: FromPipelineTriggerEvent@1
@@ -27,45 +20,39 @@ triggers:
 
 transformations:
   - type: DilosFileFetchStep@1
-    description: List LKV SFTP for BE stock-snapshot files (cron-driven; replaces the old DilosFileFetch@1 poll-loop trigger)
+    description: List LKV SFTP for BE stock-snapshot files
     serverConfiguration: LkvSftp
-    remoteDirectory: "/"          # Billbee production default; per-mandate subdirectory TBD with LKV
-    filePattern: BE*txt           # golden name: BE_20240205035403463.txt
+    remoteDirectory: "/"          # per-mandate subdirectory TBD with LKV
+    filePattern: BE*txt           # e.g. BE_20240205035403463.txt
     minFileAgeSeconds: 60
-    # deleteAfterSuccess MUST match DilosFileConfirm@1's deleteAfterSuccess below — this step
-    # gates the keep-mode skip / pending-delete retry, the confirm node performs the actual
-    # first-time delete; a mismatch leaves files stuck in an inconsistent state.
-    deleteAfterSuccess: false     # dry-run below writes nothing — deleting would consume the
-                                  # LKV file with no effect; flip to true TOGETHER with dryRun
+    deleteAfterSuccess: false     # MUST match DilosFileConfirm@1 below; flip to true
+                                  # ONLY together with dryRun: false (go-live, see header)
 
   - type: ForEach@1
-    description: per-item chain, one former execution per element
+    description: Process one BE file per iteration
     iterationPath: $.files
     keyPath: $.current
-    # no mergePath: the default ($.key) merges nothing — nothing may read $.loopResult anyway,
-    # and merging $.current would deep-clone every item’s full content into the result array.
-    targetPath: $.loopResult         # NEVER omit: default "$" REPLACES the document root.
-                                     # Merge results keep source order since AB#4760; nothing reads $.loopResult anyway.
+    # mergePath stays unset and nothing may read $.loopResult — children write through
+    # the data context instead.
+    targetPath: $.loopResult         # NEVER omit: default "$" replaces the document root
     maxDegreeOfParallelism: 1        # NEVER omit: default 0 = Environment.ProcessorCount (parallel!)
-    continueOnError: true            # AB#4785 (needs SDK >= r3.4.90): a structurally broken file no
-                                     # longer starves the files behind it — its error is logged and
-                                     # collected, the remaining files are processed, and the run still
-                                     # fails at the end (failure counters stay loud). The broken file
-                                     # stays unconfirmed and is retried next tick.
+    continueOnError: true            # needs SDK >= r3.4.91: a broken file is logged, the
+                                     # remaining files still run, the run fails at the end;
+                                     # the broken file stays unconfirmed and is retried
     transformations:
       - type: WeClappBeWrite@1
         description: Reconcile the BE stock snapshot into WeClapp via delta movement bookings
-        baseUrl: https://REPLACE-TENANT.weclapp.com/webapp/api/v1
-        apiKey: ${WECLAPP_API_KEY}
+        apiConfiguration: WeClappApi  # tenant GlobalConfiguration entry { baseUrl, apiKey }
         fileNamePath: $.current.fileName
         contentPath: $.current.content
-        warehouseId: "4239"           # trial Main warehouse (default place 4244); customer id TBD
-        dryRun: true                  # movements are logged, not booked; flip for go-live
+        warehouseId: "4239"           # id from the former trial tenant — customer id TBD
+        dryRun: true                  # movements are logged, not booked; set to false for
+                                      # go-live, together with deleteAfterSuccess: true on
+                                      # step and confirm
 
       - type: DilosFileConfirm@1
         description: Confirm the BE file — keep it on the server (dry-run) or delete it once dryRun is off
         serverConfiguration: LkvSftp
-        # deleteAfterSuccess MUST match DilosFileFetchStep@1's deleteAfterSuccess above (see note there).
-        deleteAfterSuccess: false
-        path: $.current             # the ONE current file element — never $.files (would resolve to
-                                    # the whole array via ForEach's parent-fallback and delete unrun files)
+        deleteAfterSuccess: false   # MUST match DilosFileFetchStep@1 above
+        path: $.current             # the ONE current file — never $.files (parent-fallback
+                                    # would resolve the whole array and delete unrun files)

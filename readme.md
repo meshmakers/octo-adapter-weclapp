@@ -27,15 +27,20 @@ template.
 - `src/charts/octo-weclapp-adapter` — Helm chart; deployed by the Communication
   Operator, probes `/healthz/live` + `/healthz/ready`
 - `pipelines/` — tenant pipeline YAMLs (3× outbound: orders→AI per order,
-  articles→CK per item, articles→AS as at most one batched file per Vienna calendar day; 2× return path);
-  `scripts/om_setup_lkv.ps1` prepares them (substitutes `${WECLAPP_API_KEY}` and
-  the `REPLACE-TENANT` baseUrl)
+  articles→CK per item, articles→AS as at most one batched file per Vienna calendar day; 2× return path).
+  The YAMLs carry no credentials: WeClapp access comes from the tenant GlobalConfiguration
+  entry `WeClappApi` (`apiConfiguration`), SFTP access from the entry `LkvSftp`. Three
+  values remain tenant-specific and are marked REPLACE/TBD in the YAMLs — the AI
+  submandant, the BE warehouseId and the AR/BE SFTP `remoteDirectory` (review before
+  deploying to a new tenant); `scripts/om_setup_lkv.ps1` bootstraps the tenant
   - **Trigger architecture:** every pipeline carries two passive triggers —
     `FromPipelineTriggerEvent@1` (cron, subscribes a per-pipeline queue) and
     `FromExecutePipelineCommand@1` (manual/API run). A fetch step
-    (`WeClappFetchStep@1`/`DilosFileFetchStep@1`) runs first and seeds the data context; a
-    per-item `ForEach@1` (`keyPath: $.current`, `maxDegreeOfParallelism: 1`) then fans the
-    former per-execution chain out over the seeded array. Neither trigger polls or fires on
+    (`WeClappFetchStep@1`/`DilosFileFetchStep@1`) runs first and seeds the data context; in
+    4 of the 5 pipelines a per-item `ForEach@1` (`keyPath: $.current`,
+    `maxDegreeOfParallelism: 1`) then fans the former per-execution chain out over the
+    seeded array (the AS pipeline has no `ForEach@1` — it runs one batched execution per
+    tick). Neither trigger polls or fires on
     (re)deploy — importing a `PipelineTrigger` RT entity schedules nothing by itself; only
     `octo-cli -c DeployTriggers` activates the schedule (also required again after any
     `Enabled` flip)
