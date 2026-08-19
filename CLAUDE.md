@@ -28,9 +28,10 @@ dotnet test Octo.WeClappAdapter.slnx -c DebugL
   httpGet probes on `/healthz/live|ready`)
 - `pipelines/` - tenant pipeline YAMLs (orders→AI per order; articles split into per-item
   CK sync + batched AS delivery [`emitMode: Batch`, at most one file per Vienna calendar day —
-  K1 gate]; AR/BE return path); the YAMLs deploy as-is — WeClapp access comes from the
-  tenant GlobalConfiguration entry `WeClappApi` (`apiConfiguration`), SFTP from `LkvSftp`;
-  `scripts/om_setup_lkv.ps1` bootstraps the tenant
+  K1 gate]; AR/BE return path); the YAMLs carry no credentials or connection data —
+  WeClapp access comes from the tenant GlobalConfiguration entry `WeClappApi`
+  (`apiConfiguration`), SFTP from `LkvSftp`; still tenant-specific and marked in the
+  YAMLs: AI submandant + BE warehouseId; `scripts/om_setup_lkv.ps1` bootstraps the tenant
 - `tests/Lkv.WeClapp.Core.Tests/` - xUnit against real LKV golden fixtures
 - `tests/AdapterMeshWeClapp.Tests/` - node/pipeline tests + env-gated live smokes (gates below)
 - `docs/superpowers/` - design specs and implementation plans
@@ -60,24 +61,26 @@ subscribes a per-pipeline queue and calls `ExecuteAsync` directly) and
 loop: a redeploy or pod restart fires no execution. A fetch step
 (`WeClappFetchStep@1`/`DilosFileFetchStep@1`) runs first and seeds the data context at a fixed
 root path — always the array, even `[]` (a missing/non-array path aborts a downstream
-`ForEach@1` with `PathMustBeArray`); a per-item `ForEach@1` then fans the former per-execution
-chain out over that array, one iteration per element.
+`ForEach@1` with `PathMustBeArray`); in 4 of the 5 YAMLs a per-item `ForEach@1` then fans the
+former per-execution chain out over that array, one iteration per element
+(`weclapp-articles-to-as.yaml` has no `ForEach@1` — it runs one Batch execution per tick).
 
-**Canonical ForEach block** (use exactly this shape — deviating breaks the guard test below):
+**Canonical ForEach block** (use exactly this shape — the guard tests below pin
+`keyPath`/`targetPath`/`maxDegreeOfParallelism` against every shipped `ForEach@1`):
 ```yaml
   - type: ForEach@1
     iterationPath: $.orders          # or $.articles / $.files
     keyPath: $.current
-    mergePath: $.current             # aligned with keyPath — default $.key merges nothing (no
-                                      # child writes $.key; nulls are filtered, $.loopResult stays empty)
+    # no mergePath: the default ($.key) merges nothing into $.loopResult — and merging
+    # $.current would deep-clone every item's full content into the result array
     targetPath: $.loopResult         # NEVER omit: default "$" REPLACES the document root
     maxDegreeOfParallelism: 1        # NEVER omit: default 0 = Environment.ProcessorCount (parallel!)
     transformations:
       # former chain, item segment replaced: $.item → $.current.item etc.
 ```
-Merge-result order under `$.loopResult` is unspecified (`ConcurrentBag`) — **nothing may read
-`$.loopResult`**; every child writes through the data context instead (`ApplyChanges@1/@2`,
-`DilosSftpWrite@1`, `WeClappArWrite@1`, ...).
+Merge results keep source order since AB#4760, but the contract is unchanged: **nothing may
+read `$.loopResult`**; every child writes through the data context instead
+(`ApplyChanges@1/@2`, `DilosSftpWrite@1`, `WeClappArWrite@1`, ...).
 
 **Activation:** importing a `System.Communication/PipelineTrigger` RT entity schedules NOTHING
 by itself — schedules materialize only via `octo-cli -c DeployTriggers` (or tenant start). Run
