@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using FakeItEasy;
 using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Nodes;
 using Meshmakers.Octo.MeshAdapter.Nodes;
@@ -433,9 +434,65 @@ public class PipelineYamlContractTests
                 raw.Contains("WeClappArWrite@1", StringComparison.Ordinal) ||
                 raw.Contains("WeClappBeWrite@1", StringComparison.Ordinal))
             {
-                Assert.Contains("apiConfiguration: WeClappApi", raw, StringComparison.Ordinal);
+                // Line-anchored on purpose. A plain substring — and any unanchored regex —
+                // is also satisfied by a COMMENT mentioning the entry, which would green-light
+                // a yaml whose node carries no apiConfiguration at all. This tolerates
+                // indentation, extra whitespace, quoting and a trailing comment, but keeps the
+                // casing pinned and forces the value to END here, so a renamed entry
+                // ("WeClappApiOld") does not pass as a prefix match.
+                Assert.Matches(@"(?m)^\s*apiConfiguration\s*:\s*[""']?WeClappApi[""']?\s*(#.*)?$", raw);
             }
         }
+    }
+
+    // ---------- contract: a dry-run write node forbids deleting the source file ----------
+
+    // dryRun and deleteAfterSuccess are coupled by OPERATIONS, not by code: WeClappArWrite@1 /
+    // WeClappBeWrite@1 resolve their dry run as `config.DryRun || PipelineExecutionMode.IsDryRun`,
+    // while DilosFileConfirmNode only looks at PipelineExecutionMode - it never sees the write
+    // node's dryRun. A normal (non-dry-run) execution with dryRun: true and deleteAfterSuccess:
+    // true therefore writes nothing, reports success and still DELETES the remote file: the LKV
+    // copy is consumed although its content never reached WeClapp, and that copy is the only
+    // source. Until now the yaml comments were the sole guard against that combination. Raw text
+    // for the same reason as the apiConfiguration gate: the typed path needs an SDK feed
+    // >= r3.4.91 before the ar/be yamls deserialize again.
+    [Fact]
+    public void ArBeYamls_DryRunWriteNode_ForbidsDeleteAfterSuccess()
+    {
+        var violations = new List<string>();
+        var checkedYamls = 0;
+
+        foreach (var yaml in AllPipelineYamls)
+        {
+            var raw = File.ReadAllText(FindRepoFile(Path.Combine("pipelines", yaml)));
+            if (!raw.Contains("DilosFileConfirm@1", StringComparison.Ordinal))
+            {
+                continue; // no confirm node - this yaml deletes no source file (as/ck/ai)
+            }
+
+            checkedYamls++;
+
+            if (!Regex.IsMatch(raw, @"(?m)^\s*dryRun\s*:\s*true\s*(#.*)?$"))
+            {
+                continue; // go-live mode: deleting is intended, the parity test guards the rest
+            }
+
+            var deleting = Regex.Matches(raw, @"(?m)^\s*deleteAfterSuccess\s*:\s*(\S+)")
+                .Where(m => !m.Groups[1].Value.Equals("false", StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            if (deleting.Count > 0)
+            {
+                violations.Add(
+                    $"{yaml}: a write node runs with dryRun: true while {deleting.Count} " +
+                    "deleteAfterSuccess value(s) are not false - the write would be skipped and " +
+                    "DilosFileConfirm@1 (which never sees the write node's dryRun) would still " +
+                    "delete the LKV file");
+            }
+        }
+
+        Assert.Empty(violations);
+        Assert.Equal(2, checkedYamls); // ar + be - the return-path yamls must stay covered
     }
 
     // ---------- helpers ----------

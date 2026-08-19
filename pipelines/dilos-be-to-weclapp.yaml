@@ -8,8 +8,8 @@
 # DilosFileFetchStep@1 and DilosFileConfirm@1 MUST carry the SAME deleteAfterSuccess —
 # the step gates the keep-mode skip / pending-delete retry, the confirm node (LAST
 # child) performs the actual delete, only after a successful write; a mismatch leaves
-# files stuck. Keep both false while dryRun is on: a dry run writes nothing, deleting
-# would consume the LKV file with no effect.
+# files stuck. Keep both false while dryRun is on: DilosFileConfirm@1 never sees the
+# write node's dryRun — it would delete the LKV file although nothing was written.
 #
 # SFTP access comes from the tenant GlobalConfiguration entry "LkvSftp", WeClapp access
 # from "WeClappApi" (apiConfiguration below) — never from this YAML.
@@ -26,7 +26,7 @@ transformations:
     filePattern: BE*txt           # e.g. BE_20240205035403463.txt
     minFileAgeSeconds: 60
     deleteAfterSuccess: false     # MUST match DilosFileConfirm@1 below; flip to true
-                                  # TOGETHER with dryRun for go-live (see header)
+                                  # ONLY together with dryRun: false (go-live, see header)
 
   - type: ForEach@1
     description: Process one BE file per iteration
@@ -46,8 +46,9 @@ transformations:
         fileNamePath: $.current.fileName
         contentPath: $.current.content
         warehouseId: "4239"           # id from the former trial tenant — customer id TBD
-        dryRun: true                  # movements are logged, not booked; flip for go-live
-                                      # TOGETHER with both deleteAfterSuccess values
+        dryRun: true                  # movements are logged, not booked; set to false for
+                                      # go-live, together with deleteAfterSuccess: true on
+                                      # step and confirm
 
       - type: DilosFileConfirm@1
         description: Confirm the BE file — keep it on the server (dry-run) or delete it once dryRun is off
