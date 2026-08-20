@@ -127,9 +127,13 @@ be complete and is not invites re-pinning an invariant that already holds.
 - `Gesamtmenge` (AR K* field 12) includes the empty-ArticleNumber shipping pseudo-item.
 - BE field count is customer-specific (LKV spec/golden: 6; old Billbee variant: 7 with
   SKU) — parsers fail loud on mismatch by design.
-- B2C orders carry an EMPTY WeClapp `customer.company`. The AI recipient name must come from
-  `CkCustomer.Name` (which holds the `firstName lastName` fallback), never from `company` —
-  a path pointing at the company field renders an empty recipient. Reported live 2026-07-16.
+- B2C orders carry an EMPTY WeClapp `customer.company` (the person is in `firstName`/`lastName`).
+  TWO independent fallbacks share the shape "company, else `FirstName LastName`" but NOT the
+  source: `WeClappToCkNode` builds `CkCustomer.Name` from the CUSTOMER record — the orders→AI yaml
+  must write that value (`valuePath: $.ck.Customer.Name`), because a path aimed at the raw company
+  field leaves the CK name empty for B2C (live finding 2026-07-16). `DilosOrderWriter`
+  (`RecipientName1`/`RecipientName2`) builds the DILOS FILE name fields from the ADDRESS instead;
+  name2 ("Nachname Vorname") stays empty unless a company fills name1.
 
 ## AR/BE Return Path (SFTP → WeClapp)
 - `DilosFileFetchStep@1` lists the LKV SFTP (credentials via tenant GlobalConfiguration
