@@ -28,8 +28,9 @@ dotnet build Octo.WeClappAdapter.slnx -c DebugL
 - `src/charts/octo-weclapp-adapter/` - Helm chart (deployed by the Communication Operator;
   httpGet probes on `/healthz/live|ready`)
 - `pipelines/` - tenant pipeline YAMLs (orders→AI per order; articles split into per-item
-  CK sync + batched AS delivery [`emitMode: Batch`, at most one file per Vienna calendar day —
-  K1 gate]; AR/BE return path); the YAMLs carry no credentials — WeClapp access comes
+  CK sync + batched AS delivery [`emitMode: Batch`, at most one file per Vienna calendar day,
+  gated on the per-day CK marker `Industry.Logistics/ExportRun` — K1 gate]; AR/BE return path);
+  the YAMLs carry no credentials — WeClapp access comes
   from the tenant GlobalConfiguration entry `WeClappApi` (`apiConfiguration`), SFTP from
   `LkvSftp`; still tenant-specific and marked REPLACE/TBD in the YAMLs: AI submandant,
   BE warehouseId, AR/BE `remoteDirectory`; `scripts/om_setup_lkv.ps1` bootstraps the tenant and
@@ -41,9 +42,6 @@ dotnet build Octo.WeClappAdapter.slnx -c DebugL
 
 ## Key Patterns
 - Mesh adapter: `WebAdapterBuilder` (passive/Socket), SDK `Microsoft.NET.Sdk`
-- `IAdapterService` for startup/shutdown lifecycle (pipeline registration + event hub)
-- Pipeline nodes implement `IPipelineNode`, trigger nodes `ITriggerPipelineNode`;
-  configuration via `[NodeName]` and `[NodeConfiguration]` attributes
 - Custom nodes live in THIS repo (official adapter guideline), not in octo-mesh-adapter
 - Primary constructors with DI (C# 12+)
 - Observability is mandatory: `builder.AddObservability().AddSystemContextHealthCheck()` +
@@ -52,10 +50,6 @@ dotnet build Octo.WeClappAdapter.slnx -c DebugL
 - Node logs are message templates with args (`nodeContext.Info("... {0}", x)`) — NEVER
   interpolated strings: `INodeContext` forwards to structured logging, so a literal `{...}`
   (JSON body, URL) corrupts the template
-- Redeploy determinism (P2 — superseded by "Pipeline Trigger Architecture" below): no pipeline
-  has `runOnStart`/`pollingIntervalSeconds` anymore; nothing fires on (re)deploy or pod restart
-  by construction. AS still gates delivery on a per-day CK marker
-  (`Industry.Logistics/ExportRun`, at most one file per Vienna calendar day)
 
 ## Pipeline Trigger Architecture
 All 5 pipeline YAMLs carry two passive triggers — `FromPipelineTriggerEvent@1` (cron,
