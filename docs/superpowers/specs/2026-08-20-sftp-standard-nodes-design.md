@@ -1,0 +1,264 @@
+# SFTP standard nodes: SftpList@1 and SftpDownload@1
+
+**Date:** 2026-08-20 · **Branch:** `c2-sftp-standard-nodes` (base `e159e26`) · **Work item:** AB#4846 stage 2, absorbing AB#4842 · **Repos:** `octo-mesh-adapter` (new product nodes) and `octo-adapter-weclapp` (consumer)
+
+## Problem
+
+The AR/BE return path reads DILOS files from the LKV SFTP server through adapter-owned code:
+`DilosFileFetchStepNode` lists a remote directory, filters by glob and file age, downloads the
+content and seeds `$.files`; `DilosFileConfirmNode` keeps or deletes each file once the
+downstream write succeeded. Everything below the node surface - session handling, globbing,
+text decoding - lives in `SftpFileSystem` / `SshNetSftpFileSystem` inside the adapter.
+
+Three consequences:
+
+1. **The SFTP mechanics are not reusable.** The product already ships `SftpUpload@1` for the
+   write direction; the read direction exists only in this adapter, so the next integration
+   would copy it.
+2. **The keep/delete mode is configured twice.** `deleteAfterSuccess` sits on the fetch node
+   *and* on the confirm node, and the two must match, or files are reprocessed forever
+   (flipped to `true` on the confirm side alone) or deleted although nothing was written
+   (flipped on the fetch side alone). Today a YAML comment, a contract test and a review habit
+   hold that together. Both values live in tenant-side pipeline definitions and are editable
+   in the Studio, so a half flip is one click away. That is AB#4842.
+3. **No host key verification exists in either direction.** `SftpUploadNode.CreateSftpClient`
+   never handles `HostKeyReceived`, so SSH.NET accepts whatever key the server presents. The
+   go-live acceptance for G11 currently records this as accepted risk.
+
+## Goal
+
+The product owns the SFTP *mechanics*; the adapter owns the DILOS *policy*.
+
+```yaml
+# before                                # after
+- type: DilosFileFetchStep@1            - type: SftpList@1
+  serverConfiguration: LkvSftp            serverConfiguration: LkvSftp
+  remoteDirectory: "/"                    remoteDirectory: "/"
+  filePattern: AR*TXT                     filePattern: AR*TXT
+  minFileAgeSeconds: 60                   minFileAgeSeconds: 60
+  deleteAfterSuccess: false               targetPath: $.files
+
+                                        - type: DilosFileGate@1
+                                          deleteAfterSuccess: false
+
+- type: ForEach@1                       - type: ForEach@1
+  iterationPath: $.files                  iterationPath: $.files
+  keyPath: $.current                      keyPath: $.current
+  transformations:                        transformations:
+                                            - type: SftpDownload@1
+                                              serverConfiguration: LkvSftp
+                                              remotePathPath: $.current.fullPath
+                                              encoding: iso-8859-1
+                                              targetPath: $.fileContent
+
+    - type: WeClappArWrite@1                - type: WeClappArWrite@1
+      contentPath: $.current.content          contentPath: $.fileContent
+
+    - type: DilosFileConfirm@1              - type: DilosFileConfirm@1
+      serverConfiguration: LkvSftp            path: $.current
+      deleteAfterSuccess: false
+      path: $.current
+```
+
+`deleteAfterSuccess` exists exactly once after this change, on `DilosFileGate@1`. The confirm
+node reads the mode and the server identity from the file element it is handed, so a mismatch
+is no longer expressible - the acceptance criterion of AB#4842.
+
+## Design
+
+### Product: `SftpList@1` (extract)
+
+Lists one remote directory and emits metadata only - no content.
+
+| Property | Meaning |
+|---|---|
+| `serverConfiguration` | Name of the GlobalConfiguration entry holding the connection settings |
+| `remoteDirectory` | Directory to list |
+| `filePattern` | Glob: `*` any run, `?` one character, anchored, case-insensitive |
+| `minFileAgeSeconds` | Entries whose last write is younger are omitted (partial-file guard) |
+| `targetPath` | Where the array is written |
+
+Each element carries `name`, `fullPath`, `length`, `lastWriteTimeUtc` and a nested `source`
+object with `serverConfiguration`, `remoteDirectory` and `filePattern`. The source stamp is not
+decoration: it lets a consumer derive a stable per-listing scope without re-declaring the same
+three values in its own configuration, which would reintroduce exactly the mismatch class this
+change removes.
+
+Directory entries are filtered out, the result is ordered by name using ordinal comparison, and
+an empty listing still writes an empty array. The last point is load-bearing: a downstream
+`ForEach@1` aborts with `PathMustBeArray` when its `iterationPath` is missing or not an array.
+
+Glob semantics and ordering are lifted unchanged from `DilosFileFetchCore.GlobMatch` and
+`ListMatchingFiles`, so file matching does not shift under the migration.
+
+### Product: `SftpDownload@1` (extract)
+
+Downloads exactly one file - the mirror image of `SftpUpload@1`, which uploads exactly one.
+
+| Property | Meaning |
+|---|---|
+| `serverConfiguration` | As above |
+| `remotePath` / `remotePathPath` | Static path, or data-context path resolving to one |
+| `encoding` | Text encoding, default `utf-8`; validated when the configuration is bound |
+| `onEncodingError` | `Replace` (default) or `Fail`, the same enum as the upload node |
+| `targetPath` | Where the decoded content is written |
+
+The encoding option is not symmetry for its own sake. `SshNetSftpFileSystem.DownloadText`
+(`SshNetSftpFileSystem.cs:59-66`) decodes with `DilosFile.Encoding`, i.e. ISO-8859-1. Without an
+explicit `encoding: iso-8859-1` in the AR/BE pipelines the migration would silently change how a
+Latin-1 umlaut byte is read.
+
+### Product: shared connection layer
+
+`SftpServerConfiguration`, `CreateSftpClient` and the per-server semaphore are private members of
+`SftpUploadNode` today. They move into an internal connection component that all three nodes use;
+`SftpUpload@1` is refactored onto it in the same PR, and its existing tests are the regression
+guard for that refactor.
+
+This is also what makes one pinning implementation cover both directions.
+
+### Product: host key pinning
+
+The connection settings gain an optional `hostKeyFingerprint`. It belongs to the server entry,
+not to the node configuration: the fingerprint identifies the *server*, one entry serves every
+pipeline that talks to it, a key rotation touches one place, and no fingerprint ends up in
+tenant YAML that is edited in the Studio.
+
+Semantics:
+
+- absent - connect as today, no verification; the compatibility path, so nothing breaks on rollout
+- set - compare against `HostKeyEventArgs.FingerPrintSHA256` in the `HostKeyReceived` handler; on
+  mismatch set `CanTrust = false` and fail with an error naming both the expected and the
+  presented fingerprint
+
+SSH.NET 2026.0.0 documents `FingerPrintSHA256` as "the same format as the ssh command, i.e.
+non-padded base64, but without the `SHA256:` prefix", so the configured value is what
+`ssh-keygen -lf` prints, minus that prefix.
+
+### Adapter: `DilosFileGate@1`
+
+`DilosFileFetchStep@1` loses its SFTP half and is renamed to what remains: the state gate between
+listing and processing. It reads `$.files`, and for each element
+
+- skips it in keep mode when the key is already marked kept on the server,
+- retries a delete that `DilosFileConfirm@1` recorded as pending in an earlier tick, without
+  emitting or re-processing the file,
+- otherwise stamps `deleteAfterSuccess` and the server configuration name into the element and
+  lets it through.
+
+Scope key and file key keep their current format (`DilosFileFetchCore.ScopePrefix` and `FileKey`),
+but the three scope components now come from the element's `source` stamp rather than from the
+node's own configuration. Cross-tick memory stays in the `DilosFileFetchState` singleton,
+unchanged, including its documented restart behaviour.
+
+Its only configuration property is `deleteAfterSuccess`.
+
+### Adapter: `DilosFileConfirm@1`
+
+Loses `serverConfiguration` and `deleteAfterSuccess`; both are read from the element the gate
+stamped. A missing stamp is an error, never a default - assuming either mode silently is exactly
+the failure this change exists to prevent.
+
+The YAML comments that today warn about keeping the two values in sync, and the contract test
+that asserts it, are removed with them.
+
+### Why the download moved into the loop
+
+`ForEachNode` creates a dedicated child data context per iteration (`ForEachNode.cs:237-262`),
+seeds the item at `keyPath` and runs the children as a sequence inside it. A download node placed
+there writes into that iteration context: visible to the later children of the same iteration,
+isolated from the other iterations. Verified by reading the node, not assumed.
+
+Keeping the download outside - listing and downloading in one node, filtering afterwards - would
+download every already-processed file on every tick for as long as keep mode is active. Whether
+keep mode ends at go-live is an open question with LKV (G13), so the design must not depend on it.
+
+## Error handling
+
+| Situation | Behaviour |
+|---|---|
+| `serverConfiguration` entry missing or half configured | Fail before connecting, naming the entry |
+| `filePattern` empty | Fail with an explicit message; the YAML deserializer does not enforce `required` |
+| Host key mismatch | Refuse the connection, naming expected and presented fingerprint |
+| Listing fails | Node fails, the run fails - no partial silent listing |
+| Download of one file fails | That `ForEach` iteration fails; `continueOnError: true` isolates it, the remaining files run, the run reports the failure at the end |
+| Unencodable content with `onEncodingError: Fail` | Fail before writing to the target path |
+| Confirm receives an element without a stamp | Fail; never assume a mode |
+
+The per-file behaviour changes deliberately. Today `DilosFileFetchStepNode` catches per entry,
+logs and continues, so a broken file leaves a green run. After the split a failed file is a failed
+iteration: isolated, but visible in the run status - which is also what the planned AR error alert
+needs to fire on.
+
+## Dry run
+
+Reads run in dry-run, because the downstream chain must see data; state writes and remote deletes
+do not. That is the contract the current nodes already implement, carried over unchanged.
+
+## Tests
+
+Written test-first, following the AB#4785 pattern.
+
+**Product.** Glob semantics (anchored, case-insensitive, `*`, `?`); directory entries excluded;
+ordinal ordering; `minFileAgeSeconds` boundary; empty listing writes an empty array; source stamp
+present on every element. Download: ISO-8859-1 round trip with a real Latin-1 umlaut byte, UTF-8
+default unchanged, `onEncodingError` in both settings, static and path-resolved remote path,
+missing remote file. Connection layer: matching fingerprint connects, mismatching one is refused
+with both fingerprints in the message, absent one connects; semaphore honoured per server entry.
+Existing `SftpUploadNodeTests` stay green.
+
+**Adapter.** Keep-skip only in keep mode, delete-retry only in delete mode, scope isolation
+between the AR and BE pipelines sharing one state singleton, pruning, stamp written; confirm
+refuses an unstamped element. Plus one end-to-end test that pushes a golden-sample AR file through
+the new path and compares the decoded content against today's - the C2 counterpart of the
+byte-level verification C1 does for the upload direction.
+
+Contract tests for the rewritten pipeline YAMLs cover node names, `continueOnError`,
+`maxDegreeOfParallelism: 1`, `targetPath`, and the explicit `encoding: iso-8859-1`. Once PR #15 is
+merged, every new fact must also be listed by name in `CLAUDE.md`, or the documentation guard test
+fails the suite.
+
+## Rollout
+
+1. Product PR in `octo-mesh-adapter`: both nodes, connection layer, pinning, `SftpUpload@1`
+   refactored onto the layer.
+2. Release, then chart bump on staging.
+3. Adapter PR in `octo-adapter-weclapp`: gate node, confirm node, AR/BE YAML, contract tests,
+   `CLAUDE.md`. It can be written in parallel but goes green only once the product release is on
+   nuget.org - the local `../nuget/` feed lags and would not know the new node types.
+4. Staging verification: AR and BE ticks in rhythm, one real file through the new path, keep
+   behaviour (the file stays and is not written again on the following tick), delete path
+   exercised dry.
+
+Between the image deploy and the tenant YAML re-import the stored definition still carries the
+removed confirm properties, which the strict deserializer rejects, so the AR/BE pipelines do not
+register during that window. At a 15-minute cadence that is at most one missed tick, and the
+runbook sequences deploy and re-import back to back. prod-2 imports the new YAML from the start,
+so the window does not exist there.
+
+After the staging verification `DilosFileFetchStep@1` is unreferenced and its code is removed with
+the following train, per the cleanup rule.
+
+## Deliberate non-goals
+
+- **Dropping the delete retry.** Removing it would let the gate work without any SFTP access: a
+  file whose delete failed would simply come round again on the next tick. It requires proof that
+  the BE write-back tolerates a repeat run, and that proof does not exist. Candidate for later.
+- **Moving the consume lifecycle into the product.** A product-side concept of a consumed file
+  with process-local state, or a product delete node, would put pipeline policy into the product.
+  The boundary stays: product does mechanics, adapter does policy.
+- **A processed subdirectory as a third mode.** The classic SFTP consumer pattern, and it would
+  survive a pod restart where the in-memory state does not - but it writes into the partner's
+  directory and needs their agreement. Out of scope here.
+
+## Known limitation carried over
+
+The keep-mode memory is process-local. A pod restart re-emits every file still on the server,
+which the downstream write absorbs through its replay skip. Should keep mode become the permanent
+production mode, this deserves a durable marker - see the processed-subdirectory note above.
+
+## Follow-ups outside this repo
+
+- The plan line "fingerprint into the as/ai YAML after rollout" becomes "into the `LkvSftp`
+  GlobalConfiguration entry".
+- AB#4846 stage 2 names one new node today; it becomes two, `SftpList@1` and `SftpDownload@1`.
