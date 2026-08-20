@@ -398,4 +398,9 @@ FodyWeavers.xsd
 
 # JetBrains Rider
 *.sln.iml
+.idea/
 nugetca.crt
+
+# Local git worktrees created INSIDE the repo. Without this, `git add .` records a
+# gitlink to an embedded repository: clones then get an empty, broken directory.
+worktrees/
