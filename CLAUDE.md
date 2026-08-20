@@ -32,7 +32,9 @@ dotnet build Octo.WeClappAdapter.slnx -c DebugL
   K1 gate]; AR/BE return path); the YAMLs carry no credentials — WeClapp access comes
   from the tenant GlobalConfiguration entry `WeClappApi` (`apiConfiguration`), SFTP from
   `LkvSftp`; still tenant-specific and marked REPLACE/TBD in the YAMLs: AI submandant,
-  BE warehouseId, AR/BE `remoteDirectory`; `scripts/om_setup_lkv.ps1` bootstraps the tenant
+  BE warehouseId, AR/BE `remoteDirectory`; `scripts/om_setup_lkv.ps1` bootstraps the tenant and
+  `scripts/_general/rt-adapter-weclapp.yaml` carries the `System.Communication/Adapter` RT entity
+  (well-known name `WeClappAdapter`) — the `PipelineTrigger` entities live outside this repo
 - `tests/Lkv.WeClapp.Core.Tests/` - xUnit against real LKV golden fixtures
 - `tests/AdapterMeshWeClapp.Tests/` - node/pipeline tests + env-gated live smokes (gates below)
 - `docs/superpowers/` - design specs and implementation plans
@@ -99,7 +101,14 @@ asserts every `ForEach@1` has a non-null, non-`"$"` `targetPath` and
 `maxDegreeOfParallelism == 1`; `AllPipelineYamls_EveryForEach_KeyPathIsCurrent` pins every
 `ForEach@1`'s `keyPath` to `$.current`; `AllPipelineYamls_DilosFileFetchStepAndConfirm_DeleteAfterSuccessMatches`
 asserts `DilosFileFetchStep@1`/`DilosFileConfirm@1` carry the same `deleteAfterSuccess` AND
-`serverConfiguration` in every ar/be yaml.
+`serverConfiguration` in every ar/be yaml;
+`ArBeYamls_DilosFileConfirm_IsTheLastPerFileForEachChild` pins the confirm node as the LAST
+per-file `ForEach@1` child; `ArBeYamls_DryRunWriteNode_ForbidsDeleteAfterSuccess` forbids
+`deleteAfterSuccess: true` while the write node runs `dryRun: true`;
+`AllPipelineYamls_UseApiConfigurationOnly_NoInlineCredentialsOrPlaceholders` keeps WeClapp access
+on `apiConfiguration` (no inline `apiKey`/`baseUrl`, no substitution placeholder);
+`AllPipelineYamls_EveryAttributeUpdate_DeclaresValueType` requires every `ApplyChanges` attribute
+update to declare its `valueType`.
 
 ## Domain Gotchas (golden-file verified — do not "fix" without evidence)
 - DILOS AR/BE use **comma** decimals; AI/AS use dot. Both verified against real files.
@@ -155,7 +164,7 @@ asserts `DilosFileFetchStep@1`/`DilosFileConfirm@1` carry the same `deleteAfterS
   `Debug.Assert` compile away there — the repo currently uses none.
 - English code + XML docs; DILOS original field names + 1-based field index in XML docs
 - Commit messages: Conventional Commits scoped to the work item —
-  `<type>(AB#4228): <meaningful description>` (types used on this branch: `feat`, `fix`, `test`,
+  `<type>(AB#4228): <meaningful description>` (types used in this repo: `feat`, `fix`, `test`,
   `docs`, `style`, `refactor`)
 
 ## Pre-Commit Checklist (ALL steps MUST pass)
