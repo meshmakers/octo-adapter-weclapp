@@ -110,8 +110,8 @@ NESTED), so a path that silently resolves to null cannot ship;
 
 This list is machine-checked: `DocumentationContractTests.ClaudeMd_NamesEveryPipelineContractTest`
 fails the suite if a `PipelineYamlContractTests` guard is not named here. It drifted once (AB#4845
-added two guards without documenting them, leaving 5 of 12 listed) — an inventory that claims to
-be complete and is not invites re-pinning an invariant that already holds.
+added two guards without documenting them, leaving 5 of 12 listed) — an inventory that falsely
+claims completeness invites re-pinning an invariant that already holds.
 
 ## Domain Gotchas (golden-file verified — do not "fix" without evidence)
 - DILOS AR/BE use **comma** decimals; AI/AS use dot. Both verified against real files.
