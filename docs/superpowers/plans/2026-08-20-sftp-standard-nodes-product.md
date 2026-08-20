@@ -31,7 +31,7 @@
 
 ## File Structure
 
-**New, shared SFTP layer** (`src/MeshAdapter.Sdk/Nodes/Sftp/`, namespace `Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Sftp`):
+**New, shared SFTP layer** (`src/MeshAdapter.Sdk/Nodes/Sftp/`, namespace `Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Sftp`). A subfolder under `Nodes/` rather than the four category folders, because the layer is shared between an extract and a load node; `Nodes/Transform/ExcelImport/` is the existing precedent for grouping cohesive helpers this way:
 
 - `SftpServerSettings.cs` - the tenant GlobalConfiguration entry shape, including the new `HostKeyFingerprint`
 - `SftpServerSettingsResolver.cs` - resolves and validates that entry, one place for all three nodes
@@ -1690,7 +1690,31 @@ Add an `#### SftpListNode` and an `#### SftpDownloadNode` section with the same 
 
 Also document `hostKeyFingerprint` in the `SftpUploadNode` section: optional, SHA-256 non-padded base64 as printed by `ssh-keygen -lf`, absent means any host key is accepted as before.
 
-- [ ] **Step 3: Run the whole suite in both configurations**
+- [ ] **Step 3: Verify the generated pipeline schema**
+
+The adapter generates `pipeline-schema.json` after every build (`src/MeshAdapter/MeshAdapter.csproj:46-48`, target `GeneratePipelineSchema`), and that file is what a pipeline author validates against. It is the objective proof that both nodes are registered with the intended surface, independent of any test.
+
+```bash
+dotnet build Octo.MeshAdapter.sln
+python -c "
+import json, io
+s = json.load(io.open('bin/Debug/net10.0/pipeline-schema.json', encoding='utf-8'))
+for v in s['\$defs']['TransformationNode']['oneOf']:
+    t = v.get('properties', {}).get('type', {}).get('const')
+    if t in ('SftpList@1', 'SftpDownload@1'):
+        print(t, 'required:', v.get('required'))
+        print('  props:', sorted(v.get('properties', {}).keys()))
+"
+```
+
+Expected, derived from how the existing nodes appear in the current schema:
+
+- `SftpList@1` required `['serverConfiguration', 'remoteDirectory', 'filePattern', 'type']`, properties additionally `minFileAgeSeconds`, `description`, and the four a `TargetPathNodeConfiguration` contributes: `targetPath`, `documentMode`, `targetValueKind`, `targetValueWriteMode`.
+- `SftpDownload@1` required `['serverConfiguration', 'type']`, properties additionally `remotePath`, `remotePathPath`, `encoding`, `onEncodingError`, `description`, plus the same four.
+
+Both extract nodes appear under `TransformationNode`, not under a separate extract section; `SftpUpload@1` sits there too. A node missing from the schema was never registered, whatever the tests say.
+
+- [ ] **Step 4: Run the whole suite in both configurations**
 
 ```bash
 dotnet format --verify-no-changes
@@ -1700,14 +1724,14 @@ dotnet test Octo.MeshAdapter.sln -c Release
 
 Expected: no formatting differences, every test green in both configurations, zero warnings. Do not use `-c DebugL`; it resolves Octo packages from the stale local feed.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add CLAUDE.md docs/developer-guide.md
 git commit -m "AB#4846: document the SFTP list and download nodes"
 ```
 
-- [ ] **Step 5: Review gate before the PR**
+- [ ] **Step 6: Review gate before the PR**
 
 An independent review pass over the whole diff, by a different model or session than the one that wrote it, per the project's pre-PR rule. Only then open the PR, with a body in English, plain hyphens only, and no test-status boilerplate.
 
