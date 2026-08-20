@@ -8,11 +8,12 @@ the core lib). Template: `octo-adapter-demos` (Mesh adapter / Socket).
 
 ## Build Commands
 ```bash
-# Local development build (uses local NuGet packages from ../nuget/)
-dotnet build Octo.WeClappAdapter.slnx -c DebugL
+# Build & test against the published SDK (nuget.org, 3.4.* - the line the deployed image carries)
+dotnet build Octo.WeClappAdapter.slnx -c Debug
+dotnet test Octo.WeClappAdapter.slnx -c Debug
 
-# Run tests
-dotnet test Octo.WeClappAdapter.slnx -c DebugL
+# Only while co-developing unreleased SDK changes: 999.0.0 from the hand-maintained ../nuget/
+dotnet build Octo.WeClappAdapter.slnx -c DebugL
 ```
 
 ## Project Structure
@@ -144,7 +145,14 @@ asserts `DilosFileFetchStep@1`/`DilosFileConfirm@1` carry the same `deleteAfterS
 
 ## Conventions
 - `TreatWarningsAsErrors`, nullable enabled, `LangVersion latestmajor` (Directory.Build.props)
-- Configurations: `Debug`, `Release`, `DebugL` (local NuGet at `../nuget/`, version `999.0.0`)
+- Configurations: `Debug`/`Release` restore the published SDK from nuget.org (`3.4.*`); `DebugL`
+  restores `999.0.0` from the hand-maintained `../nuget/` folder. That folder is filled by hand
+  and CAN lag behind: a `PipelineSerializationException` like `Property 'continueOnError' not
+  found on ForEachNodeConfiguration` means the feed is older than the SDK feature the pipelines
+  use — not a code defect. Refresh order on a feed break: `octo-sdk` → `octo-communication-sdk`
+  → consumer. `DebugL` also defines `DEBUGL`, NOT `DEBUG` (MSBuild derives the constant from the
+  configuration name), so `#if DEBUG` blocks and `[Conditional("DEBUG")]` calls such as
+  `Debug.Assert` compile away there — the repo currently uses none.
 - English code + XML docs; DILOS original field names + 1-based field index in XML docs
 - Commit messages: Conventional Commits scoped to the work item —
   `<type>(AB#4228): <meaningful description>` (types used on this branch: `feat`, `fix`, `test`,
@@ -152,5 +160,8 @@ asserts `DilosFileFetchStep@1`/`DilosFileConfirm@1` carry the same `deleteAfterS
 
 ## Pre-Commit Checklist (ALL steps MUST pass)
 1. `dotnet format Octo.WeClappAdapter.slnx --verify-no-changes`
-2. `dotnet build Octo.WeClappAdapter.slnx -c DebugL`
-3. `dotnet test Octo.WeClappAdapter.slnx -c DebugL`
+2. `dotnet build Octo.WeClappAdapter.slnx -c Debug`
+3. `dotnet test Octo.WeClappAdapter.slnx -c Debug`
+
+`Debug` is the gate: it tests against the SDK the deployed image actually carries. Add
+`-c DebugL` on top only while co-developing unreleased SDK changes.
