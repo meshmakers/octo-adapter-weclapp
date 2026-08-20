@@ -72,7 +72,7 @@ Pulls the settings record and its two validations out of `SftpUploadNode`, so th
 - Consumes: `IMeshEtlContext.GlobalConfiguration`, `MeshAdapterPipelineExecutionException.GlobalConfigurationParameterNotFound(INodeContext, string, string)`, `MeshAdapterPipelineExecutionException.SftpAuthNotConfigured(INodeContext)`
 - Produces: `public sealed record SftpServerSettings`; `public static SftpServerSettings SftpServerSettingsResolver.Resolve(IMeshEtlContext etlContext, string serverConfigurationName, INodeContext nodeContext)`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```csharp
 using FakeItEasy;
@@ -146,12 +146,12 @@ public class SftpServerSettingsResolverTests : NodeTestBase
 }
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `dotnet test Octo.MeshAdapter.sln --filter FullyQualifiedName~SftpServerSettingsResolverTests`
 Expected: build error, `SftpServerSettings` and `SftpServerSettingsResolver` do not exist.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 `src/MeshAdapter.Sdk/Nodes/SftpServerSettings.cs`:
 
@@ -231,12 +231,12 @@ public static class SftpServerSettingsResolver
 }
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `dotnet test Octo.MeshAdapter.sln --filter FullyQualifiedName~SftpServerSettingsResolverTests`
 Expected: 3 passed. If the auth assertion fails on wording, read the message that `SftpAuthNotConfigured` actually produces and assert on a substring of it rather than changing the exception.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/MeshAdapter.Sdk/Nodes/Sftp tests/MeshAdapter.Sdk.Tests/Nodes/Sftp
@@ -256,7 +256,7 @@ The decision whether a presented key is trusted is pure logic, so it is tested h
 **Interfaces:**
 - Produces: `public static bool SftpHostKeyVerifier.IsTrusted(string? expectedFingerprint, string presentedFingerprintSha256)`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```csharp
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
@@ -314,12 +314,12 @@ public class SftpHostKeyVerifierTests
 }
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `dotnet test Octo.MeshAdapter.sln --filter FullyQualifiedName~SftpHostKeyVerifierTests`
 Expected: build error, `SftpHostKeyVerifier` does not exist.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```csharp
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
@@ -362,12 +362,12 @@ public static class SftpHostKeyVerifier
 }
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `dotnet test Octo.MeshAdapter.sln --filter FullyQualifiedName~SftpHostKeyVerifierTests`
 Expected: 9 passed.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/MeshAdapter.Sdk/Nodes/SftpHostKeyVerifier.cs tests/MeshAdapter.Sdk.Tests/Nodes/SftpHostKeyVerifierTests.cs
@@ -397,7 +397,7 @@ git commit -m "AB#4846: verify SFTP host keys against a configured fingerprint"
 
 **Note on the concurrency limit.** `SftpUploadNode` keeps its semaphores in `IMeshEtlContext.Properties` today. They move into the factory, which is a singleton, so `MaxConcurrentConnections` now bounds the whole process per server configuration name instead of one ETL context. That is what the setting means against a partner server, and it is a deliberate change.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```csharp
 using Meshmakers.Octo.Sdk.MeshAdapter;
@@ -427,12 +427,12 @@ public class SshNetSftpSessionFactoryTests
 
 Everything past the configuration guard needs a live server, so it is covered by the upload regression suite in Task 4 and by the staging verification, not here. Say so in the test file header rather than writing tests that fake SSH.NET itself.
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `dotnet test Octo.MeshAdapter.sln --filter FullyQualifiedName~SshNetSftpSessionFactoryTests`
 Expected: build error, the factory does not exist.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 `SftpEntry.cs`:
 
@@ -635,7 +635,7 @@ public sealed class SshNetSftpSessionFactory : ISftpSessionFactory
 }
 ```
 
-- [ ] **Step 4: Add the new exception factory**
+- [x] **Step 4: Add the new exception factory**
 
 In `src/MeshAdapter.Sdk/MeshAdapterPipelineExecutionException.cs`, next to `SftpAuthNotConfigured` (line 192):
 
@@ -650,7 +650,7 @@ In `src/MeshAdapter.Sdk/MeshAdapterPipelineExecutionException.cs`, next to `Sftp
 
 Match the constructor and style the neighbouring factories use; `InvalidMaxConcurrentConnections` already exists and is reused unchanged.
 
-- [ ] **Step 5: Register the factory**
+- [x] **Step 5: Register the factory**
 
 In `src/MeshAdapter.Sdk/Configuration/DependencyInjection/ServiceCollectionExtensions.cs`, beside the other singletons around line 114:
 
@@ -658,12 +658,12 @@ In `src/MeshAdapter.Sdk/Configuration/DependencyInjection/ServiceCollectionExten
         services.AddSingleton<ISftpSessionFactory, SshNetSftpSessionFactory>();
 ```
 
-- [ ] **Step 6: Run the tests**
+- [x] **Step 6: Run the tests**
 
 Run: `dotnet test Octo.MeshAdapter.sln --filter FullyQualifiedName~SshNetSftpSessionFactoryTests`
 Expected: 1 passed.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src/MeshAdapter.Sdk tests/MeshAdapter.Sdk.Tests/Nodes/Sftp
@@ -684,7 +684,7 @@ Doing this before the new nodes means the seam is proven against the existing 47
 - Consumes: `ISftpSessionFactory.ConnectAsync`, `SftpServerSettingsResolver.Resolve`
 - Produces: `public class SftpUploadNode(NodeDelegate next, IMeshEtlContext etlContext, ISftpSessionFactory sessionFactory)`
 
-- [ ] **Step 1: Point the existing tests at the new constructor**
+- [x] **Step 1: Point the existing tests at the new constructor**
 
 One place changes, the `CreateNode` helper:
 
@@ -702,7 +702,7 @@ One place changes, the `CreateNode` helper:
     }
 ```
 
-- [ ] **Step 2: Write the new test the seam makes possible**
+- [x] **Step 2: Write the new test the seam makes possible**
 
 ```csharp
     [Fact]
@@ -742,12 +742,12 @@ One place changes, the `CreateNode` helper:
     }
 ```
 
-- [ ] **Step 3: Run the suite to verify the new test fails and the old ones do not compile**
+- [x] **Step 3: Run the suite to verify the new test fails and the old ones do not compile**
 
 Run: `dotnet test Octo.MeshAdapter.sln --filter FullyQualifiedName~SftpUploadNodeTests`
 Expected: build error on the three-argument constructor.
 
-- [ ] **Step 4: Refactor the node**
+- [x] **Step 4: Refactor the node**
 
 In `SftpUploadNode.cs`: delete the private `SftpServerConfiguration` record, `GetOrCreateSemaphore`, `SftpSemaphoresKey`, `SemaphoresLock`, `CreateSftpClient`, `EnsureRemoteDirectoryExists` and `ValidateAuthConfiguration`. Replace the connect-and-upload block with:
 
@@ -776,12 +776,12 @@ In `SftpUploadNode.cs`: delete the private `SftpServerConfiguration` record, `Ge
 
 Keep `ValidateConfiguration`, `ResolveFileName`, `SanitizeFileName`, `GetUploadStreamAsync`, the dry-run intent and the `catch` chain ending in `CannotUploadViaSftp` exactly as they are. The settings resolution stays inside the node, so the existing tests for a missing entry and for missing authentication keep asserting against the node they always asserted against.
 
-- [ ] **Step 5: Run the full upload suite**
+- [x] **Step 5: Run the full upload suite**
 
 Run: `dotnet test Octo.MeshAdapter.sln --filter FullyQualifiedName~SftpUploadNodeTests`
 Expected: every previously passing test still passes, plus the new one.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/MeshAdapter.Sdk/Nodes/Load/SftpUploadNode.cs tests/MeshAdapter.Sdk.Tests/Nodes/Load/SftpUploadNodeTests.cs
@@ -799,7 +799,7 @@ git commit -m "AB#4846: move SftpUpload onto the shared session seam"
 **Interfaces:**
 - Produces: `internal static bool SftpFileNameGlob.Matches(string fileName, string pattern)`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```csharp
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
@@ -828,12 +828,12 @@ public class SftpFileNameGlobTests
 
 The last two pin that a dot in the pattern is a literal dot, not a regex wildcard.
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `dotnet test Octo.MeshAdapter.sln --filter FullyQualifiedName~SftpFileNameGlobTests`
 Expected: build error, the class does not exist.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```csharp
 using System.Text.RegularExpressions;
@@ -855,12 +855,12 @@ internal static class SftpFileNameGlob
 }
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Run: `dotnet test Octo.MeshAdapter.sln --filter FullyQualifiedName~SftpFileNameGlobTests`
 Expected: 10 passed.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/MeshAdapter.Sdk/Nodes/Extract/SftpFileNameGlob.cs tests/MeshAdapter.Sdk.Tests/Nodes/Extract/SftpFileNameGlobTests.cs
@@ -882,7 +882,7 @@ git commit -m "AB#4846: add glob matching for remote file listings"
 - Consumes: `ISftpSessionFactory`, `SftpServerSettingsResolver`, `SftpFileNameGlob.Matches`, `SftpEntry`
 - Produces: `SftpListNodeConfiguration` with `ServerConfiguration`, `RemoteDirectory`, `FilePattern`, `MinFileAgeSeconds`, inherited `TargetPath`; `SftpListNode`; element shape `{ name, fullPath, length, lastWriteTimeUtc, source { serverConfiguration, remoteDirectory, filePattern } }`; `MeshAdapterPipelineExecutionException.FilePatternNotConfigured(INodeContext)`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```csharp
 using System.Globalization;
@@ -1043,12 +1043,12 @@ public class SftpListNodeTests : NodeTestBase
 }
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `dotnet test Octo.MeshAdapter.sln --filter FullyQualifiedName~SftpListNodeTests`
 Expected: build error, configuration and node do not exist.
 
-- [ ] **Step 3: Write the configuration**
+- [x] **Step 3: Write the configuration**
 
 ```csharp
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
@@ -1086,7 +1086,7 @@ public record SftpListNodeConfiguration : TargetPathNodeConfiguration
 }
 ```
 
-- [ ] **Step 4: Write the node**
+- [x] **Step 4: Write the node**
 
 ```csharp
 using System.Globalization;
@@ -1169,7 +1169,7 @@ public class SftpListNode(
 
 Each element builds its own `source` object; a `JsonNode` cannot be attached to two parents, so a shared instance would throw on the second element.
 
-- [ ] **Step 5: Add the exception factory and register the node**
+- [x] **Step 5: Add the exception factory and register the node**
 
 In `MeshAdapterPipelineExecutionException.cs`:
 
@@ -1188,12 +1188,12 @@ The class is `internal` with private constructors and every factory formats its 
         pipelineBuilder.RegisterNodeConfiguration<SftpListNodeConfiguration>();
 ```
 
-- [ ] **Step 6: Run the tests to verify they pass**
+- [x] **Step 6: Run the tests to verify they pass**
 
 Run: `dotnet test Octo.MeshAdapter.sln --filter FullyQualifiedName~SftpListNodeTests`
 Expected: 6 passed. If FakeItEasy cannot bind the typed `Invokes` lambda against the generic `Set`, capture the argument through `Fake.GetCalls(dataContext)` instead of changing the node.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src/MeshNodes.Sdk src/MeshAdapter.Sdk tests/MeshAdapter.Sdk.Tests/Nodes/Extract
@@ -1215,7 +1215,7 @@ Counterpart of `SftpContentEncoder`, so the read direction handles encoding fail
 - Consumes: `SftpUploadEncoding.Resolve`, `EncodingErrorHandling`
 - Produces: `internal static string SftpContentDecoder.Decode(byte[] content, string encodingName, EncodingErrorHandling onEncodingError, INodeContext nodeContext)`; `MeshAdapterPipelineExecutionException.CannotDecodeContent(INodeContext, string)`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```csharp
 using FakeItEasy;
@@ -1278,12 +1278,12 @@ public class SftpContentDecoderTests : NodeTestBase
 }
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `dotnet test Octo.MeshAdapter.sln --filter FullyQualifiedName~SftpContentDecoderTests`
 Expected: build error, the decoder does not exist. `SftpDownloadNodeConfiguration` arrives in Task 8; if you run this task first, prepare the context with `SftpListNodeConfiguration` instead and switch it back afterwards.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```csharp
 using System.Text;
@@ -1326,7 +1326,7 @@ internal static class SftpContentDecoder
 }
 ```
 
-- [ ] **Step 4: Add the exception factory**
+- [x] **Step 4: Add the exception factory**
 
 ```csharp
     /// <summary>Downloaded bytes are not valid in the configured encoding and Fail was chosen.</summary>
@@ -1337,12 +1337,12 @@ internal static class SftpContentDecoder
     }
 ```
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- [x] **Step 5: Run the tests to verify they pass**
 
 Run: `dotnet test Octo.MeshAdapter.sln --filter FullyQualifiedName~SftpContentDecoderTests`
 Expected: 3 passed.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/MeshAdapter.Sdk tests/MeshAdapter.Sdk.Tests/Nodes/Extract/SftpContentDecoderTests.cs
@@ -1364,7 +1364,7 @@ git commit -m "AB#4846: decode downloaded content with explicit encoding handlin
 - Consumes: `ISftpSessionFactory`, `SftpServerSettingsResolver`, `SftpContentDecoder.Decode`, `SftpUploadEncoding.Resolve`, `EncodingErrorHandling`
 - Produces: `SftpDownloadNodeConfiguration` with `ServerConfiguration`, `RemotePath`, `RemotePathPath`, `Encoding`, `OnEncodingError`, inherited `TargetPath`; `SftpDownloadNode`; `MeshAdapterPipelineExecutionException.NoRemotePathSpecified(INodeContext)`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```csharp
 using System.Text.Json.Nodes;
@@ -1492,12 +1492,12 @@ public class SftpDownloadNodeTests : NodeTestBase
 }
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `dotnet test Octo.MeshAdapter.sln --filter FullyQualifiedName~SftpDownloadNodeTests`
 Expected: build error, configuration and node do not exist.
 
-- [ ] **Step 3: Write the configuration**
+- [x] **Step 3: Write the configuration**
 
 ```csharp
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
@@ -1570,7 +1570,7 @@ public record SftpDownloadNodeConfiguration : TargetPathNodeConfiguration
 }
 ```
 
-- [ ] **Step 4: Write the node**
+- [x] **Step 4: Write the node**
 
 ```csharp
 using Meshmakers.Octo.MeshAdapter.Nodes.Extract;
@@ -1634,7 +1634,7 @@ public class SftpDownloadNode(
 
 Reading is free of side effects, so there is no dry-run branch: the downstream chain must see the content in a dry run too.
 
-- [ ] **Step 5: Add the exception factory and register the node**
+- [x] **Step 5: Add the exception factory and register the node**
 
 ```csharp
     /// <summary>Neither a static nor a resolved remote path was configured.</summary>
@@ -1651,12 +1651,12 @@ In `DataPipelineBuilderExtensions.cs`, in the extract block:
         pipelineBuilder.RegisterNodeConfiguration<SftpDownloadNodeConfiguration>();
 ```
 
-- [ ] **Step 6: Run the tests to verify they pass**
+- [x] **Step 6: Run the tests to verify they pass**
 
 Run: `dotnet test Octo.MeshAdapter.sln --filter FullyQualifiedName~SftpDownloadNodeTests`
 Expected: 5 passed. If `PipelineExecutionException.ValueNotSet` is not a `MeshAdapterPipelineExecutionException`, relax that one assertion to the base exception type rather than changing the node: `ValueNotSet` is the established way to report an unresolvable path.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src/MeshNodes.Sdk src/MeshAdapter.Sdk tests/MeshAdapter.Sdk.Tests/Nodes/Extract/SftpDownloadNodeTests.cs
@@ -1671,7 +1671,7 @@ git commit -m "AB#4846: add SftpDownload@1 as the read counterpart of SftpUpload
 - Modify: `CLAUDE.md` (Extract Nodes list)
 - Modify: `docs/developer-guide.md` (node sections and the pipeline overview around line 862)
 
-- [ ] **Step 1: Add both nodes to `CLAUDE.md`**
+- [x] **Step 1: Add both nodes to `CLAUDE.md`**
 
 In the Extract Nodes list, in the style of the entries already there:
 
@@ -1680,7 +1680,7 @@ In the Extract Nodes list, in the style of the entries already there:
    - **SftpDownloadNode** (`SftpDownload@1`) — Downloads exactly one file and writes its decoded content to `TargetPath`. Read counterpart of `SftpUpload@1`, which writes exactly one file, and designed to run inside a `ForEach@1` over an `SftpList@1` result. The remote path is static (`RemotePath`) or resolved from the data context (`RemotePathPath`, takes precedence). `Encoding` defaults to `utf-8` and is validated when the configuration is bound, so a typo fails the deployment rather than the first download; `OnEncodingError` chooses between a lossy read with a warning and failing the node. No dry-run branch: reading has no side effects and the downstream chain must see the content in a dry run too.
 ```
 
-- [ ] **Step 2: Add both nodes to `docs/developer-guide.md`**
+- [x] **Step 2: Add both nodes to `docs/developer-guide.md`**
 
 Add an `#### SftpListNode` and an `#### SftpDownloadNode` section with the same parameter-table layout the `#### SftpUploadNode` section at line 686 uses, and extend the pipeline overview so the extract line names them:
 
@@ -1690,7 +1690,7 @@ Add an `#### SftpListNode` and an `#### SftpDownloadNode` section with the same 
 
 Also document `hostKeyFingerprint` in the `SftpUploadNode` section: optional, SHA-256 non-padded base64 as printed by `ssh-keygen -lf`, absent means any host key is accepted as before.
 
-- [ ] **Step 3: Verify the generated pipeline schema**
+- [x] **Step 3: Verify the generated pipeline schema**
 
 The adapter generates `pipeline-schema.json` after every build (`src/MeshAdapter/MeshAdapter.csproj:46-48`, target `GeneratePipelineSchema`), and that file is what a pipeline author validates against. It is the objective proof that both nodes are registered with the intended surface, independent of any test.
 
@@ -1714,7 +1714,7 @@ Expected, derived from how the existing nodes appear in the current schema:
 
 Both extract nodes appear under `TransformationNode`, not under a separate extract section; `SftpUpload@1` sits there too. A node missing from the schema was never registered, whatever the tests say.
 
-- [ ] **Step 4: Run the whole suite in both configurations**
+- [x] **Step 4: Run the whole suite in both configurations**
 
 ```bash
 dotnet format --verify-no-changes
@@ -1724,7 +1724,7 @@ dotnet test Octo.MeshAdapter.sln -c Release
 
 Expected: no formatting differences, every test green in both configurations, zero warnings. Do not use `-c DebugL`; it resolves Octo packages from the stale local feed.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add CLAUDE.md docs/developer-guide.md
