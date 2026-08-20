@@ -31,7 +31,7 @@
 
 ## File Structure
 
-**New, shared SFTP layer** (`src/MeshAdapter.Sdk/Nodes/Sftp/`, namespace `Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Sftp`). A subfolder under `Nodes/` rather than the four category folders, because the layer is shared between an extract and a load node; `Nodes/Transform/ExcelImport/` is the existing precedent for grouping cohesive helpers this way:
+**New, shared SFTP layer**, flat in `src/MeshAdapter.Sdk/Nodes/`, namespace `Meshmakers.Octo.Sdk.MeshAdapter.Nodes`. Not in a category folder, because the layer serves an extract node and a load node alike; flat rather than in a new subfolder, because that is where the repository already keeps helpers of exactly this kind - `StreamDataGapAnalyzer`, `StreamDataGapScanner`, `StreamDataNodeHelpers`, `Query` and `FieldFilterExtensions`:
 
 - `SftpServerSettings.cs` - the tenant GlobalConfiguration entry shape, including the new `HostKeyFingerprint`
 - `SftpServerSettingsResolver.cs` - resolves and validates that entry, one place for all three nodes
@@ -64,9 +64,9 @@
 Pulls the settings record and its two validations out of `SftpUploadNode`, so the list and download nodes do not copy them, and adds the pinning field.
 
 **Files:**
-- Create: `src/MeshAdapter.Sdk/Nodes/Sftp/SftpServerSettings.cs`
-- Create: `src/MeshAdapter.Sdk/Nodes/Sftp/SftpServerSettingsResolver.cs`
-- Test: `tests/MeshAdapter.Sdk.Tests/Nodes/Sftp/SftpServerSettingsResolverTests.cs`
+- Create: `src/MeshAdapter.Sdk/Nodes/SftpServerSettings.cs`
+- Create: `src/MeshAdapter.Sdk/Nodes/SftpServerSettingsResolver.cs`
+- Test: `tests/MeshAdapter.Sdk.Tests/Nodes/SftpServerSettingsResolverTests.cs`
 
 **Interfaces:**
 - Consumes: `IMeshEtlContext.GlobalConfiguration`, `MeshAdapterPipelineExecutionException.GlobalConfigurationParameterNotFound(INodeContext, string, string)`, `MeshAdapterPipelineExecutionException.SftpAuthNotConfigured(INodeContext)`
@@ -80,9 +80,9 @@ using MeshAdapter.Sdk.Tests.Helpers;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.MeshAdapter;
-using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Sftp;
+using Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 
-namespace MeshAdapter.Sdk.Tests.Nodes.Sftp;
+namespace MeshAdapter.Sdk.Tests.Nodes;
 
 public class SftpServerSettingsResolverTests : NodeTestBase
 {
@@ -153,10 +153,10 @@ Expected: build error, `SftpServerSettings` and `SftpServerSettingsResolver` do 
 
 - [ ] **Step 3: Write the implementation**
 
-`src/MeshAdapter.Sdk/Nodes/Sftp/SftpServerSettings.cs`:
+`src/MeshAdapter.Sdk/Nodes/SftpServerSettings.cs`:
 
 ```csharp
-namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Sftp;
+namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 
 /// <summary>
 /// Shape of the tenant GlobalConfiguration entry that the SFTP nodes reference by name.
@@ -194,13 +194,13 @@ public sealed record SftpServerSettings
 }
 ```
 
-`src/MeshAdapter.Sdk/Nodes/Sftp/SftpServerSettingsResolver.cs`:
+`src/MeshAdapter.Sdk/Nodes/SftpServerSettingsResolver.cs`:
 
 ```csharp
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 
-namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Sftp;
+namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 
 /// <summary>
 /// Resolves the named GlobalConfiguration entry into <see cref="SftpServerSettings" /> and
@@ -250,8 +250,8 @@ git commit -m "AB#4846: share SFTP server settings and their validation across n
 The decision whether a presented key is trusted is pure logic, so it is tested here rather than against a live server.
 
 **Files:**
-- Create: `src/MeshAdapter.Sdk/Nodes/Sftp/SftpHostKeyVerifier.cs`
-- Test: `tests/MeshAdapter.Sdk.Tests/Nodes/Sftp/SftpHostKeyVerifierTests.cs`
+- Create: `src/MeshAdapter.Sdk/Nodes/SftpHostKeyVerifier.cs`
+- Test: `tests/MeshAdapter.Sdk.Tests/Nodes/SftpHostKeyVerifierTests.cs`
 
 **Interfaces:**
 - Produces: `public static bool SftpHostKeyVerifier.IsTrusted(string? expectedFingerprint, string presentedFingerprintSha256)`
@@ -259,9 +259,9 @@ The decision whether a presented key is trusted is pure logic, so it is tested h
 - [ ] **Step 1: Write the failing test**
 
 ```csharp
-using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Sftp;
+using Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 
-namespace MeshAdapter.Sdk.Tests.Nodes.Sftp;
+namespace MeshAdapter.Sdk.Tests.Nodes;
 
 public class SftpHostKeyVerifierTests
 {
@@ -322,7 +322,7 @@ Expected: build error, `SftpHostKeyVerifier` does not exist.
 - [ ] **Step 3: Write the implementation**
 
 ```csharp
-namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Sftp;
+namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 
 /// <summary>
 /// Compares a configured host key fingerprint against the one a server presented. Base64 is
@@ -370,7 +370,7 @@ Expected: 9 passed.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/MeshAdapter.Sdk/Nodes/Sftp/SftpHostKeyVerifier.cs tests/MeshAdapter.Sdk.Tests/Nodes/Sftp/SftpHostKeyVerifierTests.cs
+git add src/MeshAdapter.Sdk/Nodes/SftpHostKeyVerifier.cs tests/MeshAdapter.Sdk.Tests/Nodes/SftpHostKeyVerifierTests.cs
 git commit -m "AB#4846: verify SFTP host keys against a configured fingerprint"
 ```
 
@@ -379,13 +379,13 @@ git commit -m "AB#4846: verify SFTP host keys against a configured fingerprint"
 ### Task 3: The session seam and its SSH.NET implementation
 
 **Files:**
-- Create: `src/MeshAdapter.Sdk/Nodes/Sftp/SftpEntry.cs`
-- Create: `src/MeshAdapter.Sdk/Nodes/Sftp/ISftpSession.cs`
-- Create: `src/MeshAdapter.Sdk/Nodes/Sftp/ISftpSessionFactory.cs`
-- Create: `src/MeshAdapter.Sdk/Nodes/Sftp/SshNetSftpSessionFactory.cs`
+- Create: `src/MeshAdapter.Sdk/Nodes/SftpEntry.cs`
+- Create: `src/MeshAdapter.Sdk/Nodes/ISftpSession.cs`
+- Create: `src/MeshAdapter.Sdk/Nodes/ISftpSessionFactory.cs`
+- Create: `src/MeshAdapter.Sdk/Nodes/SshNetSftpSessionFactory.cs`
 - Modify: `src/MeshAdapter.Sdk/Configuration/DependencyInjection/ServiceCollectionExtensions.cs:114`
 - Modify: `src/MeshAdapter.Sdk/MeshAdapterPipelineExecutionException.cs`
-- Test: `tests/MeshAdapter.Sdk.Tests/Nodes/Sftp/SshNetSftpSessionFactoryTests.cs`
+- Test: `tests/MeshAdapter.Sdk.Tests/Nodes/SshNetSftpSessionFactoryTests.cs`
 
 **Interfaces:**
 - Consumes: `SftpServerSettings`, `SftpHostKeyVerifier.IsTrusted`
@@ -401,9 +401,9 @@ git commit -m "AB#4846: verify SFTP host keys against a configured fingerprint"
 
 ```csharp
 using Meshmakers.Octo.Sdk.MeshAdapter;
-using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Sftp;
+using Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 
-namespace MeshAdapter.Sdk.Tests.Nodes.Sftp;
+namespace MeshAdapter.Sdk.Tests.Nodes;
 
 public class SshNetSftpSessionFactoryTests
 {
@@ -437,7 +437,7 @@ Expected: build error, the factory does not exist.
 `SftpEntry.cs`:
 
 ```csharp
-namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Sftp;
+namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 
 /// <summary>One entry of a remote directory listing.</summary>
 public sealed record SftpEntry(string Name, string FullPath, bool IsDirectory, long Length, DateTime LastWriteTimeUtc);
@@ -446,7 +446,7 @@ public sealed record SftpEntry(string Name, string FullPath, bool IsDirectory, l
 `ISftpSession.cs`:
 
 ```csharp
-namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Sftp;
+namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 
 /// <summary>
 /// An open SFTP session. Disposing it closes the connection and releases the server's
@@ -471,7 +471,7 @@ public interface ISftpSession : IDisposable
 `ISftpSessionFactory.cs`:
 
 ```csharp
-namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Sftp;
+namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 
 /// <summary>
 /// Opens SFTP sessions, honouring the per-server concurrency limit and the optional host key
@@ -497,7 +497,7 @@ using System.Text;
 using Renci.SshNet;
 using Renci.SshNet.Common;
 
-namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Sftp;
+namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 
 /// <summary>
 /// SSH.NET implementation of <see cref="ISftpSessionFactory" />. One semaphore per server
@@ -894,7 +894,7 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.MeshAdapter;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
-using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Sftp;
+using Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Extract;
 
@@ -1095,7 +1095,7 @@ using Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
-using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Sftp;
+using Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
 
@@ -1376,7 +1376,7 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.MeshAdapter;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
-using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Sftp;
+using Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 
 namespace MeshAdapter.Sdk.Tests.Nodes.Extract;
 
@@ -1577,7 +1577,7 @@ using Meshmakers.Octo.MeshAdapter.Nodes.Extract;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
-using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Sftp;
+using Meshmakers.Octo.Sdk.MeshAdapter.Nodes;
 
 namespace Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Extract;
 
