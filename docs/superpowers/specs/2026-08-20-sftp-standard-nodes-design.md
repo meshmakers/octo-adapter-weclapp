@@ -130,9 +130,21 @@ before the download rather than after it.
 ### Product: shared connection layer
 
 `SftpServerConfiguration`, `CreateSftpClient` and the per-server semaphore are private members of
-`SftpUploadNode` today. They move into an internal connection component that all three nodes use;
+`SftpUploadNode` today. They move into a shared connection component that all three nodes use;
 `SftpUpload@1` is refactored onto it in the same PR, and its existing tests are the regression
 guard for that refactor.
+
+The semaphore keeps the scope it has today: the counters live on the ETL context, keyed by the
+server configuration name. That is what the pre-seam upload node did and what `EMailSender@1`
+still does, down to the parallel `MaxConcurrentEmails` setting, so a redeployed pipeline picks up
+a changed limit. Moving them onto a singleton would have frozen the limit until the process
+restarted and widened its reach beyond one pipeline registration, neither of which this change
+set out to do.
+
+The resolver, the fingerprint check and the SSH.NET implementation are `internal`, matching
+`IHttpRequestService` and every helper in that assembly. `ISftpSessionFactory`, `ISftpSession`,
+`SftpEntry` and `SftpServerSettings` are public because a public node names them in its
+constructor and the language requires it.
 
 This is also what makes one pinning implementation cover both directions.
 
@@ -146,9 +158,15 @@ tenant YAML that is edited in the Studio.
 Semantics:
 
 - absent - connect as today, no verification; the compatibility path, so nothing breaks on rollout
-- set - compare against `HostKeyEventArgs.FingerPrintSHA256` in the `HostKeyReceived` handler; on
-  mismatch set `CanTrust = false` and fail with an error naming both the expected and the
-  presented fingerprint
+- set - compare against `HostKeyEventArgs.FingerPrintSHA256` in the `HostKeyReceived` handler and
+  report the verdict through `CanTrust`. SSH.NET reads that value back and refuses the key
+  exchange itself, which is the path its teardown is written for; the caller translates the
+  resulting connection failure into an error naming both the expected and the presented
+  fingerprint. Throwing from the handler skips that path, so the peer sees a bare socket close
+  instead of a protocol-level failure
+- present but blank - refused. Leaving the property out disables pinning deliberately, but an
+  empty string is a typo or an unset template variable, and accepting it silently would leave an
+  operator believing the server is pinned
 
 SSH.NET 2026.0.0 documents `FingerPrintSHA256` as "the same format as the ssh command, i.e.
 non-padded base64, but without the `SHA256:` prefix", so the configured value is what
@@ -325,3 +343,35 @@ production mode, this deserves a durable marker - see the processed-subdirectory
 - The plan line "fingerprint into the as/ai YAML after rollout" becomes "into the `LkvSftp`
   GlobalConfiguration entry".
 - AB#4846 stage 2 names one new node today; it becomes two, `SftpList@1` and `SftpDownload@1`.
+
+## Revisions from review
+
+Three independent reviews of the product PR changed the following. They are recorded here because
+the adapter-side PR builds on this contract.
+
+- **The age guard only applies when asked for.** `minFileAgeSeconds` defaults to 0 on the product
+  node rather than the 60 the adapter node used, and at 0 no comparison happens at all. An
+  unconditional comparison drops a file whose modification time runs ahead of the pod's clock,
+  and the two clocks are independent. The AR and BE pipelines set 60 explicitly.
+- **A listing entry has to name one member of the listed directory.** A name carrying a path
+  separator is reported and dropped: it comes from a misbehaving or hostile server and would
+  otherwise steer the following download outside the listed directory.
+- **The emitted timestamp is spelled out rather than round-tripped.** The round-trip specifier
+  renders according to the value's `Kind`, so a local value would carry a daylight-saving
+  dependent offset. The identity a consumer derives from it has to be stable regardless.
+- **The glob runs non-backtracking.** Each wildcard becomes an independent `.*`, and the file name
+  comes from the remote server, so a name chosen against a multi-wildcard pattern took minutes on
+  the backtracking engine. The anchors are `\A` and `\z` because `$` also matches before a
+  trailing newline, and matching is culture-invariant because case folding otherwise follows the
+  pod's culture.
+- **Three optional timeouts**, all defaulting to SSH.NET's current behaviour: 30 seconds to
+  connect, no limit on an operation, no limit on waiting for a free slot. A finite default would
+  have been the first place in that codebase to bound an SFTP operation and would have changed
+  behaviour for every existing pipeline. A server whose transfer sizes are known sets them in its
+  configuration entry, which is what the LKV entry does.
+- **Credentials never print.** The settings record overrides `ToString` to redact the password,
+  the private key and its passphrase, and the private key file is disposed with the session.
+
+One promised test could not be written as specified: "semaphore honoured per server entry" needs a
+successful connection to hold a slot, so it needs a live server. What is verified instead is that
+the counters are created in the expected place and scope.
