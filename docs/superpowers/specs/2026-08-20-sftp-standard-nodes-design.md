@@ -52,6 +52,7 @@ The product owns the SFTP *mechanics*; the adapter owns the DILOS *policy*.
                                               targetPath: $.fileContent
 
     - type: WeClappArWrite@1                - type: WeClappArWrite@1
+      fileNamePath: $.current.fileName        fileNamePath: $.current.name
       contentPath: $.current.content          contentPath: $.fileContent
 
     - type: DilosFileConfirm@1              - type: DilosFileConfirm@1
@@ -84,6 +85,13 @@ decoration: it lets a consumer derive a stable per-listing scope without re-decl
 three values in its own configuration, which would reintroduce exactly the mismatch class this
 change removes.
 
+`lastWriteTimeUtc` must be emitted in a round-trip-stable representation, and a consumer building
+an identity from it must use that emitted representation rather than a re-parsed timestamp. Today
+the file key is computed in-process from `SftpFileEntry.LastWriteTimeUtc.Ticks` and never crosses
+a serialization boundary; after the split it does. If the emitted form is not stable tick by tick,
+every listing produces new keys, the keep-mode skip never matches, and every file is reprocessed
+forever - a failure that looks like "keep mode does not work" and is invisible in the logs.
+
 Directory entries are filtered out, the result is ordered by name using ordinal comparison, and
 an empty listing still writes an empty array. The last point is load-bearing: a downstream
 `ForEach@1` aborts with `PathMustBeArray` when its `iterationPath` is missing or not an array.
@@ -107,6 +115,17 @@ The encoding option is not symmetry for its own sake. `SshNetSftpFileSystem.Down
 (`SshNetSftpFileSystem.cs:59-66`) decodes with `DilosFile.Encoding`, i.e. ISO-8859-1. Without an
 explicit `encoding: iso-8859-1` in the AR/BE pipelines the migration would silently change how a
 Latin-1 umlaut byte is read.
+
+The node repeats `serverConfiguration` in the YAML although the element it works on already names
+its origin. Reading the server name from the element would couple a generic download node to one
+producer's element shape; a wrong literal, by contrast, fails loudly on connect and cannot lose
+data.
+
+**Sessions per tick.** One session for the listing, plus one per downloaded file, plus the confirm
+node's own session per deleted file - against one session for the whole listing today. The gate is
+what keeps this small: already-processed files never reach the download, so the per-file sessions
+scale with newly arrived files, not with the directory. That is also why the filter has to sit
+before the download rather than after it.
 
 ### Product: shared connection layer
 
@@ -146,12 +165,27 @@ listing and processing. It reads `$.files`, and for each element
 - otherwise stamps `deleteAfterSuccess` and the server configuration name into the element and
   lets it through.
 
-Scope key and file key keep their current format (`DilosFileFetchCore.ScopePrefix` and `FileKey`),
+Scope key and file key keep their current shape (`DilosFileFetchCore.ScopePrefix` and `FileKey`),
 but the three scope components now come from the element's `source` stamp rather than from the
-node's own configuration. Cross-tick memory stays in the `DilosFileFetchState` singleton,
-unchanged, including its documented restart behaviour.
+node's own configuration, and the file key is built from the emitted `lastWriteTimeUtc`
+representation rather than from a `DateTime.Ticks` value the gate never sees. Cross-tick memory
+stays in the `DilosFileFetchState` singleton, unchanged, including its documented restart
+behaviour.
 
-Its only configuration property is `deleteAfterSuccess`.
+Configuration: `deleteAfterSuccess`, plus `path` (default `$.files`) naming the array to work on.
+The mode lives here and nowhere else; `path` has to exist because the listing node's `targetPath`
+is configurable, and a gate that hard-codes `$.files` would quietly do nothing if someone lists
+into a different path.
+
+The gate writes the filtered array back to the same path, adding to each surviving element the
+`key` that `DilosFileConfirm@1` reads, plus the mode and server stamp.
+
+**One ordering change.** Today the age check runs inside the per-file loop, after the keep and
+pending-delete checks; afterwards it sits in `SftpList@1`, before them. A file younger than
+`minFileAgeSeconds` is therefore not listed at all, so a delete retry pending on it waits for the
+age window to pass. Files with a pending delete were processed in an earlier tick and are older
+than the window by construction, so this is a theoretical difference, not a practical one - but it
+is a difference, and it should not be discovered later in a log.
 
 ### Adapter: `DilosFileConfirm@1`
 
@@ -161,6 +195,24 @@ the failure this change exists to prevent.
 
 The YAML comments that today warn about keeping the two values in sync, and the contract test
 that asserts it, are removed with them.
+
+### The file element, before and after
+
+The element shape changes, so both pipeline YAMLs need more than a node swap:
+
+| Today, seeded by `DilosFileFetchStep@1` | Afterwards | Read by |
+|---|---|---|
+| `fileName` | `name`, from `SftpList@1` | `WeClappArWrite@1` / `WeClappBeWrite@1` (`fileNamePath`) |
+| `content` | gone from the element; the content lands at the download node's `targetPath` | the write nodes (`contentPath`) |
+| `fullPath` | unchanged, from `SftpList@1` | `SftpDownload@1`, `DilosFileConfirm@1` |
+| `key` | unchanged in meaning, stamped by `DilosFileGate@1` | `DilosFileConfirm@1` |
+| `lastWriteTimeUtc` | unchanged, from `SftpList@1` | the gate, for the file key |
+| - | new: `source`, from `SftpList@1` | the gate, for the scope |
+| - | new: mode and server stamp, from the gate | `DilosFileConfirm@1` |
+
+Concretely: `fileNamePath: $.current.fileName` becomes `$.current.name`, and
+`contentPath: $.current.content` becomes the download node's target path, in both the AR and the
+BE pipeline.
 
 ### Why the download moved into the loop
 
@@ -209,9 +261,11 @@ Existing `SftpUploadNodeTests` stay green.
 
 **Adapter.** Keep-skip only in keep mode, delete-retry only in delete mode, scope isolation
 between the AR and BE pipelines sharing one state singleton, pruning, stamp written; confirm
-refuses an unstamped element. Plus one end-to-end test that pushes a golden-sample AR file through
-the new path and compares the decoded content against today's - the C2 counterpart of the
-byte-level verification C1 does for the upload direction.
+refuses an unstamped element. One test pins the risk the split introduces: two consecutive
+listings of an unchanged file must produce the identical key, so the keep-mode skip still matches
+after the timestamp has crossed the serialization boundary. Plus one end-to-end test that pushes a
+golden-sample AR file through the new path and compares the decoded content against today's - the
+C2 counterpart of the byte-level verification C1 does for the upload direction.
 
 Contract tests for the rewritten pipeline YAMLs cover node names, `continueOnError`,
 `maxDegreeOfParallelism: 1`, `targetPath`, and the explicit `encoding: iso-8859-1`. Once PR #15 is
@@ -230,14 +284,23 @@ fails the suite.
    behaviour (the file stays and is not written again on the following tick), delete path
    exercised dry.
 
-Between the image deploy and the tenant YAML re-import the stored definition still carries the
-removed confirm properties, which the strict deserializer rejects, so the AR/BE pipelines do not
-register during that window. At a 15-minute cadence that is at most one missed tick, and the
-runbook sequences deploy and re-import back to back. prod-2 imports the new YAML from the start,
-so the window does not exist there.
+Between the image deploy and the tenant YAML re-import the stored definition still names
+`DilosFileFetchStep@1` and still carries the removed confirm properties, and the strict
+deserializer rejects both, so the AR/BE pipelines do not register during that window.
+
+The window is bounded in two ways. It affects only those two pipelines:
+`TryRegisterPipelineCoreAsync` catches a `PipelineSerializationException` per pipeline, records it
+as `PipelineDeserializationError` and continues the loop
+(`octo-communication-sdk`, `PipelineRegistryService.cs:318-355`), so AS, AI and CK register
+normally. And at a 15-minute cadence it costs at most one tick, with the runbook sequencing deploy
+and re-import back to back. prod-2 imports the new YAML from the start, so the window does not
+exist there.
 
 After the staging verification `DilosFileFetchStep@1` is unreferenced and its code is removed with
-the following train, per the cleanup rule.
+the following train, per the cleanup rule. What does **not** go with it: `DilosFileFetchCore` and
+the `ISftpFileSystem` seam. The legacy polling trigger still lists through
+`DilosFileFetchCore.ListMatchingFiles` and `FileKey` (`DilosFileFetchTriggerNode.cs:149-160`), and
+the gate and confirm nodes still need the SFTP seam for deletes. Both die with AB#4843, not here.
 
 ## Deliberate non-goals
 
