@@ -108,7 +108,16 @@ per-file `ForEach@1` child; `ArBeYamls_DryRunWriteNode_ForbidsDeleteAfterSuccess
 `AllPipelineYamls_UseApiConfigurationOnly_NoInlineCredentialsOrPlaceholders` keeps WeClapp access
 on `apiConfiguration` (no inline `apiKey`/`baseUrl`, no substitution placeholder);
 `AllPipelineYamls_EveryAttributeUpdate_DeclaresValueType` requires every `ApplyChanges` attribute
-update to declare its `valueType`.
+update to declare its `valueType`; `ArticlesToCkYaml_ConfiguredPaths_ResolveAgainstTransformOutput`
+and `OrdersToAiYaml_ConfiguredCkPaths_ResolveAgainstOrderTransformOutput` resolve every configured
+value path against the REAL `WeClappToCk@1` output (Article mode writes `$.ck` FLAT, Order mode
+NESTED), so a path that silently resolves to null cannot ship;
+`OrdersToAiYaml_CustomerNameUpdate_ResolvesForB2cCustomers` covers the B2C case below.
+
+This list is machine-checked: `DocumentationContractTests.ClaudeMd_NamesEveryPipelineContractTest`
+fails the suite if a `PipelineYamlContractTests` guard is not named here. It drifted once (AB#4845
+added two guards without documenting them, leaving 5 of 12 listed) — an inventory that claims to
+be complete and is not invites re-pinning an invariant that already holds.
 
 ## Domain Gotchas (golden-file verified — do not "fix" without evidence)
 - DILOS AR/BE use **comma** decimals; AI/AS use dot. Both verified against real files.
@@ -118,6 +127,9 @@ update to declare its `valueType`.
 - `Gesamtmenge` (AR K* field 12) includes the empty-ArticleNumber shipping pseudo-item.
 - BE field count is customer-specific (LKV spec/golden: 6; old Billbee variant: 7 with
   SKU) — parsers fail loud on mismatch by design.
+- B2C orders carry an EMPTY WeClapp `customer.company`. The AI recipient name must come from
+  `CkCustomer.Name` (which holds the `firstName lastName` fallback), never from `company` —
+  a path pointing at the company field renders an empty recipient. Reported live 2026-07-16.
 
 ## AR/BE Return Path (SFTP → WeClapp)
 - `DilosFileFetchStep@1` lists the LKV SFTP (credentials via tenant GlobalConfiguration
