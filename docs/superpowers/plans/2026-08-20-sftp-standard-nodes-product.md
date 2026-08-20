@@ -12,7 +12,7 @@
 
 **Repository under change:** `octo-mesh-adapter` (all paths below are relative to that repo). This plan and the spec live in `octo-adapter-weclapp` because that is where the LKV work is documented; the product PR itself carries only code and product docs.
 
-**Scope note:** the spec describes two PRs. This plan covers the first one. The adapter-side plan (gate node, confirm node, AR/BE YAML) is written separately, after this PR is released, because it depends on the released package version and the registered node names.
+**Scope note:** the spec describes two PRs. This plan covers the first one. The adapter-side plan (gate node, confirm node, AR/BE YAML) is written separately, after this PR is released, because it depends on the released package version and the registered node names. That plan rewrites pipeline YAML, so it should be written with the `octo-claude-skills:pipeline-expert` skill; this one does not need it, being node implementation rather than pipeline authoring.
 
 ## Global Constraints
 
