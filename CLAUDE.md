@@ -8,11 +8,12 @@ the core lib). Template: `octo-adapter-demos` (Mesh adapter / Socket).
 
 ## Build Commands
 ```bash
-# Local development build (uses local NuGet packages from ../nuget/)
-dotnet build Octo.WeClappAdapter.slnx -c DebugL
+# Build & test against the published SDK (nuget.org, 3.4.* - the line the deployed image carries)
+dotnet build Octo.WeClappAdapter.slnx -c Debug
+dotnet test Octo.WeClappAdapter.slnx -c Debug
 
-# Run tests
-dotnet test Octo.WeClappAdapter.slnx -c DebugL
+# Only while co-developing unreleased SDK changes: 999.0.0 from the hand-maintained ../nuget/
+dotnet build Octo.WeClappAdapter.slnx -c DebugL
 ```
 
 ## Project Structure
@@ -27,20 +28,20 @@ dotnet test Octo.WeClappAdapter.slnx -c DebugL
 - `src/charts/octo-weclapp-adapter/` - Helm chart (deployed by the Communication Operator;
   httpGet probes on `/healthz/live|ready`)
 - `pipelines/` - tenant pipeline YAMLs (orders→AI per order; articles split into per-item
-  CK sync + batched AS delivery [`emitMode: Batch`, at most one file per Vienna calendar day —
-  K1 gate]; AR/BE return path); the YAMLs carry no credentials — WeClapp access comes
+  CK sync + batched AS delivery [`emitMode: Batch`, at most one file per Vienna calendar day,
+  gated on the per-day CK marker `Industry.Logistics/ExportRun` — K1 gate]; AR/BE return path);
+  the YAMLs carry no credentials — WeClapp access comes
   from the tenant GlobalConfiguration entry `WeClappApi` (`apiConfiguration`), SFTP from
   `LkvSftp`; still tenant-specific and marked REPLACE/TBD in the YAMLs: AI submandant,
-  BE warehouseId, AR/BE `remoteDirectory`; `scripts/om_setup_lkv.ps1` bootstraps the tenant
+  BE warehouseId, AR/BE `remoteDirectory`; `scripts/om_setup_lkv.ps1` bootstraps the tenant and
+  `scripts/_general/rt-adapter-weclapp.yaml` carries the `System.Communication/Adapter` RT entity
+  (well-known name `WeClappAdapter`) — the `PipelineTrigger` entities live outside this repo
 - `tests/Lkv.WeClapp.Core.Tests/` - xUnit against real LKV golden fixtures
 - `tests/AdapterMeshWeClapp.Tests/` - node/pipeline tests + env-gated live smokes (gates below)
 - `docs/superpowers/` - design specs and implementation plans
 
 ## Key Patterns
 - Mesh adapter: `WebAdapterBuilder` (passive/Socket), SDK `Microsoft.NET.Sdk`
-- `IAdapterService` for startup/shutdown lifecycle (pipeline registration + event hub)
-- Pipeline nodes implement `IPipelineNode`, trigger nodes `ITriggerPipelineNode`;
-  configuration via `[NodeName]` and `[NodeConfiguration]` attributes
 - Custom nodes live in THIS repo (official adapter guideline), not in octo-mesh-adapter
 - Primary constructors with DI (C# 12+)
 - Observability is mandatory: `builder.AddObservability().AddSystemContextHealthCheck()` +
@@ -49,10 +50,6 @@ dotnet test Octo.WeClappAdapter.slnx -c DebugL
 - Node logs are message templates with args (`nodeContext.Info("... {0}", x)`) — NEVER
   interpolated strings: `INodeContext` forwards to structured logging, so a literal `{...}`
   (JSON body, URL) corrupts the template
-- Redeploy determinism (P2 — superseded by "Pipeline Trigger Architecture" below): no pipeline
-  has `runOnStart`/`pollingIntervalSeconds` anymore; nothing fires on (re)deploy or pod restart
-  by construction. AS still gates delivery on a per-day CK marker
-  (`Industry.Logistics/ExportRun`, at most one file per Vienna calendar day)
 
 ## Pipeline Trigger Architecture
 All 5 pipeline YAMLs carry two passive triggers — `FromPipelineTriggerEvent@1` (cron,
@@ -98,7 +95,23 @@ asserts every `ForEach@1` has a non-null, non-`"$"` `targetPath` and
 `maxDegreeOfParallelism == 1`; `AllPipelineYamls_EveryForEach_KeyPathIsCurrent` pins every
 `ForEach@1`'s `keyPath` to `$.current`; `AllPipelineYamls_DilosFileFetchStepAndConfirm_DeleteAfterSuccessMatches`
 asserts `DilosFileFetchStep@1`/`DilosFileConfirm@1` carry the same `deleteAfterSuccess` AND
-`serverConfiguration` in every ar/be yaml.
+`serverConfiguration` in every ar/be yaml;
+`ArBeYamls_DilosFileConfirm_IsTheLastPerFileForEachChild` pins the confirm node as the LAST
+per-file `ForEach@1` child; `ArBeYamls_DryRunWriteNode_ForbidsDeleteAfterSuccess` forbids
+`deleteAfterSuccess: true` while the write node runs `dryRun: true`;
+`AllPipelineYamls_UseApiConfigurationOnly_NoInlineCredentialsOrPlaceholders` keeps WeClapp access
+on `apiConfiguration` (no inline `apiKey`/`baseUrl`, no substitution placeholder);
+`AllPipelineYamls_EveryAttributeUpdate_DeclaresValueType` requires every `ApplyChanges` attribute
+update to declare its `valueType`; `ArticlesToCkYaml_ConfiguredPaths_ResolveAgainstTransformOutput`
+and `OrdersToAiYaml_ConfiguredCkPaths_ResolveAgainstOrderTransformOutput` resolve every configured
+value path against the REAL `WeClappToCk@1` output (Article mode writes `$.ck` FLAT, Order mode
+NESTED), so a path that silently resolves to null cannot ship;
+`OrdersToAiYaml_CustomerNameUpdate_ResolvesForB2cCustomers` covers the B2C case below.
+
+This list is machine-checked: `DocumentationContractTests.ClaudeMd_NamesEveryPipelineContractTest`
+fails the suite if a `PipelineYamlContractTests` guard is not named here. It drifted once (AB#4845
+added two guards without documenting them, leaving 5 of 12 listed) — an inventory that falsely
+claims completeness invites re-pinning an invariant that already holds.
 
 ## Domain Gotchas (golden-file verified — do not "fix" without evidence)
 - DILOS AR/BE use **comma** decimals; AI/AS use dot. Both verified against real files.
@@ -108,6 +121,13 @@ asserts `DilosFileFetchStep@1`/`DilosFileConfirm@1` carry the same `deleteAfterS
 - `Gesamtmenge` (AR K* field 12) includes the empty-ArticleNumber shipping pseudo-item.
 - BE field count is customer-specific (LKV spec/golden: 6; old Billbee variant: 7 with
   SKU) — parsers fail loud on mismatch by design.
+- B2C orders carry an EMPTY WeClapp `customer.company` (the person is in `firstName`/`lastName`).
+  TWO independent fallbacks share the shape "company, else `FirstName LastName`" but NOT the
+  source: `WeClappToCkNode` builds `CkCustomer.Name` from the CUSTOMER record — the orders→AI yaml
+  must write that value (`valuePath: $.ck.Customer.Name`), because a path aimed at the raw company
+  field leaves the CK name empty for B2C (live finding 2026-07-16). `DilosOrderWriter`
+  (`RecipientName1`/`RecipientName2`) builds the DILOS FILE name fields from the ADDRESS instead;
+  name2 ("Nachname Vorname") stays empty unless a company fills name1.
 
 ## AR/BE Return Path (SFTP → WeClapp)
 - `DilosFileFetchStep@1` lists the LKV SFTP (credentials via tenant GlobalConfiguration
@@ -144,13 +164,23 @@ asserts `DilosFileFetchStep@1`/`DilosFileConfirm@1` carry the same `deleteAfterS
 
 ## Conventions
 - `TreatWarningsAsErrors`, nullable enabled, `LangVersion latestmajor` (Directory.Build.props)
-- Configurations: `Debug`, `Release`, `DebugL` (local NuGet at `../nuget/`, version `999.0.0`)
+- Configurations: `Debug`/`Release` restore the published SDK from nuget.org (`3.4.*`); `DebugL`
+  restores `999.0.0` from the hand-maintained `../nuget/` folder. That folder is filled by hand
+  and CAN lag behind: a `PipelineSerializationException` like `Property 'continueOnError' not
+  found on ForEachNodeConfiguration` means the feed is older than the SDK feature the pipelines
+  use — not a code defect. Refresh order on a feed break: `octo-sdk` → `octo-communication-sdk`
+  → consumer. `DebugL` also defines `DEBUGL`, NOT `DEBUG` (MSBuild derives the constant from the
+  configuration name), so `#if DEBUG` blocks and `[Conditional("DEBUG")]` calls such as
+  `Debug.Assert` compile away there — the repo currently uses none.
 - English code + XML docs; DILOS original field names + 1-based field index in XML docs
 - Commit messages: Conventional Commits scoped to the work item —
-  `<type>(AB#4228): <meaningful description>` (types used on this branch: `feat`, `fix`, `test`,
+  `<type>(AB#4228): <meaningful description>` (types used in this repo: `feat`, `fix`, `test`,
   `docs`, `style`, `refactor`)
 
 ## Pre-Commit Checklist (ALL steps MUST pass)
 1. `dotnet format Octo.WeClappAdapter.slnx --verify-no-changes`
-2. `dotnet build Octo.WeClappAdapter.slnx -c DebugL`
-3. `dotnet test Octo.WeClappAdapter.slnx -c DebugL`
+2. `dotnet build Octo.WeClappAdapter.slnx -c Debug`
+3. `dotnet test Octo.WeClappAdapter.slnx -c Debug`
+
+`Debug` is the gate: it tests against the SDK the deployed image actually carries. Add
+`-c DebugL` on top only while co-developing unreleased SDK changes.

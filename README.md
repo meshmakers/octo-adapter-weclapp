@@ -65,12 +65,15 @@ build (release channel on `r*` tags).
 ## Build & test
 
 ```powershell
-# Local development build (uses local NuGet packages from ../nuget/)
-dotnet build Octo.WeClappAdapter.slnx -c DebugL
-dotnet test Octo.WeClappAdapter.slnx -c DebugL
+# Build and test against the published SDK (nuget.org, 3.4.*)
+dotnet build Octo.WeClappAdapter.slnx -c Debug
+dotnet test Octo.WeClappAdapter.slnx -c Debug
 
 # pre-commit gate
-dotnet format Octo.WeClappAdapter.slnx --verify-no-changes; dotnet build Octo.WeClappAdapter.slnx -c DebugL; dotnet test Octo.WeClappAdapter.slnx -c DebugL
+dotnet format Octo.WeClappAdapter.slnx --verify-no-changes; dotnet build Octo.WeClappAdapter.slnx -c Debug; dotnet test Octo.WeClappAdapter.slnx -c Debug
+
+# only while co-developing unreleased SDK changes (local ../nuget/ feed, 999.0.0)
+dotnet build Octo.WeClappAdapter.slnx -c DebugL
 ```
 
 Commits: Conventional Commits scoped to the work item — `<type>(AB#4228): <description>` (e.g.
