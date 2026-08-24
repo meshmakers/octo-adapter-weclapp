@@ -11,7 +11,7 @@ namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Nodes;
 /// <summary>
 /// Configuration for the DilosSftpWrite node — the ISO-8859-1 delivery counterpart to the
 /// built-in SftpUpload@1 (same config surface: serverConfiguration/remoteDirectory/
-/// fileNamePath/path), for DILOS files whose golden format is Latin-1, not UTF-8.
+/// fileNamePath/path), for DILOS files whose golden format is Latin-1.
 /// </summary>
 [NodeName("DilosSftpWrite", 1)]
 public record DilosSftpWriteNodeConfiguration : PathNodeConfiguration
@@ -30,10 +30,12 @@ public record DilosSftpWriteNodeConfiguration : PathNodeConfiguration
 
 /// <summary>
 /// Uploads rendered DILOS file content to the LKV SFTP as ISO-8859-1 bytes
-/// (<see cref="DilosFile.Encoding"/>). Exists because the golden (DILOS-import-proven)
-/// AS/AI files are Latin-1 while the built-in SftpUpload@1 writes UTF-8 — with non-ASCII
-/// in most articles/customers that corrupts umlauts from day one. Characters outside
-/// Latin-1 are replaced with '?' and reported loudly (also in dry-run), never silently.
+/// (<see cref="DilosFile.Encoding"/>). It existed because the golden (DILOS-import-proven)
+/// AS/AI files are Latin-1 while SftpUpload@1 could only write UTF-8 — with non-ASCII in
+/// most articles/customers that corrupted umlauts from day one. SftpUpload@1 takes an
+/// encoding since r3.4.89 and the shipped pipelines deliver through it, so no pipeline
+/// references this node any more; it stays registered until the removal train. Characters
+/// outside Latin-1 are replaced with '?' and reported loudly (also in dry-run), never silently.
 /// </summary>
 [NodeConfiguration(typeof(DilosSftpWriteNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global

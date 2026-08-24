@@ -25,7 +25,7 @@ public record DilosRenderNodeConfiguration : SourceTargetPathNodeConfiguration
     public string Submandant { get; set; } = "";
 
     /// <summary>Optional JSONPath to receive the golden DILOS file name (consumed by
-    /// DilosSftpWrite's <c>fileNamePath</c>): AI → "AI{Auftragsnummer1}.txt" (= the WeClapp
+    /// SftpUpload@1's <c>fileNamePath</c>): AI → "AI{Auftragsnummer1}.txt" (= the WeClapp
     /// id, matching the K* line; exactly one order required), AS → "AS{yyyyMMddHHmmss}.txt"
     /// in Vienna local time. Empty = no name is written.</summary>
     public string FileNameTargetPath { get; set; } = "";
@@ -55,18 +55,9 @@ public class DilosRenderNode(NodeDelegate next, TimeProvider? timeProvider = nul
         {
             case "AS":
                 content = RenderArticles(dataContext, config, nodeContext);
-                if (content.Length == 0)
-                {
-                    // A batch can consist entirely of system articles (e.g. tenant bootstrap
-                    // before regular articles exist); an empty AS file would be a false
-                    // snapshot and the write node refuses it — end the pipeline instead.
-                    nodeContext.Info("DilosRender: batch contains no deliverable articles — skipping AS delivery");
-                    return;
-                }
-
                 if (config.FileNameTargetPath.Length > 0)
                 {
-                    fileName = DilosFile.AsFileName(_timeProvider.GetUtcNow());
+                    fileName = EnsurePlainFileName(DilosFile.AsFileName(_timeProvider.GetUtcNow()));
                 }
 
                 break;
@@ -77,7 +68,7 @@ public class DilosRenderNode(NodeDelegate next, TimeProvider? timeProvider = nul
                     content = RenderOrders(orders, config);
                     if (config.FileNameTargetPath.Length > 0)
                     {
-                        fileName = BuildAiFileName(orders);
+                        fileName = EnsurePlainFileName(BuildAiFileName(orders));
                     }
 
                     break;
@@ -86,6 +77,24 @@ public class DilosRenderNode(NodeDelegate next, TimeProvider? timeProvider = nul
             default:
                 throw new WeClappPipelineExecutionException(
                     $"Unknown DilosRender mode '{config.Mode}' (expected 'AS' or 'AI')");
+        }
+
+        // Empty content must never reach the delivery: SftpUpload@1 uploads "" as a 0-byte
+        // file rather than refusing it, and the export marker is written after the upload —
+        // so this is the ONLY guard against a false snapshot, for BOTH modes. An AS batch may
+        // legitimately hold no deliverable article (e.g. tenant bootstrap, or only system
+        // articles) and ends the pipeline; an AI execution always renders at least its K*
+        // header, so empty content there is an upstream defect and fails loudly.
+        if (content.Length == 0)
+        {
+            if (config.Mode == "AI")
+            {
+                throw new WeClappPipelineExecutionException(
+                    "DilosRender mode 'AI' rendered no content — refusing to deliver an empty DILOS file");
+            }
+
+            nodeContext.Info("DilosRender: batch contains no deliverable articles — skipping AS delivery");
+            return;
         }
 
         dataContext.Set(config.TargetPath, content, config.DocumentMode,
@@ -159,6 +168,21 @@ public class DilosRenderNode(NodeDelegate next, TimeProvider? timeProvider = nul
         }
 
         return DilosFile.AiFileName(auftragsnummer1);
+    }
+
+    /// <summary>A DILOS file name is a bare name, never a path. The AI name carries the
+    /// external WeClapp order number, so a poisoned value would otherwise travel into the
+    /// delivery node — which resolves such a name to its last segment and uploads under that
+    /// name without complaining. Rejecting here is loud and retried on the next tick.</summary>
+    private static string EnsurePlainFileName(string fileName)
+    {
+        if (fileName.Contains('/') || fileName.Contains('\\') || fileName.Contains(".."))
+        {
+            throw new WeClappPipelineExecutionException(
+                $"DILOS file name '{fileName}' contains a path separator or dot segment — refusing to deliver");
+        }
+
+        return fileName;
     }
 
     /// <summary>Reads the source as an array OR a single object — per-document pipelines

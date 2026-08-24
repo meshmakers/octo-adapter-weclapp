@@ -130,14 +130,17 @@ transformations:
             fileNameTargetPath: $.dilosAiFileName   # AI<Auftragsnummer1>.txt — the WeClapp id,
                                                     # NOT the shop orderNumber
 
-          # ISO-8859-1 delivery (DILOS file format) — the built-in SftpUpload@1 would write
-          # UTF-8 and corrupt umlauts; non-Latin-1 characters are replaced with '?'.
-          - type: DilosSftpWrite@1
+          # ISO-8859-1 delivery (DILOS file format) — SftpUpload@1 defaults to UTF-8, so the
+          # encoding property is what keeps umlauts single-byte; non-Latin-1 characters are
+          # replaced with '?'.
+          - type: SftpUpload@1
             description: Deliver the AI file to the LKV SFTP root as ISO-8859-1 (delete-side handled by LKV)
             serverConfiguration: LkvSftp        # SAME tenant GlobalConfiguration as the return path
             remoteDirectory: /
             fileNamePath: $.dilosAiFileName
             path: $.dilosAi
+            encoding: iso-8859-1                # NEVER omit: the default utf-8 corrupts umlauts
+            onEncodingError: Replace            # one '?' per unrepresentable scalar, logged with its code point
 
           # Persisting the CK entities IS the export marker — MUST stay the last step so a
           # failed upload leaves no marker (the order is retried on the next tick).
