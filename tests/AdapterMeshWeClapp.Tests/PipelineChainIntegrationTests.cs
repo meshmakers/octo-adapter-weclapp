@@ -217,7 +217,7 @@ public class PipelineChainIntegrationTests
             Encoding = "iso-8859-1",
             OnEncodingError = EncodingErrorHandling.Replace,
         };
-        var uploadNode = new SftpUploadNode((_, _) => Task.CompletedTask, A.Fake<IMeshEtlContext>());
+        var uploadNode = CreateSftpUploadNode();
         var buildUploadStream = typeof(SftpUploadNode).GetMethod("GetUploadStreamAsync",
             BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(buildUploadStream);
@@ -233,5 +233,30 @@ public class PipelineChainIntegrationTests
         Assert.Equal("AS20260205143134.txt", dataContext.Get<string>(uploadConfiguration.FileNamePath));
         Assert.Equal(Encoding.Latin1.GetBytes(dilos), uploadedBytes);
         Assert.Contains((byte)0xF6, uploadedBytes); // ö as a single Latin-1 byte, not UTF-8 0xC3 0xB6
+    }
+
+    /// <summary>
+    /// Builds the product's upload node without naming its constructor. That constructor is not
+    /// a stable contract — the product adds services to it, and a build against an SDK newer
+    /// than the one on nuget.org then fails to COMPILE this file (CS7036 on CI, green locally,
+    /// 24.08.) over services this test never reaches. So the ctor is resolved at runtime and
+    /// only the two parameters this test actually feeds are matched by type. Anything else the
+    /// SDK adds gets a STRICT fake: silent while the upload-stream path ignores it, and a loud
+    /// FakeItEasy ExpectationException the day that path starts calling it — never a quietly
+    /// wrong byte assertion.
+    /// </summary>
+    private static SftpUploadNode CreateSftpUploadNode()
+    {
+        var ctor = Assert.Single(typeof(SftpUploadNode).GetConstructors());
+
+        var arguments = ctor.GetParameters().Select(object (parameter) =>
+            parameter.ParameterType == typeof(NodeDelegate)
+                ? (NodeDelegate)((_, _) => Task.CompletedTask)
+                : parameter.ParameterType == typeof(IMeshEtlContext)
+                    ? A.Fake<IMeshEtlContext>()
+                    : FakeItEasy.Sdk.Create.Fake(parameter.ParameterType,
+                        options => options.Strict())).ToArray();
+
+        return (SftpUploadNode)ctor.Invoke(arguments);
     }
 }
