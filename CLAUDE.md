@@ -19,12 +19,10 @@ dotnet build Octo.WeClappAdapter.slnx -c DebugL
 ## Project Structure
 - `src/AdapterMeshWeClapp/` - Mesh adapter host (cloud, connects directly to OctoMesh
   repositories) + all custom pipeline nodes (outbound: `WeClappFetchStep@1`, `WeClappToCk@1`,
-  `DilosRender@1`, `DilosSftpWrite@1` [ISO-8859-1 delivery, superseded by `SftpUpload@1` with
-  `encoding: iso-8859-1`: no pipeline references it any more, but it stays registered in
-  `Program.cs` and test-covered until the removal train]; return path: `DilosFileFetchStep@1`,
-  `DilosFileConfirm@1`, `WeClappArWrite@1`, `WeClappBeWrite@1`; legacy poll-trigger nodes
-  `WeClappFetch@1`/`DilosFileFetch@1` stay registered for rollback, see "Pipeline Trigger
-  Architecture" below)
+  `DilosRender@1` — the delivery itself is the product's `SftpUpload@1`, see "AS/AI Delivery"
+  below; return path: `DilosFileFetchStep@1`, `DilosFileConfirm@1`, `WeClappArWrite@1`,
+  `WeClappBeWrite@1`; legacy poll-trigger nodes `WeClappFetch@1`/`DilosFileFetch@1` stay
+  registered for rollback, see "Pipeline Trigger Architecture" below)
 - `src/Lkv.WeClapp.Core/` - plain core lib: WeClapp DTOs/JSON, WeClapp→DILOS value rules,
   DILOS AS/AI writers, DILOS AR/BE parsers + write-back planners (fail-loud, golden-file verified)
 - `src/charts/octo-weclapp-adapter/` - Helm chart (deployed by the Communication Operator;
@@ -109,15 +107,15 @@ and `OrdersToAiYaml_ConfiguredCkPaths_ResolveAgainstOrderTransformOutput` resolv
 value path against the REAL `WeClappToCk@1` output (Article mode writes `$.ck` FLAT, Order mode
 NESTED), so a path that silently resolves to null cannot ship;
 `OrdersToAiYaml_CustomerNameUpdate_ResolvesForB2cCustomers` covers the B2C case below;
-`AsAiYamls_DeliverViaSftpUploadInIso88591` forbids `DilosSftpWrite@1` anywhere and pins every
-shipped `SftpUpload@1`: effective `encoding` `iso-8859-1` resolving to the same code page the
-render side writes, effective `onEncodingError` `Replace`, and the delivered name coming from
-`fileNamePath` rather than a static `fileName` or a binary `fileRtId` source. All four are read
-from the BOUND configuration, so a property left out of the yaml passes on its default — that is
-deliberate for `onEncodingError` (default `Replace`) and caught for `encoding` (default utf-8,
-which would ship mojibake to LKV without failing anything). The name pin exists because the
-retired custom node had no static-name property at all: the swap widened that surface, and a
-static name would make every delivery overwrite the previous one;
+`AsAiYamls_DeliverViaSftpUploadInIso88591` pins every shipped `SftpUpload@1`: effective
+`encoding` `iso-8859-1` resolving to the same code page the render side writes, effective
+`onEncodingError` `Replace`, and the delivered name coming from `fileNamePath` rather than a
+static `fileName` or a binary `fileRtId` source. All four are read from the BOUND configuration,
+so a property left out of the yaml passes on its default — that is deliberate for
+`onEncodingError` (default `Replace`) and caught for `encoding` (default utf-8, which would ship
+mojibake to LKV without failing anything). The name pin exists because the retired custom node
+had no static-name property at all: the swap widened that surface, and a static name would make
+every delivery overwrite the previous one;
 `AsAiYamls_SftpUpload_ReadsTheRenderOutputAndTargetsTheLkvRoot` pins what contract 13 leaves
 open: that `SftpUpload@1` reads exactly what `DilosRender@1` wrote (`path` == `targetPath`,
 `fileNamePath` == `fileNameTargetPath`), delivers to the SFTP root, and names the same tenant
