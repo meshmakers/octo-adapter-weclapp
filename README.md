@@ -12,7 +12,8 @@ template.
     step-node pipelines; kept registered for rollback until the standard-node switch),
     `WeClappFetchStep@1` (fetches WeClapp articles/orders into the data context for the
     cron-triggered pipelines), `WeClappToCk@1`, `DilosRender@1` (content + golden file names),
-    `DilosSftpWrite@1` (ISO-8859-1 delivery)
+    `DilosSftpWrite@1` (ISO-8859-1 delivery; superseded by the product's `SftpUpload@1` with
+    `encoding: iso-8859-1`, no pipeline references it any more, removal rides the next train)
   - return path: `DilosFileFetch@1` (legacy trigger, superseded by the passive cron-trigger +
     step-node pipelines; kept registered for rollback until the standard-node switch),
     `DilosFileFetchStep@1` (lists the LKV SFTP server into `$.files` for the cron-triggered
