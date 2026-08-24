@@ -1,6 +1,8 @@
 using System.Reflection;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using Lkv.WeClapp.Core.Dilos;
 using FakeItEasy;
 using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Nodes;
 using Meshmakers.Octo.MeshAdapter.Nodes;
@@ -493,6 +495,168 @@ public class PipelineYamlContractTests
 
         Assert.Empty(violations);
         Assert.Equal(2, checkedYamls); // ar + be - the return-path yamls must stay covered
+    }
+
+    // ---------- contract 13: AS/AI deliver through the product node in Latin-1 ----------
+
+    // The DILOS file format is ISO-8859-1 and SftpUpload@1 defaults to utf-8, so a delivery node
+    // that loses the property writes umlauts as two bytes and the LKV import sees mojibake -
+    // silently, because nothing fails. Replace keeps the historic behaviour of one '?' per
+    // unrepresentable scalar; Fail would drop a whole day's delivery over a single character.
+    [Fact]
+    public async Task AsAiYamls_DeliverViaSftpUploadInIso88591()
+    {
+        var violations = new List<string>();
+        var uploads = 0;
+
+        foreach (var yaml in AllPipelineYamls)
+        {
+            var root = await DeserializePipeline(yaml);
+
+            foreach (var legacy in Walk(root.Transformations).OfType<DilosSftpWriteNodeConfiguration>())
+            {
+                violations.Add($"{yaml}: '{legacy.Description}' still delivers via DilosSftpWrite@1 - " +
+                               "the product node covers Latin-1 delivery since r3.4.89");
+            }
+
+            foreach (var upload in Walk(root.Transformations).OfType<SftpUploadNodeConfiguration>())
+            {
+                uploads++;
+
+                if (!string.Equals(upload.Encoding, "iso-8859-1", StringComparison.OrdinalIgnoreCase))
+                {
+                    violations.Add($"{yaml}: SftpUpload '{upload.Description}' writes '{upload.Encoding}', " +
+                                   "expected 'iso-8859-1' - the utf-8 default corrupts umlauts in DILOS files");
+                }
+
+                if (upload.OnEncodingError != EncodingErrorHandling.Replace)
+                {
+                    violations.Add($"{yaml}: SftpUpload '{upload.Description}' uses onEncodingError " +
+                                   $"'{upload.OnEncodingError}', expected 'Replace' - Fail would suppress " +
+                                   "the whole delivery over one character");
+                }
+
+                // The yaml names the encoding as a string, DilosRender builds the content with
+                // DilosFile.Encoding. Two names that resolve to different code pages would still
+                // upload - with different bytes, which the LKV import reads as mojibake.
+                var configured = Encoding.GetEncoding(upload.Encoding);
+                if (configured.CodePage != DilosFile.Encoding.CodePage)
+                {
+                    violations.Add($"{yaml}: SftpUpload '{upload.Description}' resolves '{upload.Encoding}' to " +
+                                   $"code page {configured.CodePage}, but the render side writes " +
+                                   $"{DilosFile.Encoding.CodePage}");
+                }
+
+                // The retired custom node had no static-name and no binary-source property, so the
+                // file name COULD only come from the render step. The product node offers both, and
+                // a static name would make every delivery overwrite the same remote file.
+                if (string.IsNullOrEmpty(upload.FileNamePath))
+                {
+                    violations.Add($"{yaml}: SftpUpload '{upload.Description}' has no fileNamePath - " +
+                                   "the delivered name must come from the render step");
+                }
+
+                if (!string.IsNullOrEmpty(upload.FileName) || !string.IsNullOrEmpty(upload.FileRtId) ||
+                    !string.IsNullOrEmpty(upload.FileRtIdPath))
+                {
+                    violations.Add($"{yaml}: SftpUpload '{upload.Description}' names a static file name or a " +
+                                   "binary source - DILOS content comes from the data context via path, and a " +
+                                   "static name would overwrite the previous delivery");
+                }
+            }
+        }
+
+        Assert.Empty(violations);
+        Assert.Equal(2, uploads); // as + ai - a third delivery must be a deliberate edit here
+    }
+
+    // ---------- contract 14: the AS/AI delivery reads the render output and targets LKV ----------
+
+    // Contract 13 pins HOW the delivery encodes, not WHAT it reads or WHERE it writes. Each of
+    // the strings below can be renamed on ONE side and still ship green: an upload whose path no
+    // longer matches the render's targetPath reads an unset value, one whose fileNamePath no
+    // longer matches fileNameTargetPath has no name, a remoteDirectory other than the root puts
+    // the file where the LKV import does not look, and a serverConfiguration drifting away from
+    // the return path's entry delivers to a different server than the AR/BE files come from.
+    // None of it fails locally - the first evidence would be a staging run.
+    [Fact]
+    public async Task AsAiYamls_SftpUpload_ReadsTheRenderOutputAndTargetsTheLkvRoot()
+    {
+        var violations = new List<string>();
+        var deliveries = 0;
+        var sftpEntries = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var yaml in AllPipelineYamls)
+        {
+            var root = await DeserializePipeline(yaml);
+            var nodes = Walk(root.Transformations).ToList();
+
+            foreach (var fetchStep in nodes.OfType<DilosFileFetchStepNodeConfiguration>())
+            {
+                sftpEntries.Add(fetchStep.ServerConfiguration);
+            }
+
+            var uploads = nodes.OfType<SftpUploadNodeConfiguration>().ToList();
+            if (uploads.Count == 0)
+            {
+                continue; // no DILOS delivery in this yaml (ck/ar/be)
+            }
+
+            deliveries++;
+            var upload = Assert.Single(uploads);
+            var render = Assert.Single(nodes.OfType<DilosRenderNodeConfiguration>());
+            sftpEntries.Add(upload.ServerConfiguration);
+
+            if (!string.Equals(render.TargetPath, upload.Path, StringComparison.Ordinal))
+            {
+                violations.Add($"{yaml}: DilosRender writes the content to '{render.TargetPath}' but " +
+                               $"SftpUpload reads '{upload.Path}'");
+            }
+
+            if (!string.Equals(render.FileNameTargetPath, upload.FileNamePath, StringComparison.Ordinal))
+            {
+                violations.Add($"{yaml}: DilosRender writes the file name to '{render.FileNameTargetPath}' " +
+                               $"but SftpUpload reads '{upload.FileNamePath}'");
+            }
+
+            if (upload.RemoteDirectory != "/")
+            {
+                violations.Add($"{yaml}: SftpUpload delivers to '{upload.RemoteDirectory}', expected the SFTP " +
+                               "root - that is the directory the LKV import reads (Billbee production layout)");
+            }
+        }
+
+        Assert.Empty(violations);
+        Assert.Equal(2, deliveries); // as + ai - a third delivery must be a deliberate edit here
+        Assert.True(sftpEntries.Count == 1,
+            "the AS/AI delivery and the AR/BE return path must name the SAME tenant SFTP entry, found: " +
+            string.Join(", ", sftpEntries.OrderBy(e => e, StringComparer.Ordinal)));
+    }
+
+    // ---------- contract 15: entity persistence uses the current ApplyChanges ----------
+
+    // ApplyChanges@1 is a bare record with a single `path` - it has no property for association
+    // updates at all. Adding an associationUpdatesPath to such a node therefore does not lose the
+    // associations quietly: the strict deserializer rejects the unknown property and the pipeline
+    // registration fails at the tenant. This guard moves that failure EARLIER and closer to the
+    // edit - red in this suite instead of red on a deploy nobody is watching.
+    [Fact]
+    public async Task AllPipelineYamls_ApplyChanges_IsVersion2()
+    {
+        var violations = new List<string>();
+
+        foreach (var yaml in AllPipelineYamls)
+        {
+            var root = await DeserializePipeline(yaml);
+
+            foreach (var legacy in Walk(root.Transformations).OfType<ApplyChangesNodeConfiguration>())
+            {
+                violations.Add($"{yaml}: '{legacy.Description}' uses the deprecated ApplyChanges@1 - " +
+                               "use @2 with entityUpdatesPath (and associationUpdatesPath where needed)");
+            }
+        }
+
+        Assert.Empty(violations);
     }
 
     // ---------- helpers ----------

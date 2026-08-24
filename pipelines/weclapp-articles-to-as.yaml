@@ -14,8 +14,8 @@
 # midnight; across the day boundary two deliveries in short succession are possible
 # (yesterday's late run + today's early one) — deliberately accepted.
 # System articles (LOADING_EQUIPMENT) are excluded by the AS render itself.
-# Encoding: delivered as ISO-8859-1 (DILOS file format) — the built-in SftpUpload@1
-# would write UTF-8 and corrupt umlauts.
+# Encoding: delivered as ISO-8859-1 (DILOS file format) — SftpUpload@1 defaults to UTF-8,
+# so the encoding property on the delivery node is what keeps umlauts single-byte.
 
 triggers:
   - type: FromPipelineTriggerEvent@1
@@ -64,12 +64,14 @@ transformations:
         targetPath: $.dilosAs
         fileNameTargetPath: $.dilosAsFileName   # AS<yyyyMMddHHmmss>.txt, Vienna local time
 
-      - type: DilosSftpWrite@1
+      - type: SftpUpload@1
         description: Deliver the AS file to the LKV SFTP root as ISO-8859-1
         serverConfiguration: LkvSftp        # SAME tenant GlobalConfiguration as the return path
         remoteDirectory: /
         fileNamePath: $.dilosAsFileName
         path: $.dilosAs
+        encoding: iso-8859-1                # NEVER omit: the default utf-8 corrupts umlauts
+        onEncodingError: Replace            # one '?' per unrepresentable scalar, logged with its code point
 
       # attributeValueType is REQUIRED per update — without it the update is silently
       # dropped and the marker never persists.

@@ -10,7 +10,9 @@
 # Prerequisites:
 #   - octo-cli context 'test-2_lkv' active and authenticated (Register-OctoCliContext)
 #   - The deployed adapter image is built against SDK >= r3.4.91: the ar/be YAMLs use
-#     continueOnError, which older images reject at pipeline registration
+#     continueOnError, which older images reject at pipeline registration. The as/ai
+#     encoding/onEncodingError properties on SftpUpload@1 ship since r3.4.89 and are
+#     therefore below that floor, not the binding constraint
 #   - Environment variables WECLAPP_CUSTOMER_API_KEY and WECLAPP_CUSTOMER_BASEURL set
 #     (user level; the same variables gate WeClappCustomerSmokeTests):
 #       setx WECLAPP_CUSTOMER_API_KEY "<token from WeClapp: Mein Profil -> API-Token>"
@@ -54,6 +56,10 @@ Write-Host "      BaseUrl = $($env:WECLAPP_CUSTOMER_BASEURL.TrimEnd('/'))"
 Write-Host "      ApiKey  = value of WECLAPP_CUSTOMER_API_KEY"
 Write-Host " 2. Create/verify the entry 'LkvSftp' (System.Communication/SftpConfiguration)"
 Write-Host "    with the LKV SFTP access data (same well-known-name rule)."
+Write-Host "    MaxConcurrentConnections MUST carry a value - use 3. The CK attribute is"
+Write-Host "    optional, but SftpUpload@1 reads it as a non-nullable int: left unset it"
+Write-Host "    arrives as null and every upload run dies while the entry is deserialized,"
+Write-Host "    before any node does work (staging, 2026-08-21)."
 Write-Host " 3. Deploy the pipeline YAMLs from ../pipelines via the AdminPanel to the"
 Write-Host "    adapter 'WeClapp Mesh Adapter (LKV)', associate both entries with every"
 Write-Host "    pipeline (Uses association, from the pipeline), then REDEPLOY the"

@@ -105,7 +105,6 @@ public class AiExportGateTests
             .RegisterNodeConfiguration<WeClappFetchTriggerNodeConfiguration>()
             .RegisterNodeConfiguration<WeClappToCkNodeConfiguration>()
             .RegisterNodeConfiguration<DilosRenderNodeConfiguration>()
-            .RegisterNodeConfiguration<DilosSftpWriteNodeConfiguration>()
             .RegisterNodeConfiguration<WeClappFetchStepNodeConfiguration>();
         var lookup = services.BuildServiceProvider().GetRequiredService<INodeQualifiedNameLookupService>();
 
@@ -121,7 +120,7 @@ public class AiExportGateTests
         // Nothing that renders, delivers or persists may sit at the top level either — every
         // such node belongs INSIDE the per-item ForEach's gate, never beside or after it.
         Assert.DoesNotContain(top, n => n is DilosRenderNodeConfiguration);
-        Assert.DoesNotContain(top, n => n is DilosSftpWriteNodeConfiguration);
+        Assert.DoesNotContain(top, n => n is SftpUploadNodeConfiguration);
         Assert.DoesNotContain(top, n => n is ApplyChangesNodeConfiguration2);
         Assert.DoesNotContain(top, n => n is CreateUpdateInfoNodeConfiguration);
         Assert.DoesNotContain(top, n => n is CreateAssociationUpdateNodeConfiguration);
@@ -136,7 +135,7 @@ public class AiExportGateTests
         Assert.Contains(perItem, n => n is GetOrCreateRtEntitiesByTypeNodeConfiguration);
         // …but nothing that renders, delivers or persists may run unconditionally:
         Assert.DoesNotContain(perItem, n => n is DilosRenderNodeConfiguration);
-        Assert.DoesNotContain(perItem, n => n is DilosSftpWriteNodeConfiguration);
+        Assert.DoesNotContain(perItem, n => n is SftpUploadNodeConfiguration);
         Assert.DoesNotContain(perItem, n => n is ApplyChangesNodeConfiguration2);
         Assert.DoesNotContain(perItem, n => n is CreateUpdateInfoNodeConfiguration);
         Assert.DoesNotContain(perItem, n => n is CreateAssociationUpdateNodeConfiguration);
@@ -153,11 +152,11 @@ public class AiExportGateTests
         // (the CK order entity IS the export marker; at-least-once by construction).
         var children = gate.Transformations?.ToList() ?? new List<NodeConfiguration>();
         var renderIndex = children.FindIndex(n => n is DilosRenderNodeConfiguration);
-        var uploadIndex = children.FindIndex(n => n is DilosSftpWriteNodeConfiguration);
+        var uploadIndex = children.FindIndex(n => n is SftpUploadNodeConfiguration);
         var persistIndex = children.FindIndex(n => n is ApplyChangesNodeConfiguration2);
 
         Assert.True(renderIndex >= 0, "DilosRender must run inside the gate");
-        Assert.True(uploadIndex > renderIndex, "DilosSftpWrite must run inside the gate, after render");
+        Assert.True(uploadIndex > renderIndex, "SftpUpload must run inside the gate, after render");
         Assert.True(persistIndex > uploadIndex, "ApplyChanges (the export marker) must run AFTER the upload");
         Assert.Contains(children, n => n is CreateUpdateInfoNodeConfiguration);
         Assert.Contains(children, n => n is CreateAssociationUpdateNodeConfiguration);
@@ -175,7 +174,7 @@ public class AiExportGateTests
 
     private static bool IsRenderDeliverOrPersist(NodeConfiguration n) =>
         n is DilosRenderNodeConfiguration
-            or DilosSftpWriteNodeConfiguration
+            or SftpUploadNodeConfiguration
             or ApplyChangesNodeConfiguration2
             or CreateUpdateInfoNodeConfiguration
             or CreateAssociationUpdateNodeConfiguration;

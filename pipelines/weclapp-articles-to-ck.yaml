@@ -66,6 +66,7 @@ transformations:
         targetPath: $.updates
         targetValueWriteMode: Append      # NEVER omit: the Overwrite default keeps only the LAST update
 
-      - type: ApplyChanges@1
+      - type: ApplyChanges@2
         description: Persist the article upsert
-        path: $.updates
+        entityUpdatesPath: $.updates      # @2 renames the property and adds associationUpdatesPath;
+                                          # @1 has neither and rejects them at registration

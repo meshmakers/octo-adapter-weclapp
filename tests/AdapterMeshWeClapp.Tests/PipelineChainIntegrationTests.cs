@@ -1,14 +1,17 @@
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using FakeItEasy;
 using Lkv.WeClapp.Core.Model;
-using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Services;
 using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Nodes;
 using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Tests.Nodes;
+using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.Common.Services;
+using Meshmakers.Octo.Sdk.MeshAdapter;
+using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
 using Microsoft.Extensions.Logging;
 
 namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Tests;
@@ -197,40 +200,38 @@ public class PipelineChainIntegrationTests
 
         Assert.Equal("AS20260205143134.txt", dataContext.Get<string>("$.dilosAsFileName"));
 
-        // --- Phase 3: Latin-1 delivery — the umlaut in "Größe" must land as ONE
-        //     ISO-8859-1 byte (0xF6), exactly like the golden Billbee-produced files ---
-        var etlContext = A.Fake<Meshmakers.Octo.Sdk.MeshAdapter.IMeshEtlContext>();
-        var globalConfiguration = A.Fake<IGlobalConfiguration>();
-        A.CallTo(() => etlContext.GlobalConfiguration).Returns(globalConfiguration);
-        A.CallTo(() => globalConfiguration.IsDefined("LkvSftp")).Returns(true);
-        var settings = new SftpConnectionSettings { Host = "h", Username = "u", Password = "p" };
-        A.CallTo(() => globalConfiguration.GetValue<SftpConnectionSettings>("LkvSftp")).Returns(settings);
-        var sftpFactory = A.Fake<ISftpFileSystemFactory>();
-        var sftp = A.Fake<ISftpFileSystem>();
-        A.CallTo(() => sftpFactory.Connect(settings)).Returns(sftp);
-        string? uploadedPath = null;
-        byte[]? uploadedBytes = null;
-        A.CallTo(() => sftp.UploadBytes(A<string>._, A<byte[]>._))
-            .Invokes(call =>
-            {
-                uploadedPath = (string?)call.Arguments[0];
-                uploadedBytes = (byte[]?)call.Arguments[1];
-            });
+        // --- Phase 3: Latin-1 delivery through the node the shipped pipelines use,
+        //     SftpUpload@1 configured exactly as the yamls configure it — the umlaut in
+        //     "Größe" must land as ONE ISO-8859-1 byte (0xF6), like the golden
+        //     Billbee-produced files. The encoding happens while the node builds its upload
+        //     stream; the product keeps that step internal (its own suite reaches it through
+        //     InternalsVisibleTo), so reflection is the only way to certify the delivered
+        //     BYTES from here. A rename turns this test red rather than leaving the byte
+        //     assertion quietly unexercised. ---
+        var uploadConfiguration = new SftpUploadNodeConfiguration
+        {
+            ServerConfiguration = "LkvSftp",
+            RemoteDirectory = "/",
+            FileNamePath = "$.dilosAsFileName",
+            Path = "$.dilosAs",
+            Encoding = "iso-8859-1",
+            OnEncodingError = EncodingErrorHandling.Replace,
+        };
+        var uploadNode = new SftpUploadNode((_, _) => Task.CompletedTask, A.Fake<IMeshEtlContext>());
+        var buildUploadStream = typeof(SftpUploadNode).GetMethod("GetUploadStreamAsync",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(buildUploadStream);
 
-        A.CallTo(() => nodeContext.GetNodeConfiguration<DilosSftpWriteNodeConfiguration>())
-            .Returns(new DilosSftpWriteNodeConfiguration
-            {
-                ServerConfiguration = "LkvSftp",
-                RemoteDirectory = "/",
-                FileNamePath = "$.dilosAsFileName",
-                Path = "$.dilosAs",
-            });
+        await using var uploadStream = await (Task<Stream>)buildUploadStream!
+            .Invoke(uploadNode, [uploadConfiguration, dataContext, nodeContext])!;
+        using var uploaded = new MemoryStream();
+        await uploadStream.CopyToAsync(uploaded);
+        var uploadedBytes = uploaded.ToArray();
 
-        var write = new DilosSftpWriteNode((_, _) => Task.CompletedTask, etlContext, sftpFactory);
-        await write.ProcessObjectAsync(dataContext, nodeContext);
-
-        Assert.Equal("/AS20260205143134.txt", uploadedPath);
+        // The name the delivery reads is the one the render wrote — the yaml pins the two
+        // paths to each other, this pins the value behind them.
+        Assert.Equal("AS20260205143134.txt", dataContext.Get<string>(uploadConfiguration.FileNamePath));
         Assert.Equal(Encoding.Latin1.GetBytes(dilos), uploadedBytes);
-        Assert.Contains((byte)0xF6, uploadedBytes!); // ö as a single Latin-1 byte, not UTF-8 0xC3 0xB6
+        Assert.Contains((byte)0xF6, uploadedBytes); // ö as a single Latin-1 byte, not UTF-8 0xC3 0xB6
     }
 }

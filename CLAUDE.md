@@ -19,7 +19,9 @@ dotnet build Octo.WeClappAdapter.slnx -c DebugL
 ## Project Structure
 - `src/AdapterMeshWeClapp/` - Mesh adapter host (cloud, connects directly to OctoMesh
   repositories) + all custom pipeline nodes (outbound: `WeClappFetchStep@1`, `WeClappToCk@1`,
-  `DilosRender@1`, `DilosSftpWrite@1` [ISO-8859-1 delivery]; return path: `DilosFileFetchStep@1`,
+  `DilosRender@1`, `DilosSftpWrite@1` [ISO-8859-1 delivery, superseded by `SftpUpload@1` with
+  `encoding: iso-8859-1`: no pipeline references it any more, but it stays registered in
+  `Program.cs` and test-covered until the removal train]; return path: `DilosFileFetchStep@1`,
   `DilosFileConfirm@1`, `WeClappArWrite@1`, `WeClappBeWrite@1`; legacy poll-trigger nodes
   `WeClappFetch@1`/`DilosFileFetch@1` stay registered for rollback, see "Pipeline Trigger
   Architecture" below)
@@ -77,7 +79,7 @@ former per-execution chain out over that array, one iteration per element
 ```
 Merge results keep source order since AB#4760, but the contract is unchanged: **nothing may
 read `$.loopResult`**; every child writes through the data context instead
-(`ApplyChanges@1/@2`, `DilosSftpWrite@1`, `WeClappArWrite@1`, ...).
+(`ApplyChanges@2`, `SftpUpload@1`, `WeClappArWrite@1`, ...).
 
 **Activation:** importing a `System.Communication/PipelineTrigger` RT entity schedules NOTHING
 by itself — schedules materialize only via `octo-cli -c DeployTriggers` (or tenant start). Run
@@ -106,7 +108,25 @@ update to declare its `valueType`; `ArticlesToCkYaml_ConfiguredPaths_ResolveAgai
 and `OrdersToAiYaml_ConfiguredCkPaths_ResolveAgainstOrderTransformOutput` resolve every configured
 value path against the REAL `WeClappToCk@1` output (Article mode writes `$.ck` FLAT, Order mode
 NESTED), so a path that silently resolves to null cannot ship;
-`OrdersToAiYaml_CustomerNameUpdate_ResolvesForB2cCustomers` covers the B2C case below.
+`OrdersToAiYaml_CustomerNameUpdate_ResolvesForB2cCustomers` covers the B2C case below;
+`AsAiYamls_DeliverViaSftpUploadInIso88591` forbids `DilosSftpWrite@1` anywhere and pins every
+shipped `SftpUpload@1`: effective `encoding` `iso-8859-1` resolving to the same code page the
+render side writes, effective `onEncodingError` `Replace`, and the delivered name coming from
+`fileNamePath` rather than a static `fileName` or a binary `fileRtId` source. All four are read
+from the BOUND configuration, so a property left out of the yaml passes on its default — that is
+deliberate for `onEncodingError` (default `Replace`) and caught for `encoding` (default utf-8,
+which would ship mojibake to LKV without failing anything). The name pin exists because the
+retired custom node had no static-name property at all: the swap widened that surface, and a
+static name would make every delivery overwrite the previous one;
+`AsAiYamls_SftpUpload_ReadsTheRenderOutputAndTargetsTheLkvRoot` pins what contract 13 leaves
+open: that `SftpUpload@1` reads exactly what `DilosRender@1` wrote (`path` == `targetPath`,
+`fileNamePath` == `fileNameTargetPath`), delivers to the SFTP root, and names the same tenant
+SFTP entry the AR/BE return path uses — every one of those strings can be renamed on ONE side,
+ship green and surface on staging at the earliest; `AllPipelineYamls_ApplyChanges_IsVersion2`
+forbids the deprecated `ApplyChanges@1` — its configuration is a bare record with no association
+property at all, so adding an `associationUpdatesPath` there does NOT drop associations quietly:
+the strict deserializer rejects the unknown property and the pipeline registration fails at the
+tenant. The guard moves that failure earlier, into this suite and next to the edit.
 
 This list is machine-checked: `DocumentationContractTests.ClaudeMd_NamesEveryPipelineContractTest`
 fails the suite if a `PipelineYamlContractTests` guard is not named here. It drifted once (AB#4845
@@ -128,6 +148,28 @@ claims completeness invites re-pinning an invariant that already holds.
   field leaves the CK name empty for B2C (live finding 2026-07-16). `DilosOrderWriter`
   (`RecipientName1`/`RecipientName2`) builds the DILOS FILE name fields from the ADDRESS instead;
   name2 ("Nachname Vorname") stays empty unless a company fills name1.
+
+## AS/AI Delivery (WeClapp → SFTP)
+- Render and transport are separate nodes: `DilosRender@1` builds the content AND the golden
+  file name, `SftpUpload@1` (`encoding: iso-8859-1`, `onEncodingError: Replace`) writes both to
+  the LKV SFTP root. The tenant entry (`LkvSftp`) MUST carry a `MaxConcurrentConnections` value
+  (3) — the CK attribute is optional but the node reads a non-nullable int, and an unset value
+  kills every run while the entry is deserialized (staging, 2026-08-21).
+- `DilosRender@1` owns BOTH content guards because nothing downstream repeats them:
+  `SftpUpload@1` uploads empty content as a 0-byte file, and resolves a file name carrying path
+  segments to its last segment instead of refusing it. So the render ends the pipeline on an
+  empty AS batch (legitimate: only system articles), throws on empty AI content, and throws on
+  any name containing `/`, `\` or `..` — the AI name carries the external WeClapp order number.
+- **A dry run proves less than it used to**: `SftpUpload@1` returns at its dry-run gate BEFORE
+  it resolves the content path and encodes it (the retired custom node deliberately did both
+  first). A dry-run probe therefore proves only that the `LkvSftp` entry resolves and carries
+  auth material and that the file name is there — never that a connection works, that `path:`
+  points at real content, or that the encoding survives. All three surface on the first real tick.
+- **A successful upload leaves no log line**: `SftpUpload@1` logs nothing on success, and its
+  encoding warning names neither the file nor the order (at most 20 distinct code points).
+  Delivery proof is the SFTP listing plus the CK export marker, never the log — inside the
+  per-order AI `ForEach@1` nothing says WHICH order was degraded. Product follow-up (success
+  info + file attribution) is tracked for C2.
 
 ## AR/BE Return Path (SFTP → WeClapp)
 - `DilosFileFetchStep@1` lists the LKV SFTP (credentials via tenant GlobalConfiguration
