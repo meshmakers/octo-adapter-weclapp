@@ -42,7 +42,6 @@ public class AsExportGateTests
             .RegisterNodeConfiguration<WeClappFetchTriggerNodeConfiguration>()
             .RegisterNodeConfiguration<WeClappToCkNodeConfiguration>()
             .RegisterNodeConfiguration<DilosRenderNodeConfiguration>()
-            .RegisterNodeConfiguration<DilosSftpWriteNodeConfiguration>()
             .RegisterNodeConfiguration<WeClappFetchStepNodeConfiguration>();
         var lookup = services.BuildServiceProvider().GetRequiredService<INodeQualifiedNameLookupService>();
 
@@ -76,7 +75,7 @@ public class AsExportGateTests
         Assert.Contains(probe.FieldFilters!, f => f.ComparisonValuePath == "$.meta.exportKind");
         Assert.Contains(probe.FieldFilters!, f => f.ComparisonValuePath == "$.meta.exportDate");
         Assert.DoesNotContain(top, n => n is DilosRenderNodeConfiguration);
-        Assert.DoesNotContain(top, n => n is DilosSftpWriteNodeConfiguration);
+        Assert.DoesNotContain(top, n => n is SftpUploadNodeConfiguration);
         Assert.DoesNotContain(top, n => n is ApplyChangesNodeConfiguration2);
         Assert.DoesNotContain(top, n => n is CreateUpdateInfoNodeConfiguration);
 
@@ -95,7 +94,7 @@ public class AsExportGateTests
         // Im Gate: render → upload → Marker-CreateUpdateInfo → ApplyChanges@2 als LETZTER Schritt:
         var children = gate.Transformations!.ToList();
         var renderIndex = children.FindIndex(n => n is DilosRenderNodeConfiguration);
-        var uploadIndex = children.FindIndex(n => n is DilosSftpWriteNodeConfiguration);
+        var uploadIndex = children.FindIndex(n => n is SftpUploadNodeConfiguration);
         var markerIndex = children.FindIndex(n => n is CreateUpdateInfoNodeConfiguration);
         var persistIndex = children.FindIndex(n => n is ApplyChangesNodeConfiguration2);
         Assert.True(renderIndex >= 0);

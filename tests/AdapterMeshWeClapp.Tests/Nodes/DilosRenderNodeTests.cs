@@ -125,7 +125,8 @@ public class DilosRenderNodeTests
 
     // Defensive twin of the only-system-articles case below: the Batch trigger never emits
     // an empty poll, but if an empty array ever reaches the render, emitting an empty AS
-    // file would be a false snapshot (and the write node refuses it) — end the pipeline.
+    // file would be a false snapshot — and nothing downstream would stop it, the delivery
+    // node uploads empty content as a 0-byte file — so the render ends the pipeline.
     [Fact]
     public async Task ProcessObjectAsync_EmptyArray_EndsPipelineWithoutOutput()
     {
@@ -306,8 +307,8 @@ public class DilosRenderNodeTests
     }
 
     // A batch can consist entirely of loading equipment (e.g. tenant bootstrap before
-    // regular articles exist). Emitting empty content would make the write node throw on
-    // every poll — the render must end the pipeline instead.
+    // regular articles exist). Emitting empty content would deliver a 0-byte AS file to LKV
+    // as a false snapshot — the render must end the pipeline instead.
     [Fact]
     public async Task ProcessObjectAsync_AsMode_BatchWithOnlySystemArticles_EndsPipelineWithoutOutput()
     {
@@ -337,5 +338,49 @@ public class DilosRenderNodeTests
 
         await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
             () => _sut.ProcessObjectAsync(_dataContext, _nodeContext));
+    }
+
+    // The AI name embeds the external WeClapp order number. A name carrying path segments
+    // does not fail the delivery: it is resolved to its last segment and uploaded under
+    // that name, so the file lands somewhere nobody looks and nothing reports it. The
+    // render is where such a value has to die.
+    [Theory]
+    [InlineData("../5910986621265")]
+    [InlineData("/etc/5910986621265")]
+    [InlineData("59109\\86621265")]
+    public async Task ProcessObjectAsync_AiModeFileNameWithPathCharacters_ThrowsAndDoesNotContinue(string id)
+    {
+        Configure("AI", submandant: "51696697501", fileNameTargetPath: "$.dilosAiFileName");
+        A.CallTo(() => _dataContext.GetArray<WeClappSalesOrder>("$.items"))
+            .Returns(new List<WeClappSalesOrder?>
+            {
+                new() { Id = id, OrderNumber = "74299", CustomerNumber = "7067387625809" },
+            });
+
+        await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
+            () => _sut.ProcessObjectAsync(_dataContext, _nodeContext));
+
+        A.CallTo(() => _dataContext.Set(A<string>._, A<string>._, A<DocumentModes>._,
+            A<ValueKinds>._, A<TargetValueWriteModes>._)).MustNotHaveHappened();
+        A.CallTo(() => _next(_dataContext, _nodeContext)).MustNotHaveHappened();
+    }
+
+    // Empty AI content is the mirror of the empty-AS case, and it needs the opposite
+    // answer: an execution reaching the render always carries exactly one order, which
+    // always renders at least its K* header. Nothing downstream refuses "" — the delivery
+    // node would upload a 0-byte file — so the render fails loudly and the tick retries.
+    [Fact]
+    public async Task ProcessObjectAsync_AiMode_EmptyContent_ThrowsAndDoesNotContinue()
+    {
+        Configure("AI", submandant: "51696697501");
+        A.CallTo(() => _dataContext.GetArray<WeClappSalesOrder>("$.items"))
+            .Returns(new List<WeClappSalesOrder?>());
+
+        await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
+            () => _sut.ProcessObjectAsync(_dataContext, _nodeContext));
+
+        A.CallTo(() => _dataContext.Set(A<string>._, A<string>._, A<DocumentModes>._,
+            A<ValueKinds>._, A<TargetValueWriteModes>._)).MustNotHaveHappened();
+        A.CallTo(() => _next(_dataContext, _nodeContext)).MustNotHaveHappened();
     }
 }
