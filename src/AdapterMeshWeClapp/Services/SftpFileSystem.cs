@@ -58,10 +58,10 @@ public interface ISftpFileSystemFactory
 }
 
 /// <summary>
-/// Shared resolution of a tenant SFTP GlobalConfiguration entry — one validation for both
-/// transfer directions (DilosFileFetch@1 and DilosSftpWrite@1), so a half-configured entry
-/// fails with the same clear message everywhere instead of reaching SSH.NET with empty
-/// credentials.
+/// Shared resolution of a tenant SFTP GlobalConfiguration entry — one validation for every
+/// node that opens the LKV SFTP (DilosFileFetch@1, DilosFileFetchStep@1, DilosFileConfirm@1),
+/// so a half-configured entry fails with the same clear message everywhere instead of reaching
+/// SSH.NET with empty credentials.
 /// </summary>
 public static class SftpConnectionSettingsResolver
 {

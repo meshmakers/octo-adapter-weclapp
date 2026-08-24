@@ -503,6 +503,10 @@ public class PipelineYamlContractTests
     // that loses the property writes umlauts as two bytes and the LKV import sees mojibake -
     // silently, because nothing fails. Replace keeps the historic behaviour of one '?' per
     // unrepresentable scalar; Fail would drop a whole day's delivery over a single character.
+    // The retired custom delivery node needs no check of its own any more: its configuration type
+    // is gone, so a yaml naming it no longer reaches this loop at all - DeserializePipeline below
+    // throws PipelineSerializationException ("Unknown discriminator ...", verified on the yaml),
+    // which reds every contract test at once instead of adding one violation here.
     [Fact]
     public async Task AsAiYamls_DeliverViaSftpUploadInIso88591()
     {
@@ -512,12 +516,6 @@ public class PipelineYamlContractTests
         foreach (var yaml in AllPipelineYamls)
         {
             var root = await DeserializePipeline(yaml);
-
-            foreach (var legacy in Walk(root.Transformations).OfType<DilosSftpWriteNodeConfiguration>())
-            {
-                violations.Add($"{yaml}: '{legacy.Description}' still delivers via DilosSftpWrite@1 - " +
-                               "the product node covers Latin-1 delivery since r3.4.89");
-            }
 
             foreach (var upload in Walk(root.Transformations).OfType<SftpUploadNodeConfiguration>())
             {
@@ -671,7 +669,6 @@ public class PipelineYamlContractTests
             .RegisterNodeConfiguration<WeClappFetchTriggerNodeConfiguration>()
             .RegisterNodeConfiguration<WeClappToCkNodeConfiguration>()
             .RegisterNodeConfiguration<DilosRenderNodeConfiguration>()
-            .RegisterNodeConfiguration<DilosSftpWriteNodeConfiguration>()
             .RegisterNodeConfiguration<DilosFileFetchTriggerNodeConfiguration>()
             .RegisterNodeConfiguration<WeClappArWriteNodeConfiguration>()
             .RegisterNodeConfiguration<WeClappBeWriteNodeConfiguration>()

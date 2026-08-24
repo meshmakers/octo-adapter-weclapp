@@ -91,7 +91,7 @@ public class DilosFileFetchStepNode(
 
         // A dry-run must leave no trace: no remote deletes and no cross-tick state writes —
         // only the read-and-emit surface runs, so the downstream chain can be probed safely
-        // (same contract as the write nodes, e.g. DilosSftpWriteNode).
+        // (same contract as the write nodes).
         var isDryRun = nodeContext.PipelineExecutionMode?.IsDryRun == true;
 
         var scopePrefix = DilosFileFetchCore.ScopePrefix(config);
