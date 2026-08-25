@@ -45,8 +45,7 @@ public record DilosFileConfirmNodeConfiguration : NodeConfiguration
 /// exception here) propagates and aborts the tick — the pending-delete mark already recorded
 /// ensures the next cron tick retries the delete via <c>DilosFileFetchStep@1</c>'s listing.
 /// Uses the same <c>etlContext.GlobalConfiguration.ResolveSftpSettings</c> +
-/// <see cref="ISftpFileSystemFactory"/> seam as <see cref="DilosSftpWriteNode"/>
-/// (<c>DilosSftpWriteNode.cs:82</c>).
+/// <see cref="ISftpFileSystemFactory"/> seam as <see cref="DilosFileFetchStepNode"/>.
 /// </summary>
 [NodeConfiguration(typeof(DilosFileConfirmNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
@@ -72,7 +71,7 @@ public class DilosFileConfirmNode(
         // the file kept would make every later REAL tick skip a file that was never delivered,
         // and deleting would consume an LKV file whose content was never written to WeClapp.
         // Input validation and settings resolution still run, so a dry-run surfaces a missing
-        // key/path or a half-configured server entry (same contract as DilosSftpWriteNode).
+        // key/path or a half-configured server entry (same contract as DilosFileFetchStep@1).
         var isDryRun = nodeContext.PipelineExecutionMode?.IsDryRun == true;
 
         if (!config.DeleteAfterSuccess)

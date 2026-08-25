@@ -14,8 +14,8 @@ namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Tests.Nodes;
 /// DilosFileFetchStep@1 — the step-node counterpart of DilosFileFetchTriggerNode for the
 /// cron-trigger redesign (AB#4228/G2): lists, filters and downloads into <c>$.files</c>
 /// instead of calling <c>ITriggerContext.ExecuteAsync</c> per file. Fakes mirror
-/// DilosFileFetchTriggerNodeTests.cs (SFTP seam); the SFTP settings seam itself mirrors
-/// DilosSftpWriteNodeTests.cs (IMeshEtlContext, the transform-node access pattern).
+/// DilosFileFetchTriggerNodeTests.cs (SFTP seam); the settings themselves come through
+/// IMeshEtlContext here — the transform-node access pattern, not the trigger's ITriggerContext.
 /// </summary>
 public class DilosFileFetchStepNodeTests
 {
@@ -209,7 +209,7 @@ public class DilosFileFetchStepNodeTests
     {
         // A dry-run execution (manual FromExecutePipelineCommand@1 probe) must leave no trace:
         // no remote deletes and no cross-tick state writes — only the read-and-emit surface
-        // runs, mirroring the dry-run contract of the write nodes (DilosSftpWriteNode.cs:84).
+        // runs, mirroring the dry-run contract of the write nodes.
         var config = Configure("AR*TXT", deleteAfterSuccess: true);
         var pending = RemoteFile("AR1.TXT", ageMinutes: 20, length: 100);
         var fresh = RemoteFile("AR2.TXT", ageMinutes: 20, length: 200);
@@ -264,8 +264,8 @@ public class DilosFileFetchStepNodeTests
 
 /// <summary>
 /// DilosFileConfirm@1 — the LAST child inside the per-file <c>ForEach@1</c> that
-/// DilosFileFetchStep@1 feeds. Fakes mirror DilosSftpWriteNodeTests.cs (same
-/// IMeshEtlContext/ISftpFileSystemFactory seam, DilosSftpWriteNode.cs:82).
+/// DilosFileFetchStep@1 feeds. Fakes mirror DilosFileFetchStepNodeTests above (same
+/// IMeshEtlContext/ISftpFileSystemFactory seam).
 /// </summary>
 public class DilosFileConfirmNodeTests
 {

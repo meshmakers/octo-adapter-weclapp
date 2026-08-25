@@ -60,15 +60,11 @@ await adapterBuilder.RunAsync(args, builder =>
     // WeClappBeWrite) — both still registered as the legacy poll-loop triggers, alongside their
     // cron-trigger counterparts WeClappFetchStep@1 and DilosFileFetchStep@1/DilosFileConfirm@1
     // (the latter pair sharing cross-tick state through the DilosFileFetchState singleton above).
-    // DilosSftpWrite stays registered although no pipeline references it any more: the node
-    // code lives until the removal train, and an image that dropped the registration would
-    // reject a rolled-back pipeline YAML at registration time.
     builder.Services.AddOctoMeshAdapter()
         .RegisterTriggerNode<WeClappFetchTriggerNode>()
         .RegisterTriggerNode<DilosFileFetchTriggerNode>()
         .RegisterNode<WeClappToCkNode>()
         .RegisterNode<DilosRenderNode>()
-        .RegisterNode<DilosSftpWriteNode>()
         .RegisterNode<WeClappArWriteNode>()
         .RegisterNode<WeClappBeWriteNode>()
         .RegisterNode<WeClappFetchStepNode>()
