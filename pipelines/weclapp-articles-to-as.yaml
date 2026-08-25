@@ -36,6 +36,9 @@ transformations:
   # fieldFilters combine as AND. The marker is persisted by ApplyChanges@2 as the LAST
   # step, only after a successful upload. A tenant without Industry.Logistics fails
   # loud before querying — pipeline error, no delivery.
+  # The CK attribute is ExportDay since Industry.Logistics 2.0.0; the in-flight document
+  # key stays $.meta.exportDate, because the fetch step inside the adapter image emits it.
+  # Same value on both sides — renaming the key would tie this yaml to a new image.
   - type: GetOrCreateRtEntitiesByType@1
     description: Probe today's AS export marker (query only — see gate note)
     ckTypeId: Industry.Logistics/ExportRun
@@ -43,7 +46,7 @@ transformations:
       - attributePath: ExportKind
         operator: Equals
         comparisonValuePath: $.meta.exportKind
-      - attributePath: ExportDate
+      - attributePath: ExportDay
         operator: Equals
         comparisonValuePath: $.meta.exportDate
     rtIdTargetPath: $.rt.asExportRunRtId
@@ -85,7 +88,7 @@ transformations:
           - attributeName: ExportKind
             attributeValueType: String
             valuePath: $.meta.exportKind
-          - attributeName: ExportDate
+          - attributeName: ExportDay
             attributeValueType: String
             valuePath: $.meta.exportDate
         targetPath: $.updates

@@ -121,10 +121,10 @@ public class AsExportGateTests
 
         // Der Marker schreibt exakt die Attribute/Pfade, auf die die Probe filtert:
         Assert.Contains(probe.FieldFilters!, f => f.AttributePath == "ExportKind" && f.ComparisonValuePath == "$.meta.exportKind");
-        Assert.Contains(probe.FieldFilters!, f => f.AttributePath == "ExportDate" && f.ComparisonValuePath == "$.meta.exportDate");
+        Assert.Contains(probe.FieldFilters!, f => f.AttributePath == "ExportDay" && f.ComparisonValuePath == "$.meta.exportDate");
         Assert.NotNull(marker.AttributeUpdates);
         Assert.Contains(marker.AttributeUpdates!, u => u.AttributeName == "ExportKind" && u.ValuePath == "$.meta.exportKind");
-        Assert.Contains(marker.AttributeUpdates!, u => u.AttributeName == "ExportDate" && u.ValuePath == "$.meta.exportDate");
+        Assert.Contains(marker.AttributeUpdates!, u => u.AttributeName == "ExportDay" && u.ValuePath == "$.meta.exportDate");
     }
 
     private static string FindRepoFile(string relativePath)
