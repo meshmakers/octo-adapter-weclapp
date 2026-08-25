@@ -146,9 +146,18 @@ Both bounds exist because the doubling is otherwise unbounded: with a base of on
 wait is already over eight minutes, and a large enough base reaches the point where the timer
 refuses the value outright and the wait itself becomes the failure - swallowed, because it is not
 an HTTP outcome. Capping each wait keeps a retrying request inside a pipeline tick, and a request
-that needs more than ten attempts is broken rather than slow. Exceeding either is a configuration
-error, not a clamp: a silently reduced retry policy is the kind of thing an operator discovers
-during an incident.
+that needs more than ten attempts is broken rather than slow. The two are treated differently on
+purpose, and the difference is the rule the rest of the preflight follows as well: a computed wait
+is **clamped**, because a wait can be honoured approximately and the doubling simply stops growing;
+an attempt count above the limit is **rejected**, because there is no approximate way to run fewer
+attempts than were asked for, and a silently reduced retry policy is the kind of thing an operator
+discovers during an incident. Everything else the node reads from a definition follows the same
+test - honour it approximately where that means something, fail where it does not: a timeout has to
+be positive and inside what the timers accept (only its absence means "keep the client's own"), a
+page size and a page limit have to be at least one, a first page number cannot be negative, an auth
+header name has to be an HTTP token, and a URL carrying a fragment is refused while paging is on,
+since a fragment never reaches the server and the page parameters appended behind it would be
+dropped from every request.
 
 The backoff wording matches the fetch core being replaced, verified against its source: the wait
 happens **after** a failed attempt, so with a base of 1 second four attempts wait 1 s, 2 s and 4 s.
@@ -264,8 +273,14 @@ and in page order.
 **Retry**: 500, 429, 408, `HttpRequestException` and `TaskCanceledException` each followed by a
 success; 400, 401 and 404 failing on the first attempt; exhausted attempts carrying status, attempt
 count and truncated body; backoff delays of `base * 2^(n-1)` against a fake `TimeProvider`; each
-wait capped at 60 s and an attempt count beyond 10 refused as a configuration error before any
+wait clamped at 60 s and an attempt count beyond 10 refused as a configuration error before any
 request goes out; a failing page retried in place while the walk continues at the next page.
+
+**Preflight**: an explicit zero or negative on `timeoutSeconds`, `paging.pageSize`, `paging.maxPages`
+or `paging.firstPageNumber`, a timeout beyond what the timers accept, a blank or non-token
+`authHeaderName`, and a URL carrying a fragment while paging is configured - each refused before a
+request goes out and with `OnHttpError` at its default, since a configuration mistake answered by a
+log entry leaves a green execution that did nothing it was asked to do.
 
 **Timeout**: a per-attempt timeout cancelling an attempt while the next one starts with a fresh
 budget; unset meaning no per-request cancellation.
