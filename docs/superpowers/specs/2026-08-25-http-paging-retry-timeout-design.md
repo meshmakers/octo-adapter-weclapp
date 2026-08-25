@@ -99,7 +99,7 @@ A nested optional configuration object. Absent means one request, as today.
 
 | Property | Default | Meaning |
 |---|---|---|
-| `ItemsPath` | required when paging | JSONPath to the array inside one response, e.g. `$.result` |
+| `ItemsPath` | required when paging | Single-level path of the form `$.name` addressing the array inside one response, e.g. `$.result` |
 | `PageParameterName` | `page` | Query parameter carrying the page number |
 | `PageSizeParameterName` | `pageSize` | Query parameter carrying the page size |
 | `PageSize` | 100 | Requested elements per page |
@@ -130,7 +130,13 @@ there is no consumer for it.
 | Property | Default | Meaning |
 |---|---|---|
 | `MaxAttempts` | 1 | Total attempts per request, so the default is "no retry" |
-| `BackoffBaseSeconds` | 1 | Delay before attempt n is `base * 2^(n-1)`; 0 disables waiting |
+| `BackoffBaseSeconds` | 1 | After a failed attempt n the node waits `base * 2^(n-1)` seconds; 0 disables waiting |
+
+The backoff wording matches the fetch core being replaced, verified against its source: the wait
+happens **after** a failed attempt, so with a base of 1 second four attempts wait 1 s, 2 s and 4 s.
+Both the delay values and their order are pinned by a test against a fake time provider, and every
+wait - including the per-attempt timeout - is measured through that provider rather than the wall
+clock.
 
 Transient, and therefore retried until the attempts are used up: status 5xx, 408 and 429,
 `HttpRequestException`, and `TaskCanceledException`. The last one is the half of the timeout
@@ -189,6 +195,12 @@ operator with a green execution that never called anything. This matches how eve
 in the repository behaves - `SftpServerSettingsResolver` throws on a bad entry rather than
 reporting it.
 
+Failures that are neither an HTTP outcome nor one of the new configuration paths keep the
+node's existing safety net in **every** mode: a malformed response body reaching the response
+handling, or a header the target refuses to accept, is reported and stops the branch as it does
+today. `Throw` widens what fails the execution to HTTP outcomes, and to nothing else - otherwise a
+consumer that only enabled paging would suddenly see unrelated errors escape.
+
 The validation the node performs today - method, target path, response format, body content type,
 parameter completeness - keeps reporting and returning as it does now. Those paths are reachable
 for consumers that set none of the new properties, and the whole point of the additive cut is that
@@ -220,10 +232,11 @@ completes, so a failed run leaves no half-filled array behind.
 Written test-first, grouped as they will appear in `MakeHttpRequestNodeTests`:
 
 **Unchanged behaviour**, with none of the new properties set: one request; the response stored as
-today; a failing status logged, `next` not invoked, nothing thrown. And the same with paging, retry
-and timeout configured but `OnHttpError` left at its default: attempts run out, the failure is
-logged, `next` is not invoked, nothing is thrown and nothing is written to `TargetPath` - using the
-new features does not quietly change what a failure does.
+today; a failing status logged, `next` not invoked, nothing thrown; an error raised while the
+response is being handled logged rather than escaping. And the same with paging, retry and timeout
+configured but `OnHttpError` left at its default: exhausted attempts, an unusable `ItemsPath` and
+the paging cap each logged, `next` not invoked, nothing thrown and nothing written to `TargetPath`
+- using the new features does not quietly change what a failure does.
 
 **Paging**: three pages ending short; a full page followed by an empty one; `StopOnShortPage:
 false` walking to the empty page; a missing `ItemsPath` failing rather than stopping; a non-array
@@ -245,9 +258,12 @@ leading slash, each yielding exactly one separator; an absolute URL combined wit
 `baseUrl` or `apiKey` throwing **even with `OnHttpError` unset**, with the entry named; the key
 never appearing in a log line or an exception message.
 
-**Configuration robustness**: every new optional integer resolving to its default both when the
-property is omitted and when the pipeline definition carries an explicit null, in both cases
-without throwing.
+**Configuration robustness**, driven through the real pipeline definition deserializer rather than
+through C# object initializers, since only the deserializer exercises the path a tenant's
+definition takes: a definition that omits the new sections, and one that carries an explicit null
+on `retry`, `paging`, `timeoutSeconds`, on the integers inside the sections and on the two auth
+strings, each resolving to the documented default or to a clear configuration error - never to a
+null reference at runtime.
 
 **Composition**: the exception raised under `onHttpError: Throw` caught by `ForEach@1` with
 `continueOnError: true`, so the isolation the acceptance case depends on is demonstrated rather
