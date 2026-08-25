@@ -822,10 +822,13 @@ In `MakeHttpRequestNodeConfiguration.cs`, above the configuration record:
     /// </summary>
     public record HttpRetryOptions
     {
-        /// <summary>Total attempts per request, so 1 means no retry.</summary>
+        /// <summary>Total attempts per request, so 1 means no retry. At most MaxAllowedAttempts (10).</summary>
         public int MaxAttempts { get; set; } = 1;
 
-        /// <summary>Delay before attempt n is base * 2^(n-1) seconds; 0 disables waiting.</summary>
+        /// <summary>
+        /// Delay before attempt n is base * 2^(n-1) seconds, capped at MaxBackoffSeconds (60);
+        /// 0 disables waiting.
+        /// </summary>
         public double BackoffBaseSeconds { get; set; } = 1;
     }
 ```

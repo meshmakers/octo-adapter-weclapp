@@ -129,8 +129,16 @@ there is no consumer for it.
 
 | Property | Default | Meaning |
 |---|---|---|
-| `MaxAttempts` | 1 | Total attempts per request, so the default is "no retry" |
-| `BackoffBaseSeconds` | 1 | After a failed attempt n the node waits `base * 2^(n-1)` seconds; 0 disables waiting |
+| `MaxAttempts` | 1 | Total attempts per request, so the default is "no retry"; at most 10 |
+| `BackoffBaseSeconds` | 1 | After a failed attempt n the node waits `base * 2^(n-1)` seconds, each wait capped at 60 s; 0 disables waiting |
+
+Both bounds exist because the doubling is otherwise unbounded: with a base of one second the tenth
+wait is already over eight minutes, and a large enough base reaches the point where the timer
+refuses the value outright and the wait itself becomes the failure - swallowed, because it is not
+an HTTP outcome. Capping each wait keeps a retrying request inside a pipeline tick, and a request
+that needs more than ten attempts is broken rather than slow. Exceeding either is a configuration
+error, not a clamp: a silently reduced retry policy is the kind of thing an operator discovers
+during an incident.
 
 The backoff wording matches the fetch core being replaced, verified against its source: the wait
 happens **after** a failed attempt, so with a base of 1 second four attempts wait 1 s, 2 s and 4 s.
@@ -245,8 +253,9 @@ and in page order.
 
 **Retry**: 500, 429, 408, `HttpRequestException` and `TaskCanceledException` each followed by a
 success; 400, 401 and 404 failing on the first attempt; exhausted attempts carrying status, attempt
-count and truncated body; backoff delays of `base * 2^(n-1)` against a fake `TimeProvider`; a
-failing page retried in place while the walk continues at the next page.
+count and truncated body; backoff delays of `base * 2^(n-1)` against a fake `TimeProvider`; each
+wait capped at 60 s and an attempt count beyond 10 refused as a configuration error before any
+request goes out; a failing page retried in place while the walk continues at the next page.
 
 **Timeout**: a per-attempt timeout cancelling an attempt while the next one starts with a fresh
 budget; unset meaning no per-request cancellation.
