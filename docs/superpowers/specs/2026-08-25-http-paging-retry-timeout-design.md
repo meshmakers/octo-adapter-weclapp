@@ -81,13 +81,23 @@ exists: `System.Communication/WeClappConfiguration` (CCS) declares `Host` under 
 host-key and timeout fields of the SFTP layer, this needs no CCS model change.
 
 URL composition: when `ApiConfiguration` is set, the resolved `Url`/`UrlPath` is a path relative to
-`BaseUrl` and is appended with a single separator, the base's trailing slash trimmed. An **absolute
-URL together with `ApiConfiguration` is rejected before any request goes out**: the combination
-would send the configured key to whatever host the URL names, so a typo in a pipeline definition
-becomes a credential leak. Nothing needs it - the pipelines here address one API through its base
-URL - and refusing it costs no compatibility, because `ApiConfiguration` is new. A caller who wants
-an absolute URL keeps supplying the header itself, as today. Without `ApiConfiguration` nothing
-about URL handling changes.
+`BaseUrl` and is appended with a single separator, the base's trailing slash trimmed. A
+**scheme-qualified URL together with `ApiConfiguration` is rejected before any request goes out**:
+the entry already decides which host is being addressed, so a scheme in the URL contradicts it, and
+an author should hear about that rather than get a request nobody meant. Two truths sit next to
+each other here and both are worth stating. The refusal is a **configuration** guard: relative and
+rootless paths are joined under the configured base, and that join is what keeps the key at the
+configured host **by construction** - the leading separators are trimmed, so even a string that
+looks like another target ends up as a path below `BaseUrl`. Nothing needs the absolute form - the
+pipelines here address one API through its base URL - and refusing it costs no compatibility,
+because `ApiConfiguration` is new. A caller who wants to name a host keeps supplying the header
+itself, as today. Without `ApiConfiguration` nothing about URL handling changes.
+
+The test is whether a scheme is **spelled out** (`^[A-Za-z][A-Za-z0-9+.-]*://`), deliberately not
+`Uri.TryCreate` with `UriKind.Absolute`. That overload answers differently per platform: on Unix a
+leading slash succeeds with an implicit file scheme, so `/article` - the ordinary way to write a
+path, and the way every source pipeline writes one - counts as absolute on a Linux build agent and
+not on a Windows developer machine. Found exactly that way: green locally, red in CI.
 
 The entry is read when the pipeline is deployed and cached for the adapter's lifetime, so rotating
 a key takes effect only after a redeploy or an adapter reconnect. That is how every configured node
@@ -196,7 +206,7 @@ arrive.
 
 **Configuration and resolution errors on the new properties always throw**, whatever `OnHttpError`
 says: an `ApiConfiguration` entry that is not defined, an entry whose `baseUrl` or `apiKey` is
-blank, an absolute URL combined with `ApiConfiguration`, and a `paging` section without
+blank, a scheme-qualified URL combined with `ApiConfiguration`, and a `paging` section without
 `ItemsPath`. None of these can be answered by a retry or a different target, and none should be
 survivable: a mistyped configuration name that merely logged under the default would leave an
 operator with a green execution that never called anything. This matches how every configured node
@@ -262,8 +272,10 @@ budget; unset meaning no per-request cancellation.
 
 **Configured access**: the auth header sent under the configured name, with and without a prefix; a
 URL join matrix over a base with and without a trailing slash against a path with and without a
-leading slash, each yielding exactly one separator; an absolute URL combined with
-`ApiConfiguration` rejected before a request goes out; an undefined entry and an entry with a blank
+leading slash, each yielding exactly one separator; a scheme-qualified URL combined with
+`ApiConfiguration` rejected before a request goes out, and the scheme test itself pinned against
+paths with and without a leading slash so its answer cannot depend on the platform; an undefined
+entry and an entry with a blank
 `baseUrl` or `apiKey` throwing **even with `OnHttpError` unset**, with the entry named; the key
 never appearing in a log line or an exception message.
 
