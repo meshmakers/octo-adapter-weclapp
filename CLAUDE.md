@@ -215,14 +215,16 @@ claims completeness invites re-pinning an invariant that already holds.
   an EMPTY listing prunes nothing, where the retired `DilosFileFetchStep@1` pruned its own
   configured scope unconditionally. In keep mode a file that disappears from the server and later
   returns byte-identical with its modification time preserved therefore keys the same and is
-  dropped as already processed, until the pod restarts. Reading the scope off the elements is
+  dropped as already processed - until any non-empty listing of that scope runs without it, or
+  at the latest until the pod restarts. Reading the scope off the elements is
   what removes the duplicated server/directory/pattern triple from the gate, so this is that
   trade; in delete mode, where files do not linger, it cannot arise. Pinned as current behaviour
   by `DilosFileGateNodeTests.EmptyListing_LeavesEarlierMarksInPlace`. Closing it properly needs
   `SftpList@1` to name its source on an empty listing too, which is a product change.
 - Two ways the wiring can be wrong without anything failing, both guarded because both are one
   Studio edit away: a gate whose `path` names something the listing never wrote (it would write
-  an empty array and every tick would run green while files pile up — the node refuses instead),
+  an empty array and every tick would run green while files pile up — the node refuses instead,
+  for a missing path and a path holding null alike),
   and a `SftpDownload@1` naming a different `serverConfiguration` than the listing (content from
   one server, deletion on the other). The second is covered by the shipped-yaml assertion that
   every SFTP node in every pipeline names the SAME tenant entry.

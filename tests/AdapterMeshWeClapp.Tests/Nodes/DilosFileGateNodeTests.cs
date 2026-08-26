@@ -408,4 +408,21 @@ public class DilosFileGateNodeTests
 
         Assert.True(_state.WasKeptOnServer(ScopedKey("AR_gone.TXT")));
     }
+
+    [Fact]
+    public async Task RefusesAPathThatHoldsAnExplicitNull()
+    {
+        // Exists() reports an explicitly written null as present, and reading it back yields no
+        // array - so a path holding null slips past the existence check and lands on the same
+        // silent green as a missing one: an empty array written over it, a loop over nothing,
+        // and the files still on the LKV server.
+        Configure(path: "$.files");
+        using var dataContext = new DataContextImpl(JsonDocument.Parse("{\"files\":null}"));
+        var sut = CreateSut();
+
+        var error = await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
+            () => sut.ProcessObjectAsync(dataContext, _nodeContext));
+
+        Assert.Contains("$.files", error.Message);
+    }
 }

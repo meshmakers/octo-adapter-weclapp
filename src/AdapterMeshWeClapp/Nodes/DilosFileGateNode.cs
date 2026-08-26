@@ -61,18 +61,16 @@ public class DilosFileGateNode(
         // the read-and-emit surface runs, so the chain behind the gate can be probed safely.
         var isDryRun = nodeContext.PipelineExecutionMode?.IsDryRun == true;
 
-        // An empty listing is normal; a path that holds nothing at all is a wiring error. Left
-        // to the null fallback the gate would write an empty array and every tick would run
-        // green while the files pile up on the LKV server - and the array it writes is what
-        // hides it, because a downstream ForEach@1 would otherwise abort on the missing path.
-        if (!dataContext.Exists(config.Path))
-        {
-            throw new WeClappPipelineExecutionException(
-                $"DilosFileGate: nothing at '{config.Path}' - the path must name the targetPath of " +
-                "the SftpList@1 that feeds this gate");
-        }
-
-        var listed = dataContext.Get<JsonArray>(config.Path) ?? new JsonArray();
+        // An empty listing is normal; no array at all is a wiring error. Falling back to an
+        // empty array here would write one over the path, run the loop over nothing and leave
+        // every tick green while the files pile up on the LKV server - and the array written
+        // is what hides it, because a downstream ForEach@1 would otherwise abort on the path.
+        // One check covers a missing path and a path holding null alike: Exists() reports an
+        // explicitly written null as present, so testing existence would let that one through.
+        var listed = dataContext.Get<JsonArray>(config.Path)
+                     ?? throw new WeClappPipelineExecutionException(
+                         $"DilosFileGate: no array at '{config.Path}' - the path must name the " +
+                         "targetPath of the SftpList@1 that feeds this gate");
         var files = listed.OfType<JsonObject>().Select(Identify).ToList();
 
         // Forget the keys of files that vanished from the server, scope by scope, BEFORE the
