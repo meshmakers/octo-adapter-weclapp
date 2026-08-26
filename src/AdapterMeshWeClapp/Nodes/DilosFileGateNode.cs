@@ -71,7 +71,8 @@ public class DilosFileGateNode(
                      ?? throw new WeClappPipelineExecutionException(
                          $"DilosFileGate: no array at '{config.Path}' - the path must name the " +
                          "targetPath of the SftpList@1 that feeds this gate");
-        var files = listed.OfType<JsonObject>().Select(Identify).ToList();
+        var files = listed.Select((element, index) => Identify(AsFileObject(element, index, config.Path)))
+            .ToList();
 
         // Forget the keys of files that vanished from the server, scope by scope, BEFORE the
         // gating below reads them - the way the listing step this replaces did. Scoped, because
@@ -164,6 +165,15 @@ public class DilosFileGateNode(
 
         return (element, serverConfiguration, key, scopePrefix);
     }
+
+    /// <summary>Refuses a listed element that is not an object, naming it by index. Skipping such
+    /// an element instead would turn a path aimed at a foreign array into an empty listing - the
+    /// same silent green a missing path would produce: an empty array written back over the path,
+    /// a loop over nothing, and the DILOS files still lying on the LKV server.</summary>
+    private static JsonObject AsFileObject(JsonNode? element, int index, string path) =>
+        element as JsonObject ?? throw new WeClappPipelineExecutionException(
+            $"DilosFileGate: '{path}[{index}]' is not a listed file element - the path must name " +
+            "the targetPath of the SftpList@1 that feeds this gate");
 
     /// <summary>Reads one value the gate cannot work without and names the field when it is
     /// absent. Every one of them comes from <c>SftpList@1</c>, so a missing field means the

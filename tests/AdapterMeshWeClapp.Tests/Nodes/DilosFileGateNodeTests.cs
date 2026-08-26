@@ -425,4 +425,39 @@ public class DilosFileGateNodeTests
 
         Assert.Contains("$.files", error.Message);
     }
+
+    [Fact]
+    public async Task RefusesAListedElementThatIsNotAnObject()
+    {
+        // A path aimed at a foreign array of scalars holds no listing element at all. Skipping
+        // those elements one by one leaves nothing to gate, writes an empty array over the path
+        // and keeps every tick green while the DILOS files pile up on the LKV server - the same
+        // silent failure the missing-path guard refuses, reached through a path that exists.
+        Configure();
+        using var dataContext = new DataContextImpl(JsonDocument.Parse("{\"files\":[\"AR1.TXT\"]}"));
+        var sut = CreateSut();
+
+        var error = await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
+            () => sut.ProcessObjectAsync(dataContext, _nodeContext));
+
+        Assert.Contains("[0]", error.Message);
+    }
+
+    [Fact]
+    public async Task RefusesAMixedArray_InsteadOfGatingTheObjectsInIt()
+    {
+        // An element that is not a listing object is the evidence that the path names something
+        // else. Gating the rest of the array would process a part of the files and report a
+        // green tick for all of them, so the whole array is refused, naming the element.
+        Configure();
+        using var dataContext = new DataContextImpl(JsonDocument.Parse(
+            "{\"files\":[" + Listed("AR1.TXT") + ",42]}"));
+        var sut = CreateSut();
+
+        var error = await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
+            () => sut.ProcessObjectAsync(dataContext, _nodeContext));
+
+        Assert.Contains("[1]", error.Message);
+        A.CallTo(() => _next(dataContext, _nodeContext)).MustNotHaveHappened();
+    }
 }
