@@ -71,6 +71,17 @@ internal static class DilosFileFetchCore
         return $"{file.Name}|{file.Length}|{file.LastWriteTimeUtc.Ticks}";
     }
 
+    /// <summary>Identity of one remote file snapshot whose mtime arrives as text rather than as
+    /// a <see cref="DateTime"/> — the shape <c>SftpList@1</c> emits, which <c>DilosFileGate@1</c>
+    /// reads after the value has crossed a JSON boundary. The timestamp is taken VERBATIM: it is
+    /// the listing's own rendering, and re-parsing and re-formatting it would make the identity
+    /// depend on this side's format choice, so an unchanged file could key differently from one
+    /// tick to the next and never count as processed.</summary>
+    internal static string FileKey(string name, long length, string lastWriteTimeUtc)
+    {
+        return $"{name}|{length}|{lastWriteTimeUtc}";
+    }
+
     /// <summary>The per-pipeline scope prefix namespacing a step's keys in the shared
     /// <see cref="Services.DilosFileFetchState"/> singleton, so its keys can never collide with —
     /// or be pruned by — a DIFFERENT pipeline's <c>DilosFileFetchStep@1</c> (e.g. ar vs be)
@@ -79,7 +90,15 @@ internal static class DilosFileFetchCore
     /// by definition, the same logical fetch scope.</summary>
     internal static string ScopePrefix(IDilosFileFetchConfiguration config)
     {
-        return $"{Escape(config.ServerConfiguration)}|{Escape(config.RemoteDirectory)}|{Escape(config.FilePattern)}|";
+        return ScopePrefix(config.ServerConfiguration, config.RemoteDirectory, config.FilePattern);
+    }
+
+    /// <summary>The same scope prefix built from the three values themselves, for a caller that
+    /// reads them off a listed element instead of off its own configuration — one home for the
+    /// format, so a scope means the same thing on both sides.</summary>
+    internal static string ScopePrefix(string serverConfiguration, string remoteDirectory, string filePattern)
+    {
+        return $"{Escape(serverConfiguration)}|{Escape(remoteDirectory)}|{Escape(filePattern)}|";
     }
 
     /// <summary>'|' separates both the scope components and the <see cref="FileKey"/> fields, and
