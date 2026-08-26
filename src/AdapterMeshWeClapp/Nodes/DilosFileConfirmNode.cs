@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Services;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
@@ -98,8 +99,9 @@ public class DilosFileConfirmNode(
                 $"DilosFileConfirm: no file path found at '{config.Path}.fullPath' — refusing to delete blind");
         }
 
+        // The stamp guard rejects a stamp holding null, so this read cannot come back null.
         var serverConfiguration = RequiredStamp(dataContext, config.Path, "serverConfiguration",
-            path => dataContext.Get<string>(path) ?? "");
+            path => dataContext.Get<string>(path)!);
         var settings = etlContext.GlobalConfiguration.ResolveSftpSettings(serverConfiguration);
 
         if (isDryRun)
@@ -126,12 +128,15 @@ public class DilosFileConfirmNode(
 
     /// <summary>Reads one value <c>DilosFileGate@1</c> stamps into every element it lets through.
     /// Absence is an error rather than a default: these two values exist to remove a choice from
-    /// the configuration, and quietly inventing one here would put it back.</summary>
+    /// the configuration, and quietly inventing one here would put it back. A stamp holding null
+    /// counts as absent: <c>Exists</c> reports it as present, and reading it yields the type's
+    /// default - for the mode that is <c>false</c>, which is one of the two real behaviours and
+    /// would be chosen by nobody.</summary>
     private static T RequiredStamp<T>(IDataContext dataContext, string elementPath, string stamp,
         Func<string, T> read)
     {
         var path = $"{elementPath}.{stamp}";
-        if (!dataContext.Exists(path))
+        if (!dataContext.Exists(path) || dataContext.Get<JsonNode>(path) is null)
         {
             throw new WeClappPipelineExecutionException(
                 $"DilosFileConfirm: no '{stamp}' stamp found at '{path}' — the element must come " +

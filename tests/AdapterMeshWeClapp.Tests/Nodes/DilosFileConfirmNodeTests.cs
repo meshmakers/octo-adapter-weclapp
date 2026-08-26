@@ -217,4 +217,43 @@ public class DilosFileConfirmNodeTests
         Assert.True(_state.HasPendingDelete("keyD"));
         A.CallTo(() => _next(dataContext, _nodeContext)).MustNotHaveHappened();
     }
+
+    [Fact]
+    public async Task RefusesAnElementWhoseModeStampHoldsNull()
+    {
+        // A stamp written as null is present, and reading it as a bool yields false - which is
+        // keep mode, the mode with no visible consequence: the file would be marked kept and
+        // never delivered again, on the strength of a value nobody configured.
+        Configure();
+        using var dataContext = new DataContextImpl(JsonDocument.Parse(
+            "{\"current\":{\"name\":\"AR1.TXT\",\"fullPath\":\"/AR1.TXT\",\"key\":\"keyN\"," +
+            "\"deleteAfterSuccess\":null}}"));
+        var sut = CreateSut();
+
+        var error = await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
+            () => sut.ProcessObjectAsync(dataContext, _nodeContext));
+
+        Assert.Contains("deleteAfterSuccess", error.Message);
+        Assert.False(_state.WasKeptOnServer("keyN"));
+        A.CallTo(() => _sftp.DeleteFile(A<string>._)).MustNotHaveHappened();
+    }
+
+    [Fact]
+    public async Task RefusesADeleteWhoseServerStampHoldsNull()
+    {
+        // Reading a null server stamp as an empty name carries the wiring error on into the
+        // configuration resolver, which then reports a global configuration that is not defined:
+        // it points at the tenant entry instead of at the element that names no server.
+        Configure();
+        using var dataContext = new DataContextImpl(JsonDocument.Parse(
+            "{\"current\":{\"name\":\"AR1.TXT\",\"fullPath\":\"/AR1.TXT\",\"key\":\"keyS\"," +
+            "\"deleteAfterSuccess\":true,\"serverConfiguration\":null}}"));
+        var sut = CreateSut();
+
+        var error = await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
+            () => sut.ProcessObjectAsync(dataContext, _nodeContext));
+
+        Assert.Contains("'serverConfiguration' stamp", error.Message);
+        A.CallTo(() => _sftp.DeleteFile(A<string>._)).MustNotHaveHappened();
+    }
 }
