@@ -8,45 +8,41 @@ namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Nodes;
 
 /// <summary>
 /// Configuration for the DilosFileConfirm transform node — the LAST child inside the per-file
-/// <c>ForEach@1</c> (<c>iterationPath: $.files</c>) that <c>DilosFileFetchStep@1</c> feeds.
+/// <c>ForEach@1</c> that <c>DilosFileGate@1</c> feeds.
 /// </summary>
 [NodeName("DilosFileConfirm", 1)]
 public record DilosFileConfirmNodeConfiguration : NodeConfiguration
 {
-    /// <summary>Name of the tenant GlobalConfiguration entry holding the SFTP connection
-    /// settings (same entry as the feeding <c>DilosFileFetchStep@1</c>, e.g. "LkvSftp").</summary>
-    public required string ServerConfiguration { get; set; }
-
-    /// <summary>Delete the remote file now that its downstream processing succeeded. Must be
-    /// configured with the SAME value as the feeding <c>DilosFileFetchStep@1</c>'s
-    /// <c>deleteAfterSuccess</c> — the two nodes read/write the same
-    /// <see cref="Services.DilosFileFetchState"/> keys for one file element. Default is the
-    /// SAFE side (false), matching <see cref="DilosFileFetchTriggerNodeConfiguration.DeleteAfterSuccess"/>.</summary>
-    public bool DeleteAfterSuccess { get; set; }
-
     /// <summary>Data context path of the current file element — the ONE element the enclosing
     /// <c>ForEach@1</c> is iterating. Defaults to <c>$.current</c> (the ForEach <c>keyPath</c>
-    /// convention, see the plan's canonical ForEach block) — never <c>$.files</c>, which via
-    /// <c>ForEach@1</c>'s parent-fallback read semantics would resolve to the ENTIRE array and
-    /// delete files whose iteration has not even run yet.</summary>
+    /// convention) — never the array itself, which via <c>ForEach@1</c>'s parent-fallback read
+    /// semantics would resolve to EVERY element and confirm files whose iteration has not run.
+    /// <para/>
+    /// There is deliberately nothing else to configure here: the keep/delete mode and the server
+    /// to delete from are read from the element, which <c>DilosFileGate@1</c> stamped. They used
+    /// to be repeated on this node, and the two copies had to agree — a mismatch reprocessed
+    /// every file forever or deleted files nothing had written. Both values live in tenant-side
+    /// pipeline definitions and are editable in the Studio, so that was one click away.</summary>
     public string Path { get; set; } = "$.current";
 }
 
 /// <summary>
-/// Confirms successful downstream processing of ONE DILOS file: in keep mode
-/// (<c>deleteAfterSuccess=false</c>) marks the file's key as kept on the server so
-/// <c>DilosFileFetchStep@1</c> skips it on future ticks instead of re-emitting it; in delete
-/// mode removes the file from the LKV SFTP server, marking the key pending BEFORE the delete
-/// attempt so a failed delete is retried by <c>DilosFileFetchStep@1</c>'s next listing instead
-/// of silently being forgotten. Runs as the LAST child inside the per-file <c>ForEach@1</c> —
-/// only reached after every earlier child (the WeClapp write-back) succeeded, exactly where the
-/// legacy <see cref="DilosFileFetchTriggerNode"/> deleted after its own
-/// <c>ITriggerContext.ExecuteAsync</c> returned successfully. A delete failure (or any other
-/// exception here) propagates and aborts the tick — the pending-delete mark already recorded
-/// ensures the next cron tick retries the delete via <c>DilosFileFetchStep@1</c>'s listing.
-/// Uses the same <c>etlContext.GlobalConfiguration.ResolveSftpSettings</c> +
-/// <see cref="ISftpFileSystemFactory"/> seam as <see cref="DilosFileFetchStepNode"/>.
+/// Confirms successful downstream processing of ONE DILOS file: in keep mode it marks the file's
+/// key as kept on the server, so <c>DilosFileGate@1</c> drops it on later ticks instead of
+/// letting it through again; in delete mode it removes the file from the LKV SFTP server,
+/// marking the key pending BEFORE the attempt so a failed delete is retried by the gate's next
+/// run rather than silently forgotten. Runs as the LAST child inside the per-file
+/// <c>ForEach@1</c> — only reached once every earlier child (the WeClapp write-back) succeeded.
+/// A delete failure, like any other exception here, propagates and fails this iteration; the
+/// pending mark already recorded is what makes the next tick retry the delete.
+/// <para/>
+/// The mode and the server come from the element rather than from this node's configuration, so
+/// this node and the gate can no longer be configured to disagree.
 /// </summary>
+/// <param name="next">Next node in the pipeline</param>
+/// <param name="etlContext">The ETL context carrying the tenant global configuration</param>
+/// <param name="sftpFileSystemFactory">Opens the SFTP session a delete needs</param>
+/// <param name="state">Cross-tick memory shared with <c>DilosFileGate@1</c></param>
 [NodeConfiguration(typeof(DilosFileConfirmNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
 public class DilosFileConfirmNode(
@@ -67,16 +63,21 @@ public class DilosFileConfirmNode(
                 $"DilosFileConfirm: no file key found at '{config.Path}.key' — refusing to confirm without a key");
         }
 
+        // Never defaulted: assuming keep would deliver the same file again on every tick,
+        // assuming delete would consume an LKV file on the word of a stamp that is not there.
+        var deleteAfterSuccess = RequiredStamp(dataContext, config.Path, "deleteAfterSuccess",
+            path => dataContext.Get<bool>(path));
+
         // A dry-run confirms nothing: the write nodes upstream skipped their writes, so marking
         // the file kept would make every later REAL tick skip a file that was never delivered,
-        // and deleting would consume an LKV file whose content was never written to WeClapp.
-        // Input validation and settings resolution still run, so a dry-run surfaces a missing
-        // key/path or a half-configured server entry (same contract as DilosFileFetchStep@1).
+        // and deleting would consume an LKV file whose content never reached WeClapp. Input
+        // validation still runs, so a dry-run surfaces a missing stamp or a half-configured
+        // server entry (same contract as DilosFileGate@1).
         var isDryRun = nodeContext.PipelineExecutionMode?.IsDryRun == true;
 
-        if (!config.DeleteAfterSuccess)
+        if (!deleteAfterSuccess)
         {
-            var keptFileName = dataContext.Get<string>($"{config.Path}.fileName") ?? key;
+            var keptFileName = dataContext.Get<string>($"{config.Path}.name") ?? key;
             if (isDryRun)
             {
                 nodeContext.Info("DilosFileConfirm dry-run: would mark '{0}' kept on server", keptFileName);
@@ -85,8 +86,7 @@ public class DilosFileConfirmNode(
             }
 
             state.MarkKeptOnServer(key);
-            nodeContext.Info(
-                "DilosFileConfirm: '{0}' processed, kept on server (deleteAfterSuccess=false)", keptFileName);
+            nodeContext.Info("DilosFileConfirm: '{0}' processed, kept on server (keep mode)", keptFileName);
             await next(dataContext, nodeContext);
             return;
         }
@@ -98,19 +98,20 @@ public class DilosFileConfirmNode(
                 $"DilosFileConfirm: no file path found at '{config.Path}.fullPath' — refusing to delete blind");
         }
 
-        var settings = etlContext.GlobalConfiguration.ResolveSftpSettings(config.ServerConfiguration);
+        var serverConfiguration = RequiredStamp(dataContext, config.Path, "serverConfiguration",
+            path => dataContext.Get<string>(path) ?? "");
+        var settings = etlContext.GlobalConfiguration.ResolveSftpSettings(serverConfiguration);
 
         if (isDryRun)
         {
-            nodeContext.Info("DilosFileConfirm dry-run: would delete '{0}' after successful processing",
-                fullPath);
+            nodeContext.Info("DilosFileConfirm dry-run: would delete '{0}' after successful processing", fullPath);
             await next(dataContext, nodeContext);
             return;
         }
 
         // Mark BEFORE attempting the delete: if the attempt throws (or the pod dies mid-call),
-        // DilosFileFetchStep@1's next listing still finds the key pending and retries the
-        // delete — the file is never silently left un-deleted and un-retried.
+        // DilosFileGate@1's next run still finds the key pending and retries the delete — the
+        // file is never left both un-deleted and un-retried.
         state.MarkPendingDelete(key);
         using (var sftp = sftpFileSystemFactory.Connect(settings))
         {
@@ -121,5 +122,22 @@ public class DilosFileConfirmNode(
         nodeContext.Info("DilosFileConfirm: deleted '{0}' after successful processing", fullPath);
 
         await next(dataContext, nodeContext);
+    }
+
+    /// <summary>Reads one value <c>DilosFileGate@1</c> stamps into every element it lets through.
+    /// Absence is an error rather than a default: these two values exist to remove a choice from
+    /// the configuration, and quietly inventing one here would put it back.</summary>
+    private static T RequiredStamp<T>(IDataContext dataContext, string elementPath, string stamp,
+        Func<string, T> read)
+    {
+        var path = $"{elementPath}.{stamp}";
+        if (!dataContext.Exists(path))
+        {
+            throw new WeClappPipelineExecutionException(
+                $"DilosFileConfirm: no '{stamp}' stamp found at '{path}' — the element must come " +
+                "from DilosFileGate@1, which is where that value is configured");
+        }
+
+        return read(path);
     }
 }
