@@ -1,15 +1,16 @@
 # Pipeline: DILOS AR shipment confirmations (LKV SFTP) → WeClapp shipments (tracking,
-# parcels, delivered quantities, status SHIPPED last). DilosFileFetchStep@1 seeds
-# $.files (one element per matching, ready file); a ForEach@1 processes one file per
-# iteration. The write is idempotent (replay-skip on an already SHIPPED shipment with
-# the same tracking number; unknown orders are dead-letter-logged), so re-running a
-# kept file on the next tick is safe.
+# parcels, delivered quantities, status SHIPPED last). SftpList@1 seeds $.files with one
+# element per matching, ready file; DilosFileGate@1 drops the ones an earlier tick already
+# dealt with and stamps the rest; a ForEach@1 then reads and processes one file per
+# iteration. The write is idempotent (replay-skip on an already SHIPPED shipment with the
+# same tracking number; unknown orders are dead-letter-logged), so re-running a kept file
+# on the next tick is safe.
 #
-# DilosFileFetchStep@1 and DilosFileConfirm@1 MUST carry the SAME deleteAfterSuccess —
-# the step gates the keep-mode skip / pending-delete retry, the confirm node (LAST
-# child) performs the actual delete, only after a successful write; a mismatch leaves
-# files stuck. Keep both false while dryRun is on: DilosFileConfirm@1 never sees the
-# write node's dryRun — it would delete the LKV file although nothing was written.
+# deleteAfterSuccess is configured HERE and nowhere else: DilosFileGate@1 stamps it into
+# every file element, DilosFileConfirm@1 (LAST child) reads it from there and performs the
+# delete after a successful write. Keep it false while dryRun is on — the confirm node
+# never sees the write node's dryRun and would delete an LKV file although nothing was
+# written.
 #
 # SFTP access comes from the tenant GlobalConfiguration entry "LkvSftp", WeClapp access
 # from "WeClappApi" (apiConfiguration below) — never from this YAML.
@@ -19,14 +20,19 @@ triggers:
   - type: FromExecutePipelineCommand@1
 
 transformations:
-  - type: DilosFileFetchStep@1
+  - type: SftpList@1
     description: List LKV SFTP for AR shipment-confirmation files
     serverConfiguration: LkvSftp
     remoteDirectory: "/"          # per-mandate subdirectory TBD with LKV
     filePattern: AR*TXT           # e.g. AR00006946.TXT
-    minFileAgeSeconds: 60
-    deleteAfterSuccess: false     # MUST match DilosFileConfirm@1 below; flip to true
-                                  # ONLY together with dryRun: false (go-live, see header)
+    minFileAgeSeconds: 60         # NEVER omit: the default 0 reads files still being written
+    targetPath: $.files
+
+  - type: DilosFileGate@1
+    description: Drop files an earlier tick confirmed and stamp the rest for the confirm node
+    path: $.files                 # must match the listing's targetPath above
+    deleteAfterSuccess: false     # the ONE place this is configured; flip to true ONLY
+                                  # together with dryRun: false (go-live, see header)
 
   - type: ForEach@1
     description: Process one AR file per iteration
@@ -40,17 +46,23 @@ transformations:
                                      # remaining files still run, the run fails at the end;
                                      # the broken file stays unconfirmed and is retried
     transformations:
+      - type: SftpDownload@1
+        description: Read this file's content as ISO-8859-1
+        serverConfiguration: LkvSftp
+        remotePathPath: $.current.fullPath
+        encoding: iso-8859-1          # NEVER omit: the default utf-8 turns Latin-1 umlauts
+                                      # into replacement characters without failing anything
+        targetPath: $.fileContent     # iteration-local: ForEach@1 gives each item its own context
+
       - type: WeClappArWrite@1
         description: Write AR shipments back to WeClapp (create/update shipment, tracking, SHIPPED last)
         apiConfiguration: WeClappApi  # tenant GlobalConfiguration entry { baseUrl, apiKey }
-        fileNamePath: $.current.fileName
-        contentPath: $.current.content
+        fileNamePath: $.current.name
+        contentPath: $.fileContent
         dryRun: true                  # validate-only; set to false for go-live, together
-                                      # with deleteAfterSuccess: true on step and confirm
+                                      # with deleteAfterSuccess: true on the gate
 
       - type: DilosFileConfirm@1
-        description: Confirm the AR file — keep it on the server (dry-run) or delete it once dryRun is off
-        serverConfiguration: LkvSftp
-        deleteAfterSuccess: false   # MUST match DilosFileFetchStep@1 above
+        description: Confirm the AR file — keep it on the server or delete it, as the gate stamped
         path: $.current             # the ONE current file — never $.files (parent-fallback
-                                    # would resolve the whole array and delete unrun files)
+                                    # would resolve the whole array and confirm unrun files)

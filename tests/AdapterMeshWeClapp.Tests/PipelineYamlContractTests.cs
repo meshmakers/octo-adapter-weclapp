@@ -206,8 +206,8 @@ public class PipelineYamlContractTests
     [InlineData("weclapp-articles-to-as.yaml", typeof(WeClappFetchStepNodeConfiguration))]
     [InlineData("weclapp-articles-to-ck.yaml", typeof(WeClappFetchStepNodeConfiguration))]
     [InlineData("weclapp-orders-to-ai.yaml", typeof(WeClappFetchStepNodeConfiguration))]
-    [InlineData("dilos-ar-to-weclapp.yaml", typeof(DilosFileFetchStepNodeConfiguration))]
-    [InlineData("dilos-be-to-weclapp.yaml", typeof(DilosFileFetchStepNodeConfiguration))]
+    [InlineData("dilos-ar-to-weclapp.yaml", typeof(SftpListNodeConfiguration))]
+    [InlineData("dilos-be-to-weclapp.yaml", typeof(SftpListNodeConfiguration))]
     public async Task ConvertedYaml_UsesPassiveTriggers_NoPollingFields(string file, Type expectedFirstStepType)
     {
         var root = await DeserializePipeline(file);
@@ -310,52 +310,169 @@ public class PipelineYamlContractTests
         Assert.Empty(violations);
     }
 
-    // ---------- contract 8: DilosFileFetchStep and DilosFileConfirm agree on deleteAfterSuccess + serverConfiguration ----------
+    // ---------- contract 8: the AR/BE return path is listing -> gate -> download ----------
 
-    // The two nodes read/write the SAME DilosFileFetchState keys for one file element (the step
-    // gates the keep-mode skip / pending-delete retry, the confirm node performs the actual
-    // first-time delete) — every ar/be yaml already carries a comment saying deleteAfterSuccess
-    // MUST match; this machine-guards that invariant instead of leaving it comment-only, so the
-    // go-live flip from false to true cannot update one node and forget the other.
-    // serverConfiguration must also match — a drift there would mean DilosFileConfirm@1 deleting
-    // (or marking kept) against a DIFFERENT SFTP server than the one DilosFileFetchStep@1 listed
-    // the file from.
+    // The three nodes are only correct together: SftpList@1 emits metadata, DilosFileGate@1 keys
+    // the cross-tick state off it and stamps the survivors, SftpDownload@1 reads one file per
+    // iteration. A gate pointed at another path gates nothing (and the confirm node then finds no
+    // stamp); a download outside the loop would read every already-processed file on every tick.
+    // Neither shows up as a failure - the run stays green and does the wrong amount of work - so
+    // the wiring is pinned here rather than in a comment.
     [Fact]
-    public async Task AllPipelineYamls_DilosFileFetchStepAndConfirm_DeleteAfterSuccessMatches()
+    public async Task ArBeYamls_FetchTheirFilesThroughSftpListGateAndSftpDownload()
     {
         var violations = new List<string>();
+        var checkedYamls = 0;
 
         foreach (var yaml in AllPipelineYamls)
         {
             var root = await DeserializePipeline(yaml);
             var nodes = Walk(root.Transformations).ToList();
-            var fetchSteps = nodes.OfType<DilosFileFetchStepNodeConfiguration>().ToList();
-            var confirms = nodes.OfType<DilosFileConfirmNodeConfiguration>().ToList();
-
-            if (fetchSteps.Count == 0 && confirms.Count == 0)
+            if (!nodes.OfType<DilosFileConfirmNodeConfiguration>().Any())
             {
-                continue; // no DILOS return-path file nodes in this yaml at all (as/ck/ai)
+                continue; // no DILOS return path in this yaml (as/ck/ai)
             }
 
-            var fetchStep = Assert.Single(fetchSteps);
-            var confirm = Assert.Single(confirms);
+            checkedYamls++;
+            var list = Assert.Single(nodes.OfType<SftpListNodeConfiguration>());
+            var gate = Assert.Single(nodes.OfType<DilosFileGateNodeConfiguration>());
+            var download = Assert.Single(nodes.OfType<SftpDownloadNodeConfiguration>());
+            var forEach = Assert.Single(nodes.OfType<ForEachNodeConfiguration>());
+            var children = forEach.Transformations?.ToList() ?? new List<NodeConfiguration>();
 
-            if (fetchStep.DeleteAfterSuccess != confirm.DeleteAfterSuccess)
+            if (gate.Path != list.TargetPath)
             {
-                violations.Add($"{yaml}: DilosFileFetchStep@1.deleteAfterSuccess=" +
-                                $"{fetchStep.DeleteAfterSuccess} but DilosFileConfirm@1.deleteAfterSuccess=" +
-                                $"{confirm.DeleteAfterSuccess} — the two must match or files get stuck");
+                violations.Add($"{yaml}: DilosFileGate@1 gates '{gate.Path}' but SftpList@1 lists into " +
+                               $"'{list.TargetPath}' - the gate would pass judgement on nothing");
             }
 
-            if (fetchStep.ServerConfiguration != confirm.ServerConfiguration)
+            if (forEach.IterationPath != list.TargetPath)
             {
-                violations.Add($"{yaml}: DilosFileFetchStep@1.serverConfiguration=" +
-                                $"'{fetchStep.ServerConfiguration}' but DilosFileConfirm@1.serverConfiguration=" +
-                                $"'{confirm.ServerConfiguration}' — deleting/marking on a different server than listed");
+                violations.Add($"{yaml}: the per-file ForEach iterates '{forEach.IterationPath}' but the " +
+                               $"listing lands in '{list.TargetPath}'");
+            }
+
+            if (children.Count == 0 || children[0] is not SftpDownloadNodeConfiguration)
+            {
+                violations.Add($"{yaml}: SftpDownload@1 must be the FIRST child of the per-file ForEach - " +
+                               "the write node behind it has nothing to write otherwise");
+            }
+
+            if (download.RemotePathPath != $"{forEach.KeyPath}.fullPath")
+            {
+                violations.Add($"{yaml}: SftpDownload@1 reads '{download.RemotePathPath}', expected " +
+                               $"'{forEach.KeyPath}.fullPath' - the path of the file this iteration is for");
+            }
+
+            // The product node defaults minFileAgeSeconds to 0 and skips the guard entirely at
+            // that value, so the yaml literal is the only thing keeping a file that is still
+            // being written out of the listing - the same class of quiet failure the encoding
+            // pin below covers, where the product default is wrong for DILOS.
+            if (list.MinFileAgeSeconds < 60)
+            {
+                violations.Add($"{yaml}: SftpList@1 lists files younger than " +
+                               $"{list.MinFileAgeSeconds}s - a file still being written would be read " +
+                               "half finished, and nothing about that run would fail");
+            }
+
+            // Without this the two path checks below pass on an empty sequence, and a yaml that
+            // lost its write node altogether would read every file and do nothing with it.
+            Assert.Single(children.OfType<WeClappWriteNodeConfiguration>());
+
+            var contentPaths = children.OfType<WeClappWriteNodeConfiguration>()
+                .Select(w => w.ContentPath).ToList();
+            if (contentPaths.Any(path => path != download.TargetPath))
+            {
+                violations.Add($"{yaml}: the write node reads its content from " +
+                               $"'{string.Join(", ", contentPaths)}' while SftpDownload@1 writes to " +
+                               $"'{download.TargetPath}'");
+            }
+
+            var namePaths = children.OfType<WeClappWriteNodeConfiguration>()
+                .Select(w => w.FileNamePath).ToList();
+            if (namePaths.Any(path => path != $"{forEach.KeyPath}.name"))
+            {
+                violations.Add($"{yaml}: the write node takes the file name from " +
+                               $"'{string.Join(", ", namePaths)}', expected '{forEach.KeyPath}.name' - the " +
+                               "field SftpList@1 emits");
             }
         }
 
         Assert.Empty(violations);
+        Assert.Equal(2, checkedYamls); // ar + be
+    }
+
+    // ---------- contract: the keep/delete mode is configured in exactly ONE place ----------
+
+    // This is what the gate exists for. The mode used to sit on the fetch node AND on the confirm
+    // node, and the two had to agree: flipped on the confirm side alone, files were deleted
+    // although nothing had been written; flipped on the fetch side alone, every file was
+    // reprocessed forever. Both values live in tenant-side pipeline definitions and are editable
+    // in the Studio. Raw text on purpose - it catches a second occurrence in any node, including
+    // one the typed layer would not attribute to a node at all. Commented-out lines are not
+    // matched: the key has to stand at the start of its line, which is also why the yaml headers
+    // may discuss the property in prose.
+    [Fact]
+    public void ArBeYamls_ConfigureDeleteAfterSuccessExactlyOnce()
+    {
+        var violations = new List<string>();
+        var checkedYamls = 0;
+
+        foreach (var yaml in AllPipelineYamls)
+        {
+            var raw = File.ReadAllText(FindRepoFile(Path.Combine("pipelines", yaml)));
+            if (!raw.Contains("DilosFileConfirm@1", StringComparison.Ordinal))
+            {
+                continue; // no DILOS return path in this yaml (as/ck/ai)
+            }
+
+            checkedYamls++;
+            var occurrences = Regex.Matches(raw, @"(?m)^\s*deleteAfterSuccess\s*:").Count;
+            if (occurrences != 1)
+            {
+                violations.Add($"{yaml}: deleteAfterSuccess is configured {occurrences} time(s) - it belongs " +
+                               "on DilosFileGate@1 and nowhere else, or two places can disagree again");
+            }
+        }
+
+        Assert.Empty(violations);
+        Assert.Equal(2, checkedYamls); // ar + be
+    }
+
+    // ---------- contract: AR/BE read their files as Latin-1 ----------
+
+    // The mirror image of the delivery pin further down. The retired fetch node decoded with
+    // DilosFile.Encoding; SftpDownload@1 defaults to utf-8, so a yaml that leaves the property out
+    // turns every Latin-1 umlaut byte into a replacement character - and the run stays green,
+    // because a replacement character is a perfectly valid string.
+    [Fact]
+    public async Task ArBeYamls_ReadDilosFilesAsIso88591()
+    {
+        var violations = new List<string>();
+        var downloads = 0;
+
+        foreach (var yaml in AllPipelineYamls)
+        {
+            var root = await DeserializePipeline(yaml);
+
+            foreach (var download in Walk(root.Transformations).OfType<SftpDownloadNodeConfiguration>())
+            {
+                downloads++;
+
+                // Read from the BOUND configuration, so a property left out of the yaml is caught
+                // on its default rather than passing because the text happens to mention it.
+                var configured = Encoding.GetEncoding(download.Encoding);
+                if (configured.CodePage != DilosFile.Encoding.CodePage)
+                {
+                    violations.Add($"{yaml}: SftpDownload '{download.Description}' resolves " +
+                                   $"'{download.Encoding}' to code page {configured.CodePage}, but DILOS " +
+                                   $"files are written in {DilosFile.Encoding.CodePage}");
+                }
+            }
+        }
+
+        Assert.Empty(violations);
+        Assert.Equal(2, downloads); // ar + be
     }
 
     // ---------- contract 9: DilosFileConfirm@1 is the LAST child of the per-file ForEach ----------
@@ -589,9 +706,17 @@ public class PipelineYamlContractTests
             var root = await DeserializePipeline(yaml);
             var nodes = Walk(root.Transformations).ToList();
 
-            foreach (var fetchStep in nodes.OfType<DilosFileFetchStepNodeConfiguration>())
+            // The return path names its entry on the product nodes now. Reading it off the
+            // retired fetch step instead would leave this assertion trivially satisfied by the
+            // two deliveries alone, while its message still claimed to cover both directions.
+            foreach (var list in nodes.OfType<SftpListNodeConfiguration>())
             {
-                sftpEntries.Add(fetchStep.ServerConfiguration);
+                sftpEntries.Add(list.ServerConfiguration);
+            }
+
+            foreach (var download in nodes.OfType<SftpDownloadNodeConfiguration>())
+            {
+                sftpEntries.Add(download.ServerConfiguration);
             }
 
             var uploads = nodes.OfType<SftpUploadNodeConfiguration>().ToList();
@@ -674,6 +799,7 @@ public class PipelineYamlContractTests
             .RegisterNodeConfiguration<WeClappBeWriteNodeConfiguration>()
             .RegisterNodeConfiguration<WeClappFetchStepNodeConfiguration>()
             .RegisterNodeConfiguration<DilosFileFetchStepNodeConfiguration>()
+            .RegisterNodeConfiguration<DilosFileGateNodeConfiguration>()
             .RegisterNodeConfiguration<DilosFileConfirmNodeConfiguration>();
         var lookup = services.BuildServiceProvider().GetRequiredService<INodeQualifiedNameLookupService>();
 
