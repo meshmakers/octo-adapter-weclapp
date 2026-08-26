@@ -51,11 +51,12 @@ public class DilosFileConfirmNodeTests
     /// <summary>One element in the shape <c>DilosFileGate@1</c> hands on: the listing's own
     /// fields plus the key, the mode and the server the gate stamped.</summary>
     private static string Stamped(string key, bool deleteAfterSuccess, string fullPath = "/AR1.TXT",
-        string name = "AR1.TXT")
+        string name = "AR1.TXT", string serverConfiguration = "LkvSftp")
     {
         var mode = deleteAfterSuccess ? "true" : "false";
         return "{\"name\":\"" + name + "\",\"fullPath\":\"" + fullPath + "\",\"key\":\"" + key +
-               "\",\"deleteAfterSuccess\":" + mode + ",\"serverConfiguration\":\"LkvSftp\"}";
+               "\",\"deleteAfterSuccess\":" + mode + ",\"serverConfiguration\":\"" +
+               serverConfiguration + "\"}";
     }
 
     /// <summary>The iteration context the per-file <c>ForEach@1</c> runs its children in: the
@@ -101,14 +102,23 @@ public class DilosFileConfirmNodeTests
     [Fact]
     public async Task DeleteMode_ConnectsToTheServerTheElementNames()
     {
+        // Stamped with a DIFFERENT name than the one this fixture otherwise uses, so the
+        // assertion cannot be satisfied by a node that ignores the stamp and reaches for a
+        // fixed entry - deleting against the wrong server is the failure being ruled out.
         Configure();
-        using var dataContext = IterationOf(Stamped("keyB", deleteAfterSuccess: true));
+        A.CallTo(() => _globalConfiguration.IsDefined("OtherSftp")).Returns(true);
+        A.CallTo(() => _globalConfiguration.GetValue<SftpConnectionSettings>("OtherSftp"))
+            .Returns(PasswordSettings);
+        using var dataContext = IterationOf(Stamped("keyB", deleteAfterSuccess: true,
+            serverConfiguration: "OtherSftp"));
         var sut = CreateSut();
 
         await sut.ProcessObjectAsync(dataContext, _nodeContext);
 
-        A.CallTo(() => _globalConfiguration.GetValue<SftpConnectionSettings>("LkvSftp"))
+        A.CallTo(() => _globalConfiguration.GetValue<SftpConnectionSettings>("OtherSftp"))
             .MustHaveHappenedOnceExactly();
+        A.CallTo(() => _globalConfiguration.GetValue<SftpConnectionSettings>("LkvSftp"))
+            .MustNotHaveHappened();
     }
 
     [Fact]

@@ -61,6 +61,17 @@ public class DilosFileGateNode(
         // the read-and-emit surface runs, so the chain behind the gate can be probed safely.
         var isDryRun = nodeContext.PipelineExecutionMode?.IsDryRun == true;
 
+        // An empty listing is normal; a path that holds nothing at all is a wiring error. Left
+        // to the null fallback the gate would write an empty array and every tick would run
+        // green while the files pile up on the LKV server - and the array it writes is what
+        // hides it, because a downstream ForEach@1 would otherwise abort on the missing path.
+        if (!dataContext.Exists(config.Path))
+        {
+            throw new WeClappPipelineExecutionException(
+                $"DilosFileGate: nothing at '{config.Path}' - the path must name the targetPath of " +
+                "the SftpList@1 that feeds this gate");
+        }
+
         var listed = dataContext.Get<JsonArray>(config.Path) ?? new JsonArray();
         var files = listed.OfType<JsonObject>().Select(Identify).ToList();
 
@@ -103,7 +114,7 @@ public class DilosFileGateNode(
                     var settings = etlContext.GlobalConfiguration.ResolveSftpSettings(source);
                     using (var sftp = sftpFileSystemFactory.Connect(settings))
                     {
-                        sftp.DeleteFile(element["fullPath"]!.GetValue<string>());
+                        sftp.DeleteFile(Required<string>(element, "fullPath"));
                     }
 
                     state.ClearPendingDelete(key);

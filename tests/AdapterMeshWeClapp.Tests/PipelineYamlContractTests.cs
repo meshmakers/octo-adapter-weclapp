@@ -364,6 +364,21 @@ public class PipelineYamlContractTests
                                $"'{forEach.KeyPath}.fullPath' - the path of the file this iteration is for");
             }
 
+            // The product node defaults minFileAgeSeconds to 0 and skips the guard entirely at
+            // that value, so the yaml literal is the only thing keeping a file that is still
+            // being written out of the listing - the same class of quiet failure the encoding
+            // pin below covers, where the product default is wrong for DILOS.
+            if (list.MinFileAgeSeconds < 60)
+            {
+                violations.Add($"{yaml}: SftpList@1 lists files younger than " +
+                               $"{list.MinFileAgeSeconds}s - a file still being written would be read " +
+                               "half finished, and nothing about that run would fail");
+            }
+
+            // Without this the two path checks below pass on an empty sequence, and a yaml that
+            // lost its write node altogether would read every file and do nothing with it.
+            Assert.Single(children.OfType<WeClappWriteNodeConfiguration>());
+
             var contentPaths = children.OfType<WeClappWriteNodeConfiguration>()
                 .Select(w => w.ContentPath).ToList();
             if (contentPaths.Any(path => path != download.TargetPath))
@@ -393,8 +408,10 @@ public class PipelineYamlContractTests
     // node, and the two had to agree: flipped on the confirm side alone, files were deleted
     // although nothing had been written; flipped on the fetch side alone, every file was
     // reprocessed forever. Both values live in tenant-side pipeline definitions and are editable
-    // in the Studio. Raw text on purpose - a second occurrence anywhere, in any node or even in a
-    // comment offering a value to copy, is what this forbids.
+    // in the Studio. Raw text on purpose - it catches a second occurrence in any node, including
+    // one the typed layer would not attribute to a node at all. Commented-out lines are not
+    // matched: the key has to stand at the start of its line, which is also why the yaml headers
+    // may discuss the property in prose.
     [Fact]
     public void ArBeYamls_ConfigureDeleteAfterSuccessExactlyOnce()
     {
@@ -689,9 +706,17 @@ public class PipelineYamlContractTests
             var root = await DeserializePipeline(yaml);
             var nodes = Walk(root.Transformations).ToList();
 
-            foreach (var fetchStep in nodes.OfType<DilosFileFetchStepNodeConfiguration>())
+            // The return path names its entry on the product nodes now. Reading it off the
+            // retired fetch step instead would leave this assertion trivially satisfied by the
+            // two deliveries alone, while its message still claimed to cover both directions.
+            foreach (var list in nodes.OfType<SftpListNodeConfiguration>())
             {
-                sftpEntries.Add(fetchStep.ServerConfiguration);
+                sftpEntries.Add(list.ServerConfiguration);
+            }
+
+            foreach (var download in nodes.OfType<SftpDownloadNodeConfiguration>())
+            {
+                sftpEntries.Add(download.ServerConfiguration);
             }
 
             var uploads = nodes.OfType<SftpUploadNodeConfiguration>().ToList();

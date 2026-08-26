@@ -369,4 +369,43 @@ public class DilosFileGateNodeTests
         Assert.Empty(Files(dataContext));
         A.CallTo(() => _next(dataContext, _nodeContext)).MustHaveHappenedOnceExactly();
     }
+
+    [Fact]
+    public async Task RefusesToGateAPathThatHoldsNothing()
+    {
+        // Both this path and the listing node's targetPath are configurable, in a tenant-side
+        // definition an operator can edit. Pointed at a path the listing never wrote, the gate
+        // reads nothing and writes an empty array - and the run stays green forever while the
+        // DILOS files pile up unprocessed on the LKV server. The empty array it writes is what
+        // hides the failure: without it the ForEach behind the gate would abort and say so.
+        Configure(path: "$.somewhereElse");
+        using var dataContext = ListingOf(Listed("AR1.TXT"));
+        var sut = CreateSut();
+
+        var error = await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
+            () => sut.ProcessObjectAsync(dataContext, _nodeContext));
+
+        Assert.Contains("$.somewhereElse", error.Message);
+    }
+
+    [Fact]
+    public async Task EmptyListing_LeavesEarlierMarksInPlace()
+    {
+        // Documents an accepted difference from the node this replaces. The gate derives the
+        // scopes it prunes from the elements it is handed, so an empty listing prunes nothing,
+        // while the old node pruned its own configured scope unconditionally. In keep mode a
+        // file that disappears and later returns byte-identical with its modification time
+        // preserved therefore keys the same and is dropped as already processed, until the pod
+        // restarts. Reading the scope off the elements is what removes the duplicated
+        // server/directory/pattern triple from this node, so this is that trade, not an
+        // oversight - and in delete mode, where files do not linger, it cannot arise.
+        Configure(deleteAfterSuccess: false);
+        _state.MarkKeptOnServer(ScopedKey("AR_gone.TXT"));
+        using var dataContext = ListingOf();
+        var sut = CreateSut();
+
+        await sut.ProcessObjectAsync(dataContext, _nodeContext);
+
+        Assert.True(_state.WasKeptOnServer(ScopedKey("AR_gone.TXT")));
+    }
 }
