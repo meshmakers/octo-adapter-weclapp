@@ -20,9 +20,11 @@ dotnet build Octo.WeClappAdapter.slnx -c DebugL
 - `src/AdapterMeshWeClapp/` - Mesh adapter host (cloud, connects directly to OctoMesh
   repositories) + all custom pipeline nodes (outbound: `WeClappFetchStep@1`, `WeClappToCk@1`,
   `DilosRender@1` — the delivery itself is the product's `SftpUpload@1`, see "AS/AI Delivery"
-  below; return path: `DilosFileFetchStep@1`, `DilosFileConfirm@1`, `WeClappArWrite@1`,
-  `WeClappBeWrite@1`; legacy poll-trigger nodes `WeClappFetch@1`/`DilosFileFetch@1` stay
-  registered for rollback, see "Pipeline Trigger Architecture" below)
+  below; return path: `DilosFileGate@1`, `DilosFileConfirm@1`, `WeClappArWrite@1`,
+  `WeClappBeWrite@1` — the listing and the reading themselves are the product's `SftpList@1`
+  and `SftpDownload@1`, see "AR/BE Return Path" below; `DilosFileFetchStep@1` and the legacy
+  poll-trigger nodes `WeClappFetch@1`/`DilosFileFetch@1` stay registered but are no longer
+  used by any shipped yaml, see "Pipeline Trigger Architecture" below)
 - `src/Lkv.WeClapp.Core/` - plain core lib: WeClapp DTOs/JSON, WeClapp→DILOS value rules,
   DILOS AS/AI writers, DILOS AR/BE parsers + write-back planners (fail-loud, golden-file verified)
 - `src/charts/octo-weclapp-adapter/` - Helm chart (deployed by the Communication Operator;
@@ -56,8 +58,8 @@ All 5 pipeline YAMLs carry two passive triggers — `FromPipelineTriggerEvent@1`
 subscribes a per-pipeline queue and calls `ExecuteAsync` directly) and
 `FromExecutePipelineCommand@1` (manual/API run, e.g. for Härtetest probing). Neither is a poll
 loop: a redeploy or pod restart fires no execution. A fetch step
-(`WeClappFetchStep@1`/`DilosFileFetchStep@1`) runs first and seeds the data context at a fixed
-root path — always the array, even `[]` (a missing/non-array path aborts a downstream
+(`WeClappFetchStep@1` outbound, `SftpList@1` + `DilosFileGate@1` on the AR/BE return path) runs
+first and seeds the data context at a fixed root path — always the array, even `[]` (a missing/non-array path aborts a downstream
 `ForEach@1` with `PathMustBeArray`); in 4 of the 5 YAMLs a per-item `ForEach@1` then fans the
 former per-execution chain out over that array, one iteration per element
 (`weclapp-articles-to-as.yaml` has no `ForEach@1` — it runs one Batch execution per tick).
@@ -93,9 +95,17 @@ triggers in order, the correct first fetch-step type per file, and that
 silently escape the ban; `AllPipelineYamls_EveryForEach_HasNonRootTargetPathAndSequentialDop`
 asserts every `ForEach@1` has a non-null, non-`"$"` `targetPath` and
 `maxDegreeOfParallelism == 1`; `AllPipelineYamls_EveryForEach_KeyPathIsCurrent` pins every
-`ForEach@1`'s `keyPath` to `$.current`; `AllPipelineYamls_DilosFileFetchStepAndConfirm_DeleteAfterSuccessMatches`
-asserts `DilosFileFetchStep@1`/`DilosFileConfirm@1` carry the same `deleteAfterSuccess` AND
-`serverConfiguration` in every ar/be yaml;
+`ForEach@1`'s `keyPath` to `$.current`;
+`ArBeYamls_FetchTheirFilesThroughSftpListGateAndSftpDownload` pins the AR/BE return-path wiring
+(`SftpList@1` -> `DilosFileGate@1` on the same path -> `SftpDownload@1` as the FIRST per-file
+child, reading `$.current.fullPath`; the write node's `contentPath` is the download's
+`targetPath` and its `fileNamePath` is `$.current.name`) — every one of those strings can be
+changed on ONE side and still ship green, doing the wrong amount of work;
+`ArBeYamls_ConfigureDeleteAfterSuccessExactlyOnce` allows the keep/delete mode in exactly one
+place per ar/be yaml, on `DilosFileGate@1`;
+`ArBeYamls_ReadDilosFilesAsIso88591` pins the effective `encoding` of every `SftpDownload@1` to
+the code page the DILOS parsers expect (the node defaults to utf-8, which turns Latin-1 umlauts
+into replacement characters without failing anything);
 `ArBeYamls_DilosFileConfirm_IsTheLastPerFileForEachChild` pins the confirm node as the LAST
 per-file `ForEach@1` child; `ArBeYamls_DryRunWriteNode_ForbidsDeleteAfterSuccess` forbids
 `deleteAfterSuccess: true` while the write node runs `dryRun: true`;
@@ -170,19 +180,43 @@ claims completeness invites re-pinning an invariant that already holds.
   info + file attribution) is tracked for C2.
 
 ## AR/BE Return Path (SFTP → WeClapp)
-- `DilosFileFetchStep@1` lists the LKV SFTP (credentials via tenant GlobalConfiguration
-  entry `LkvSftp`, same JSON shape as `SftpUpload@1`) once per cron tick and seeds `$.files`
-  with every matching, ready file (always the array, even `[]`); a per-file `ForEach@1`
-  (`keyPath: $.current`) then fans out the write chain — `WeClappArWrite@1`/`WeClappBeWrite@1`
-  followed by `DilosFileConfirm@1` as the LAST child. `DilosFileConfirm@1`, not the fetch step,
-  performs the actual keep/delete: with `deleteAfterSuccess: true` it deletes the remote file
-  only AFTER the write succeeded → the write MUST stay idempotent. The DEFAULT is the safe side
-  (false = keep files): a dry-run execution succeeds without writing, deleting would consume the
-  LKV file with no effect — flip `deleteAfterSuccess: true` together with `dryRun: false` for
-  go-live (`DilosFileFetchStep@1` and `DilosFileConfirm@1` must carry the SAME value). Importing
-  a pipeline YAML that uses a config key the DEPLOYED image does not know yet fails the pipeline
-  registration (the SDK YAML deserializer rejects unknown properties) → deploy the new image
-  before importing updated YAMLs.
+- The chain is `SftpList@1` → `DilosFileGate@1` → `ForEach@1` [ `SftpDownload@1` →
+  `WeClappArWrite@1`/`WeClappBeWrite@1` → `DilosFileConfirm@1` ]. The product nodes own the SFTP
+  mechanics (credentials via tenant GlobalConfiguration entry `LkvSftp`, same JSON shape as
+  `SftpUpload@1`), this adapter owns the DILOS policy. `SftpList@1` seeds `$.files` with metadata
+  for every matching, ready file — always the array, even `[]` — and `minFileAgeSeconds: 60`
+  keeps a file that is still being written out of the listing (the node defaults to 0).
+  `SftpDownload@1` sits INSIDE the loop, one file per iteration, and needs
+  `encoding: iso-8859-1`: its default is utf-8, and DILOS files are Latin-1.
+- `DilosFileGate@1` is the state between the two: per element it drops what a keep-mode run
+  already confirmed, settles a delete an earlier tick still owes the server (without letting the
+  file through again), and stamps the survivors with the file key, the mode and the server. It
+  keys on the element's own `source` object, so the server/directory/pattern triple stays
+  configured once, on the listing node. Because the filter sits BEFORE the download, an
+  already-processed file costs no transfer.
+- `deleteAfterSuccess` lives on the gate and NOWHERE else. `DilosFileConfirm@1` reads it — and
+  the server — off the stamped element, so the two nodes cannot be configured to disagree; a
+  missing stamp is an error, never a default. It performs the actual keep/delete as the LAST
+  child: with `deleteAfterSuccess: true` the remote file is deleted only AFTER the write
+  succeeded → the write MUST stay idempotent. The DEFAULT is the safe side (false = keep
+  files): a dry-run execution succeeds without writing, and deleting would consume the LKV file
+  with no effect — flip `deleteAfterSuccess: true` together with `dryRun: false` for go-live.
+- The file identity crosses a JSON boundary now: the key is built from the `lastWriteTimeUtc`
+  TEXT `SftpList@1` emitted, carried through verbatim. Re-parsing and re-formatting it would tie
+  the identity to the reader's format choice — an unchanged file would key differently from one
+  tick to the next, no keep mark would ever match, and every file would be delivered again on
+  every tick. `DilosFileGateNodeTests.KeysOnTheListingsOwnTimestampText_NotOnAReformattedValue`
+  pins the carry-through; `TwoListingsOfAnUnchangedFile_ProduceTheIdenticalKey` runs the real
+  `SftpList@1` twice and pins that its rendering is deterministic.
+- Cross-tick memory lives in the `DilosFileFetchState` DI singleton, shared by the ar AND the be
+  pipeline, which is why every key carries a scope prefix. A pod restart clears it (a kept file
+  is let through once more — downstream idempotency covers that); a pipeline REdeploy does not.
+- Importing a pipeline YAML that uses a config key the DEPLOYED image does not know yet fails the
+  pipeline registration (the SDK YAML deserializer rejects unknown properties) → deploy the new
+  image before importing updated YAMLs. This swap changes both directions at once: the new image
+  no longer accepts `deleteAfterSuccess`/`serverConfiguration` on `DilosFileConfirm@1`, so the
+  stored definition and the running image disagree until the re-import — for those two pipelines
+  only, and only until it runs.
 - `WeClappArWrite@1`: AR K* Auftragsnummer1 = WeClapp `salesOrder.id` (404 = dead-letter
   log, file still consumed). Idempotency: SHIPPED shipment with same tracking = skip;
   reuse non-CANCELLED; else `createShipment`. Quantities match by **articleId, never by
