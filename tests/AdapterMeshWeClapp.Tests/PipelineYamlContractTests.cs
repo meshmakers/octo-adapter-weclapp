@@ -94,8 +94,8 @@ public class PipelineYamlContractTests
         var updateInfo = Assert.Single(all.OfType<CreateUpdateInfoNodeConfiguration>());
 
         var dataContext = await RunToCkNode(toCk, """
-            {"current":{"item":{"id":"168914","articleNumber":"TW_Z_074","name":"Ersatz Schnellverschlüsse",
-             "articleType":"STORABLE","ean":"9001234567890","active":true}}}
+            {"current":{"id":"168914","articleNumber":"TW_Z_074","name":"Ersatz Schnellverschlüsse",
+             "articleType":"STORABLE","ean":"9001234567890","active":true}}
             """);
 
         foreach (var filter in lookup.FieldFilters ?? [])
@@ -131,9 +131,10 @@ public class PipelineYamlContractTests
         // B2C: private customer without a company — exactly the case Jürgen reported
         // as an empty recipient name on 2026-07-16.
         var dataContext = await RunToCkNode(toCk, """
-            {"current":{"item":{"id":"622075","orderNumber":"SO-1001","customerNumber":"K-77","orderDate":1782820560333,
+            {"current":{"id":"622075","orderNumber":"SO-1001","customerNumber":"K-77","orderDate":1782820560333,
               "orderItems":[]},
-             "customer":{"id":"77","customerNumber":"K-77","company":"","firstName":"Erika","lastName":"Muster"}}}
+             "customerResponse":{"result":[
+              {"id":"77","customerNumber":"K-77","company":"","firstName":"Erika","lastName":"Muster"}]}}
             """);
 
         var namePath = Assert.IsType<string>(nameUpdate.ValuePath);
@@ -159,9 +160,10 @@ public class PipelineYamlContractTests
         var toCk = Assert.Single(all.OfType<WeClappToCkNodeConfiguration>());
 
         var dataContext = await RunToCkNode(toCk, """
-            {"current":{"item":{"id":"622075","orderNumber":"SO-1001","customerNumber":"K-77","orderDate":1782820560333,
+            {"current":{"id":"622075","orderNumber":"SO-1001","customerNumber":"K-77","orderDate":1782820560333,
               "orderItems":[]},
-             "customer":{"id":"77","customerNumber":"K-77","company":"","firstName":"Erika","lastName":"Muster"}}}
+             "customerResponse":{"result":[
+              {"id":"77","customerNumber":"K-77","company":"","firstName":"Erika","lastName":"Muster"}]}}
             """);
 
         var ckPaths = new List<(string What, string Path)>();
@@ -198,14 +200,15 @@ public class PipelineYamlContractTests
 
     // ---------- contract 5: converted pipeline yamls use passive triggers, no polling fields ----------
 
-    // The expected first-transformation type is parameterized per file: the batch/per-item
-    // WeClapp pipelines (as/ck/ai) fetch via WeClappFetchStep@1, the DILOS return-path
-    // pipelines (ar/be) fetch via DilosFileFetchStep@1 — each file gets an exact match against
-    // its own designated fetch-step type, not a loosened "one of either" check.
+    // The expected first transformation is parameterized per file, each an exact type match
+    // rather than a loosened "one of several" check: the as pipeline starts with
+    // DilosExportRunKey@1 (its two fetches sit inside the daily gate that key feeds), the ck and
+    // ai pipelines with the paged MakeHttpRequest@1 that seeds their item array, and the ar/be
+    // return-path pipelines with SftpList@1.
     [Theory]
-    [InlineData("weclapp-articles-to-as.yaml", typeof(WeClappFetchStepNodeConfiguration))]
-    [InlineData("weclapp-articles-to-ck.yaml", typeof(WeClappFetchStepNodeConfiguration))]
-    [InlineData("weclapp-orders-to-ai.yaml", typeof(WeClappFetchStepNodeConfiguration))]
+    [InlineData("weclapp-articles-to-as.yaml", typeof(DilosExportRunKeyNodeConfiguration))]
+    [InlineData("weclapp-articles-to-ck.yaml", typeof(MakeHttpRequestNodeConfiguration))]
+    [InlineData("weclapp-orders-to-ai.yaml", typeof(MakeHttpRequestNodeConfiguration))]
     [InlineData("dilos-ar-to-weclapp.yaml", typeof(SftpListNodeConfiguration))]
     [InlineData("dilos-be-to-weclapp.yaml", typeof(SftpListNodeConfiguration))]
     public async Task ConvertedYaml_UsesPassiveTriggers_NoPollingFields(string file, Type expectedFirstStepType)
@@ -550,6 +553,7 @@ public class PipelineYamlContractTests
             // local SDK feed is >= r3.4.91 and the ar/be yamls deserialize again.
             if (raw.Contains("WeClappFetchStep@1", StringComparison.Ordinal) ||
                 raw.Contains("WeClappFetch@1", StringComparison.Ordinal) ||
+                raw.Contains("MakeHttpRequest@1", StringComparison.Ordinal) ||
                 raw.Contains("WeClappArWrite@1", StringComparison.Ordinal) ||
                 raw.Contains("WeClappBeWrite@1", StringComparison.Ordinal))
             {
@@ -782,6 +786,130 @@ public class PipelineYamlContractTests
         Assert.Empty(violations);
     }
 
+    // ---------- contract: the source pipelines fail loudly on an HTTP error ----------
+
+    // MakeHttpRequest@1 defaults to LogAndStop: it logs, skips the rest of the chain and the
+    // execution finishes GREEN. The node these pipelines replaced threw, and the operational
+    // alerting is built on failed executions - so a default left in place here would turn every
+    // WeClapp outage into a silent no-delivery.
+    [Fact]
+    public async Task SourceYamls_EveryMakeHttpRequest_FailsLoudlyOnHttpErrors()
+    {
+        foreach (var file in new[]
+                 {
+                     "weclapp-articles-to-as.yaml", "weclapp-articles-to-ck.yaml",
+                     "weclapp-orders-to-ai.yaml",
+                 })
+        {
+            var root = await DeserializePipeline(file);
+            var requests = Walk(root.Transformations).OfType<MakeHttpRequestNodeConfiguration>().ToList();
+            Assert.NotEmpty(requests);
+            Assert.All(requests, request =>
+                Assert.Equal(HttpErrorHandling.Throw, request.OnHttpError));
+        }
+    }
+
+    // ---------- contract: paged requests read WeClapp's result envelope ----------
+
+    // Every WeClapp entity response wraps its elements in a top-level "result" array. An
+    // itemsPath that addresses anything else fails the run rather than reading zero elements,
+    // but only once it runs - this pins it at build time.
+    [Fact]
+    public async Task SourceYamls_PagedMakeHttpRequest_ReadsTheWeclappResultArray()
+    {
+        foreach (var file in new[]
+                 {
+                     "weclapp-articles-to-as.yaml", "weclapp-articles-to-ck.yaml",
+                     "weclapp-orders-to-ai.yaml",
+                 })
+        {
+            var root = await DeserializePipeline(file);
+            var paged = Walk(root.Transformations)
+                .OfType<MakeHttpRequestNodeConfiguration>()
+                .Where(request => request.Paging is not null)
+                .ToList();
+            Assert.NotEmpty(paged);
+            Assert.All(paged, request => Assert.Equal("$.result", request.Paging!.ItemsPath));
+        }
+    }
+
+    // ---------- contract: the ai fetch only ever sees confirmed orders ----------
+
+    // The customer's historical order stock is CLOSED, and the dedup gate further down stops
+    // repeat deliveries only - a first-time delivery always passes it. This status filter is
+    // therefore the single thing between one tick and the whole order backlog landing on LKV's
+    // SFTP, and it lives inside a url that reads like an ordinary query: deleting it changes
+    // nothing that fails, neither here nor at the tenant.
+    [Fact]
+    public async Task OrdersToAiYaml_PagedOrderRequest_FiltersOnConfirmedOrders()
+    {
+        var root = await DeserializePipeline("weclapp-orders-to-ai.yaml");
+        var paged = Assert.Single(
+            Walk(root.Transformations).OfType<MakeHttpRequestNodeConfiguration>(),
+            request => request.Paging is not null);
+
+        Assert.Contains("/salesOrder", paged.Url, StringComparison.Ordinal);
+        Assert.Contains("status-eq=ORDER_CONFIRMATION_PRINTED", paged.Url, StringComparison.Ordinal);
+    }
+
+    // ---------- contract: the ai customer lookup feeds the order transform ----------
+
+    // Three strings have to agree for an AI file to carry a recipient: the lookup's targetPath,
+    // the transform's customerPath, and the order of the two children. Any one of them can be
+    // edited alone and still ship green - and the run would then fail per order at the earliest,
+    // on staging.
+    [Fact]
+    public async Task OrdersToAiYaml_CustomerLookupFeedsTheOrderTransform()
+    {
+        var root = await DeserializePipeline("weclapp-orders-to-ai.yaml");
+        var loop = Assert.Single(Walk(root.Transformations).OfType<ForEachNodeConfiguration>());
+        var children = loop.Transformations!.ToList();
+
+        var lookup = Assert.IsType<MakeHttpRequestNodeConfiguration>(children[0]);
+        var toCk = Assert.Single(children.OfType<WeClappToCkNodeConfiguration>());
+
+        Assert.Equal("$.current", toCk.Path);
+        Assert.StartsWith(lookup.TargetPath + ".", toCk.CustomerPath);
+        // The lookup addresses THIS order's customer, not a static one.
+        Assert.Contains(lookup.PathParameters,
+            parameter => parameter.ValuePath == "$.current.customerId");
+    }
+
+    // ---------- contract: one poisoned order cannot starve the others ----------
+
+    // The acceptance case: the customer of order 2 fails permanently, orders 1 and 3 are still
+    // delivered, the execution still fails so the alerting sees it, and order 2 is picked up on
+    // the next tick because it wrote no marker. continueOnError is the isolation half of that
+    // and can be removed by deleting one line.
+    [Fact]
+    public async Task OrdersToAiYaml_ForEachIsolatesAFailingOrder()
+    {
+        var root = await DeserializePipeline("weclapp-orders-to-ai.yaml");
+        var loop = Assert.Single(Walk(root.Transformations).OfType<ForEachNodeConfiguration>());
+
+        Assert.True(loop.ContinueOnError,
+            "a permanently failing customer must fail its own order, not the whole tick");
+    }
+
+    // The guard above keys on node names, and this change rewrote them. A file that drops out of
+    // that trigger stops being checked WITHOUT failing - so the three source pipelines are also
+    // pinned by name here. Keying the trigger itself on "the file mentions apiConfiguration"
+    // would be circular: the one file that forgot the entry would be the one file never checked.
+    [Fact]
+    public void SourceYamls_AreCoveredByTheApiConfigurationGuard()
+    {
+        foreach (var file in new[]
+                 {
+                     "weclapp-articles-to-as.yaml", "weclapp-articles-to-ck.yaml",
+                     "weclapp-orders-to-ai.yaml", "dilos-ar-to-weclapp.yaml",
+                     "dilos-be-to-weclapp.yaml",
+                 })
+        {
+            var raw = File.ReadAllText(FindRepoFile(Path.Combine("pipelines", file)));
+            Assert.Matches(@"(?m)^\s*apiConfiguration\s*:\s*[""']?WeClappApi[""']?\s*(#.*)?$", raw);
+        }
+    }
+
     // ---------- helpers ----------
 
     private static async Task<NodeDefinitionRoot> DeserializePipeline(string fileName)
@@ -800,7 +928,9 @@ public class PipelineYamlContractTests
             .RegisterNodeConfiguration<WeClappFetchStepNodeConfiguration>()
             .RegisterNodeConfiguration<DilosFileFetchStepNodeConfiguration>()
             .RegisterNodeConfiguration<DilosFileGateNodeConfiguration>()
-            .RegisterNodeConfiguration<DilosFileConfirmNodeConfiguration>();
+            .RegisterNodeConfiguration<DilosFileConfirmNodeConfiguration>()
+            .RegisterNodeConfiguration<WeClappResolveSupplySourcesNodeConfiguration>()
+            .RegisterNodeConfiguration<DilosExportRunKeyNodeConfiguration>();
         var lookup = services.BuildServiceProvider().GetRequiredService<INodeQualifiedNameLookupService>();
 
         await using var stream = File.OpenRead(FindRepoFile(Path.Combine("pipelines", fileName)));

@@ -18,20 +18,23 @@ dotnet build Octo.WeClappAdapter.slnx -c DebugL
 
 ## Project Structure
 - `src/AdapterMeshWeClapp/` - Mesh adapter host (cloud, connects directly to OctoMesh
-  repositories) + all custom pipeline nodes (outbound: `WeClappFetchStep@1`, `WeClappToCk@1`,
-  `DilosRender@1` — the delivery itself is the product's `SftpUpload@1`, see "AS/AI Delivery"
+  repositories) + all custom pipeline nodes (outbound: `DilosExportRunKey@1`,
+  `WeClappResolveSupplySources@1`, `WeClappToCk@1`, `DilosRender@1` - the fetching itself is
+  the product's `MakeHttpRequest@1` and the delivery its `SftpUpload@1`, see "AS/AI Delivery"
   below; return path: `DilosFileGate@1`, `DilosFileConfirm@1`, `WeClappArWrite@1`,
   `WeClappBeWrite@1` — the listing and the reading themselves are the product's `SftpList@1`
-  and `SftpDownload@1`, see "AR/BE Return Path" below; `DilosFileFetchStep@1` and the legacy
-  poll-trigger nodes `WeClappFetch@1`/`DilosFileFetch@1` stay registered but are no longer
-  used by any shipped yaml, see "Pipeline Trigger Architecture" below)
+  and `SftpDownload@1`, see "AR/BE Return Path" below; `WeClappFetchStep@1`,
+  `DilosFileFetchStep@1` and the legacy poll-trigger nodes `WeClappFetch@1`/`DilosFileFetch@1`
+  stay registered but are no longer used by any shipped yaml, see "Pipeline Trigger
+  Architecture" below)
 - `src/Lkv.WeClapp.Core/` - plain core lib: WeClapp DTOs/JSON, WeClapp→DILOS value rules,
   DILOS AS/AI writers, DILOS AR/BE parsers + write-back planners (fail-loud, golden-file verified)
 - `src/charts/octo-weclapp-adapter/` - Helm chart (deployed by the Communication Operator;
   httpGet probes on `/healthz/live|ready`)
 - `pipelines/` - tenant pipeline YAMLs (orders→AI per order; articles split into per-item
-  CK sync + batched AS delivery [`emitMode: Batch`, at most one file per Vienna calendar day,
-  gated on the per-day CK marker `Industry.Logistics/ExportRun` — K1 gate]; AR/BE return path);
+  CK sync + batched AS delivery [at most one file per Vienna calendar day, gated on the per-day
+  CK marker `Industry.Logistics/ExportRun` whose key `DilosExportRunKey@1` writes - K1 gate];
+  AR/BE return path);
   the YAMLs carry no credentials — WeClapp access comes
   from the tenant GlobalConfiguration entry `WeClappApi` (`apiConfiguration`), SFTP from
   `LkvSftp`; still tenant-specific and marked REPLACE/TBD in the YAMLs: AI submandant,
@@ -58,11 +61,18 @@ All 5 pipeline YAMLs carry two passive triggers — `FromPipelineTriggerEvent@1`
 subscribes a per-pipeline queue and calls `ExecuteAsync` directly) and
 `FromExecutePipelineCommand@1` (manual/API run, e.g. for Härtetest probing). Neither is a poll
 loop: a redeploy or pod restart fires no execution. A fetch step
-(`WeClappFetchStep@1` outbound, `SftpList@1` + `DilosFileGate@1` on the AR/BE return path) runs
+(`MakeHttpRequest@1` outbound, `SftpList@1` + `DilosFileGate@1` on the AR/BE return path) runs
 first and seeds the data context at a fixed root path — always the array, even `[]` (a missing/non-array path aborts a downstream
 `ForEach@1` with `PathMustBeArray`); in 4 of the 5 YAMLs a per-item `ForEach@1` then fans the
 former per-execution chain out over that array, one iteration per element
-(`weclapp-articles-to-as.yaml` has no `ForEach@1` — it runs one Batch execution per tick).
+(`weclapp-articles-to-as.yaml` has no `ForEach@1` - it renders one batch per tick). The ai loop
+is the exception on two counts: its FIRST child is a per-order `MakeHttpRequest@1` customer
+lookup, and it carries `continueOnError: true`, so a customer that fails permanently fails its
+own order instead of starving the tick. The as pipeline starts with `DilosExportRunKey@1`
+instead of a fetch - it writes `{ exportKind, exportDay }` from the Vienna calendar day, and
+BOTH its fetches sit inside the K1 gate, so an already-delivered day costs no WeClapp request
+at all. That node is a stand-in for a capability `DateTime@1` does not have (a time zone) and
+goes away once it does.
 
 **Canonical ForEach block** (use exactly this shape — the guard tests below pin
 `keyPath`/`targetPath`/`maxDegreeOfParallelism` against every shipped `ForEach@1`):
@@ -135,6 +145,24 @@ forbids the deprecated `ApplyChanges@1` — its configuration is a bare record w
 property at all, so adding an `associationUpdatesPath` there does NOT drop associations quietly:
 the strict deserializer rejects the unknown property and the pipeline registration fails at the
 tenant. The guard moves that failure earlier, into this suite and next to the edit.
+`SourceYamls_EveryMakeHttpRequest_FailsLoudlyOnHttpErrors` pins `onHttpError: Throw` on every
+`MakeHttpRequest@1` of the three source pipelines - the node's default is `LogAndStop`, which logs,
+skips the rest of the chain and finishes the execution GREEN, so a WeClapp outage would become a
+silent no-delivery on alerting built around failed executions;
+`SourceYamls_PagedMakeHttpRequest_ReadsTheWeclappResultArray` pins every paged request's
+`itemsPath` to `$.result`, the envelope every WeClapp entity response wraps its elements in;
+`OrdersToAiYaml_PagedOrderRequest_FiltersOnConfirmedOrders` pins
+`status-eq=ORDER_CONFIRMATION_PRINTED` in that pipeline's order url - the customer's historical
+order stock is CLOSED and the dedup gate stops only REPEAT deliveries, so a url edit that drops
+the filter would mass-deliver the whole backlog on the next tick with nothing failing;
+`OrdersToAiYaml_CustomerLookupFeedsTheOrderTransform` pins the three strings that must agree for
+an AI file to carry a recipient (the lookup's `targetPath`, the transform's `customerPath`, and
+the lookup being the FIRST loop child), plus the lookup addressing THIS order's `customerId`;
+`OrdersToAiYaml_ForEachIsolatesAFailingOrder` pins `continueOnError: true` on the per-order loop,
+so one permanently failing customer fails its own order instead of starving the whole tick;
+`SourceYamls_AreCoveredByTheApiConfigurationGuard` pins the five pipelines that must carry the
+`WeClappApi` entry by NAME, because the guard above keys on node type names and a file that drops
+out of that trigger stops being checked without failing.
 
 This list is machine-checked: `DocumentationContractTests.ClaudeMd_NamesEveryPipelineContractTest`
 fails the suite if a `PipelineYamlContractTests` guard is not named here. It drifted once (AB#4845

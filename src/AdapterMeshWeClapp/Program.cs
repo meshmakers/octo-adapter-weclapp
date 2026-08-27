@@ -1,3 +1,4 @@
+using Meshmakers.Octo.Communication.MeshAdapter.WeClapp;
 using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Nodes;
 using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Services;
 using Meshmakers.Octo.Runtime.Contracts.MongoDb.Configuration;
@@ -31,17 +32,9 @@ await adapterBuilder.RunAsync(args, builder =>
 
     // WeClapp serves gzip-compressed responses (live-verified: raw bodies start with 0x1F) —
     // every named WeClapp client must decompress automatically.
-    foreach (var clientName in new[]
-             {
-                 nameof(WeClappFetchTriggerNode), nameof(WeClappArWriteNode), nameof(WeClappBeWriteNode),
-             })
-    {
-        builder.Services.AddHttpClient(clientName)
-            .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
-            {
-                AutomaticDecompression = System.Net.DecompressionMethods.All,
-            });
-    }
+    // The DEFAULT client is registered alongside the named ones: the standard
+    // MakeHttpRequest@1 node resolves a plain injected HttpClient, which is that default.
+    builder.Services.AddWeClappHttpClients();
 
     // SFTP seam for the DILOS AR/BE return path — shared by the legacy DilosFileFetch trigger
     // AND its cron-trigger replacements DilosFileFetchStep@1/DilosFileConfirm@1 — SSH.NET-backed
@@ -68,6 +61,8 @@ await adapterBuilder.RunAsync(args, builder =>
         .RegisterNode<WeClappArWriteNode>()
         .RegisterNode<WeClappBeWriteNode>()
         .RegisterNode<WeClappFetchStepNode>()
+        .RegisterNode<WeClappResolveSupplySourcesNode>()
+        .RegisterNode<DilosExportRunKeyNode>()
         .RegisterNode<DilosFileFetchStepNode>()
         .RegisterNode<DilosFileGateNode>()
         .RegisterNode<DilosFileConfirmNode>();

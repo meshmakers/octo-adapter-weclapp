@@ -125,9 +125,9 @@ public class AiExportGateTests
         Assert.DoesNotContain(top, n => n is CreateUpdateInfoNodeConfiguration);
         Assert.DoesNotContain(top, n => n is CreateAssociationUpdateNodeConfiguration);
 
-        // WeClappFetchStep@1 seeds $.orders; the former per-execution chain now runs once
-        // per element inside ForEach@1 (AB#4228 trigger separation) — everything below
-        // descends into its children instead of the pipeline's top level.
+        // MakeHttpRequest@1 seeds $.orders; the former per-execution chain now runs once per
+        // element inside ForEach@1, whose first child looks that order's customer up. Everything
+        // below descends into the loop's children instead of the pipeline's top level.
         var forEach = Assert.Single(top.OfType<ForEachNodeConfiguration>());
         var perItem = forEach.Transformations?.ToList() ?? new List<NodeConfiguration>();
 
@@ -161,6 +161,12 @@ public class AiExportGateTests
         Assert.Contains(children, n => n is CreateUpdateInfoNodeConfiguration);
         Assert.Contains(children, n => n is CreateAssociationUpdateNodeConfiguration);
         Assert.Equal(persistIndex, children.Count - 1);
+
+        // The render reads the loop element ITSELF. The fetch seeds a flat array, so the wrapper
+        // path this once used no longer exists: aimed one level too deep, the render would find
+        // no order and end the branch instead of delivering the AI file.
+        var render = Assert.Single(children.OfType<DilosRenderNodeConfiguration>());
+        Assert.Equal("$.current", render.Path);
 
         // Deep census: the flat asserts above cover the three levels the yaml has TODAY, but a
         // nested container (a second ForEach/If/Switch) could smuggle a delivery/persist node

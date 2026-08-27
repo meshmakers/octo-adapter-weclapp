@@ -3,21 +3,29 @@
 # the AS file is one batch per run. Deployment + WeClapp access (apiConfiguration:
 # WeClappApi) identical to weclapp-orders-to-ai.yaml.
 #
-# Supply-source enrichment is OFF here — this pipeline maps no purchase prices into CK;
-# the AS delivery pipeline keeps it on (EK-Preis field).
+# No supply-source resolution here - this pipeline maps no purchase prices into CK;
+# the AS delivery pipeline resolves them (EK-Preis field) before it renders.
 
 triggers:
   - type: FromPipelineTriggerEvent@1
   - type: FromExecutePipelineCommand@1
 
 transformations:
-  - type: WeClappFetchStep@1
+  - type: MakeHttpRequest@1
     description: Fetch all WeClapp articles for CK sync
-    apiConfiguration: WeClappApi   # tenant GlobalConfiguration entry { baseUrl, apiKey }
-    entity: article
-    emitMode: PerItem              # $.articles = array of { item }, one ForEach iteration per element
-    enrichSupplySources: false     # CK maps no EK prices — skip the heaviest fetch
-    pageSize: 100
+    method: GET
+    apiConfiguration: WeClappApi    # tenant GlobalConfiguration entry { baseUrl, apiKey }
+    authHeaderName: AuthenticationToken
+    url: /article
+    targetPath: $.articles          # flat array of raw articles, one ForEach iteration each
+    paging:
+      itemsPath: $.result           # WeClapp wraps every entity response in "result"
+      pageSize: 100
+    retry:
+      maxAttempts: 4                # 1s / 2s / 4s backoff, the retired fetch node's discipline
+      backoffBaseSeconds: 1
+    timeoutSeconds: 60
+    onHttpError: Throw              # NEVER omit: the default logs and finishes the run GREEN
 
   - type: ForEach@1
     description: Process one article per iteration
@@ -31,7 +39,7 @@ transformations:
       - type: WeClappToCk@1
         description: WeClapp article → CK-shaped document (system articles filtered)
         mode: Article
-        path: $.current.item
+        path: $.current             # the fetched array is flat - the element IS the article
         targetPath: $.ck
 
       - type: GetOrCreateRtEntitiesByType@1
