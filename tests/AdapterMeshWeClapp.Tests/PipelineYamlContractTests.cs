@@ -200,10 +200,11 @@ public class PipelineYamlContractTests
 
     // ---------- contract 5: converted pipeline yamls use passive triggers, no polling fields ----------
 
-    // The expected first-transformation type is parameterized per file: the batch/per-item
-    // WeClapp pipelines (as/ck/ai) fetch via WeClappFetchStep@1, the DILOS return-path
-    // pipelines (ar/be) fetch via DilosFileFetchStep@1 — each file gets an exact match against
-    // its own designated fetch-step type, not a loosened "one of either" check.
+    // The expected first transformation is parameterized per file, each an exact type match
+    // rather than a loosened "one of several" check: the as pipeline starts with
+    // DilosExportRunKey@1 (its two fetches sit inside the daily gate that key feeds), the ck and
+    // ai pipelines with the paged MakeHttpRequest@1 that seeds their item array, and the ar/be
+    // return-path pipelines with SftpList@1.
     [Theory]
     [InlineData("weclapp-articles-to-as.yaml", typeof(DilosExportRunKeyNodeConfiguration))]
     [InlineData("weclapp-articles-to-ck.yaml", typeof(MakeHttpRequestNodeConfiguration))]
