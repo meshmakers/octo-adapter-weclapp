@@ -552,6 +552,7 @@ public class PipelineYamlContractTests
             // local SDK feed is >= r3.4.91 and the ar/be yamls deserialize again.
             if (raw.Contains("WeClappFetchStep@1", StringComparison.Ordinal) ||
                 raw.Contains("WeClappFetch@1", StringComparison.Ordinal) ||
+                raw.Contains("MakeHttpRequest@1", StringComparison.Ordinal) ||
                 raw.Contains("WeClappArWrite@1", StringComparison.Ordinal) ||
                 raw.Contains("WeClappBeWrite@1", StringComparison.Ordinal))
             {
@@ -868,6 +869,25 @@ public class PipelineYamlContractTests
 
         Assert.True(loop.ContinueOnError,
             "a permanently failing customer must fail its own order, not the whole tick");
+    }
+
+    // The guard above keys on node names, and this change rewrote them. A file that drops out of
+    // that trigger stops being checked WITHOUT failing - so the three source pipelines are also
+    // pinned by name here. Keying the trigger itself on "the file mentions apiConfiguration"
+    // would be circular: the one file that forgot the entry would be the one file never checked.
+    [Fact]
+    public void SourceYamls_AreCoveredByTheApiConfigurationGuard()
+    {
+        foreach (var file in new[]
+                 {
+                     "weclapp-articles-to-as.yaml", "weclapp-articles-to-ck.yaml",
+                     "weclapp-orders-to-ai.yaml", "dilos-ar-to-weclapp.yaml",
+                     "dilos-be-to-weclapp.yaml",
+                 })
+        {
+            var raw = File.ReadAllText(FindRepoFile(Path.Combine("pipelines", file)));
+            Assert.Matches(@"(?m)^\s*apiConfiguration\s*:\s*[""']?WeClappApi[""']?\s*(#.*)?$", raw);
+        }
     }
 
     // ---------- helpers ----------

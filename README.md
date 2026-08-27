@@ -8,11 +8,13 @@ template.
 
 - `src/AdapterMeshWeClapp` — the adapter host (`WebAdapterBuilder`, `IAdapterService`,
   observability/health endpoints, pipeline registration) plus the custom pipeline nodes:
-  - outbound: `WeClappFetch@1` (legacy trigger, superseded by the passive cron-trigger +
-    step-node pipelines; kept registered for rollback until the standard-node switch),
-    `WeClappFetchStep@1` (fetches WeClapp articles/orders into the data context for the
-    cron-triggered pipelines), `WeClappToCk@1`, `DilosRender@1` (content + golden file names;
-    the delivery itself is the product's `SftpUpload@1` with `encoding: iso-8859-1`)
+  - outbound: `WeClappFetch@1` and `WeClappFetchStep@1` (the poll trigger and its cron-driven
+    step node; both superseded by the product's `MakeHttpRequest@1`, kept registered for
+    rollback), `DilosExportRunKey@1` (writes `{ exportKind, exportDay }` from the Vienna
+    calendar day - a stand-in until `DateTime@1` gains a time zone),
+    `WeClappResolveSupplySources@1` (replaces the article supply-source stubs with the fetched
+    entities that carry the EK prices), `WeClappToCk@1`, `DilosRender@1` (content + golden file
+    names; the delivery itself is the product's `SftpUpload@1` with `encoding: iso-8859-1`)
   - return path: `DilosFileFetch@1` (legacy trigger, superseded by the passive cron-trigger +
     step-node pipelines; kept registered for rollback until the standard-node switch),
     `DilosFileFetchStep@1` (lists the LKV SFTP server into `$.files` for the cron-triggered
@@ -36,11 +38,12 @@ template.
   - **Trigger architecture:** every pipeline carries two passive triggers —
     `FromPipelineTriggerEvent@1` (cron, subscribes a per-pipeline queue) and
     `FromExecutePipelineCommand@1` (manual/API run). A fetch step
-    (`WeClappFetchStep@1`/`DilosFileFetchStep@1`) runs first and seeds the data context; in
+    (`MakeHttpRequest@1` outbound, `SftpList@1` + `DilosFileGate@1` on the return path) runs
+    first and seeds the data context; in
     4 of the 5 pipelines a per-item `ForEach@1` (`keyPath: $.current`,
     `maxDegreeOfParallelism: 1`) then fans the former per-execution chain out over the
-    seeded array (the AS pipeline has no `ForEach@1` — it runs one batched execution per
-    tick). Neither trigger polls or fires on
+    seeded array (the AS pipeline has no `ForEach@1` - it renders one batch per tick, and
+    both of its fetches sit inside the per-day K1 gate). Neither trigger polls or fires on
     (re)deploy — importing a `PipelineTrigger` RT entity schedules nothing by itself; only
     `octo-cli -c DeployTriggers` activates the schedule (also required again after any
     `Enabled` flip)
