@@ -69,6 +69,7 @@ await adapterBuilder.RunAsync(args, builder =>
         .RegisterNode<WeClappBeWriteNode>()
         .RegisterNode<WeClappFetchStepNode>()
         .RegisterNode<WeClappResolveSupplySourcesNode>()
+        .RegisterNode<DilosExportRunKeyNode>()
         .RegisterNode<DilosFileFetchStepNode>()
         .RegisterNode<DilosFileGateNode>()
         .RegisterNode<DilosFileConfirmNode>();
