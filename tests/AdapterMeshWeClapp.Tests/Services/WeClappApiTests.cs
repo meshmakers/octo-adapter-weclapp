@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text.Json.Nodes;
 using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Services;
 using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Tests.Nodes;
 
@@ -14,6 +15,7 @@ public class WeClappApiTests
     public async Task Timeout_IsTransient_AndTheNextAttemptSucceeds()
     {
         // HttpClient reports its own timeout as TaskCanceledException, not HttpRequestException.
+        // GET is idempotent, so repeating it is free — unlike the POST case below.
         var handler = new FakeHttpMessageHandler((_, attempt) => attempt == 1
             ? throw new TaskCanceledException("The request was canceled due to the configured HttpClient.Timeout")
             : FakeHttpMessageHandler.Json("""{"result":[]}"""));
@@ -34,6 +36,36 @@ public class WeClappApiTests
 
         Assert.Contains("4 attempts", ex.Message);
         Assert.Equal(4, handler.Requests.Count);
+    }
+
+    [Fact]
+    public async Task PostTimeout_PropagatesInsteadOfBeingRetried()
+    {
+        // A timed-out POST is indeterminate: the server may have processed it and only the
+        // response was lost. Repeating it would create a second shipment / book a stock movement
+        // twice, and nothing between two attempts reconciles that. The reconcile lives one level
+        // up in the file replay, so the raw failure has to reach the caller.
+        var handler = new FakeHttpMessageHandler((_, _) => throw new TaskCanceledException());
+
+        await Assert.ThrowsAsync<TaskCanceledException>(() => Create(handler)
+            .SendAsync(HttpMethod.Post, "salesOrder/id/1/createShipment", new JsonObject()));
+
+        Assert.Single(handler.Requests);
+    }
+
+    [Fact]
+    public async Task PutTimeout_IsTransient_AndTheNextAttemptSucceeds()
+    {
+        // The shipment PUTs (data and status) are idempotent — a repeat writes the same state,
+        // so the timeout retry must stay in place for them.
+        var handler = new FakeHttpMessageHandler((_, attempt) => attempt == 1
+            ? throw new TaskCanceledException("The request was canceled due to the configured HttpClient.Timeout")
+            : FakeHttpMessageHandler.Json("""{"id":"7"}"""));
+
+        var result = await Create(handler).SendAsync(HttpMethod.Put, "shipment/id/7", new JsonObject());
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(2, handler.Requests.Count);
     }
 
     [Fact]

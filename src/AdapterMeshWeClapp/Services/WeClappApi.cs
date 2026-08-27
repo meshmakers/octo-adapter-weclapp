@@ -5,7 +5,8 @@ namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Services;
 
 /// <summary>
 /// Minimal WeClapp REST helper shared by the write-back nodes: AuthenticationToken header,
-/// transient retries (5xx/408/429/network, exponential backoff — the fetch node's discipline),
+/// transient retries (5xx/408/429/network, exponential backoff — the fetch node's discipline;
+/// a client-side timeout is retried for every method EXCEPT POST, see <see cref="SendAsync"/>),
 /// and the page/pageSize loop. Non-transient HTTP errors are returned as a
 /// <see cref="Result"/> so callers can treat expected ones (e.g. 404 = dead-letter) as data,
 /// not exceptions.
@@ -60,12 +61,23 @@ internal sealed class WeClappApi(
             {
                 lastError = ex.Message;
             }
-            catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested)
+            catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested
+                                                && method != HttpMethod.Post)
             {
                 // HttpClient reports its own timeout as a cancellation. Without this it would
                 // escape the retry loop on the first attempt, so a single slow response ended
                 // the whole AR/BE run. A cancellation the CALLER asked for still propagates -
                 // that is a shutdown, not a transient failure.
+                //
+                // POST is excluded because a timed-out POST is indeterminate: the server may
+                // have processed it and only the response was lost. The two POSTs sent here
+                // (createShipment, book{Incoming,Outgoing}Movement) are not idempotent, and no
+                // reconcile happens between two attempts - a retry would create a second
+                // shipment or double-book a stock movement. Letting the exception propagate
+                // fails the file instead; it stays on the SFTP and the next tick replays it
+                // through the write nodes, where the reconcile lives (AR: the existing-shipment
+                // check decides skip/reuse/create, BE: an already booked movement is delta 0).
+                // GET, and the shipment PUT/DELETE, are idempotent and stay retryable.
                 lastError = "request timed out";
             }
 
