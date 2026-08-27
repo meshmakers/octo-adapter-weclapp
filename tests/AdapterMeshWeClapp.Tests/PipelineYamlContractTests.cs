@@ -205,7 +205,7 @@ public class PipelineYamlContractTests
     // pipelines (ar/be) fetch via DilosFileFetchStep@1 — each file gets an exact match against
     // its own designated fetch-step type, not a loosened "one of either" check.
     [Theory]
-    [InlineData("weclapp-articles-to-as.yaml", typeof(WeClappFetchStepNodeConfiguration))]
+    [InlineData("weclapp-articles-to-as.yaml", typeof(DilosExportRunKeyNodeConfiguration))]
     [InlineData("weclapp-articles-to-ck.yaml", typeof(MakeHttpRequestNodeConfiguration))]
     [InlineData("weclapp-orders-to-ai.yaml", typeof(MakeHttpRequestNodeConfiguration))]
     [InlineData("dilos-ar-to-weclapp.yaml", typeof(SftpListNodeConfiguration))]
@@ -888,7 +888,9 @@ public class PipelineYamlContractTests
             .RegisterNodeConfiguration<WeClappFetchStepNodeConfiguration>()
             .RegisterNodeConfiguration<DilosFileFetchStepNodeConfiguration>()
             .RegisterNodeConfiguration<DilosFileGateNodeConfiguration>()
-            .RegisterNodeConfiguration<DilosFileConfirmNodeConfiguration>();
+            .RegisterNodeConfiguration<DilosFileConfirmNodeConfiguration>()
+            .RegisterNodeConfiguration<WeClappResolveSupplySourcesNodeConfiguration>()
+            .RegisterNodeConfiguration<DilosExportRunKeyNodeConfiguration>();
         var lookup = services.BuildServiceProvider().GetRequiredService<INodeQualifiedNameLookupService>();
 
         await using var stream = File.OpenRead(FindRepoFile(Path.Combine("pipelines", fileName)));

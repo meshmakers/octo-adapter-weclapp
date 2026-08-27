@@ -1,11 +1,11 @@
 # Pipeline: WeClapp articles → ONE DILOS AS file per Vienna calendar day (article master
-# delivery). WeClappFetchStep@1 runs in emitMode: Batch and seeds one document
-# { items: [ …all articles… ], meta: { exportKind, exportDate } }; CK persistence of
+# delivery). DilosExportRunKey@1 writes today's key { exportKind, exportDay } and the
+# fetch, enrichment, render and delivery all run inside the dedup gate; CK persistence of
 # articles lives in weclapp-articles-to-ck.yaml. WeClapp access comes from the tenant
 # GlobalConfiguration entry "WeClappApi" (apiConfiguration below), SFTP from "LkvSftp".
 #
 # Delivery dedup (K1): a per-day CK marker (Industry.Logistics/ExportRun, keyed on
-# meta.exportKind + meta.exportDate) gates the render/upload — at most ONE AS file per
+# meta.exportKind + meta.exportDay) gates the render/upload - at most ONE AS file per
 # Vienna calendar day. The marker is persisted as the LAST step, only after a successful
 # upload (at-least-once: a crash between upload and persist re-delivers on the next
 # tick). Pattern mirrors the AI dedup gate (weclapp-orders-to-ai.yaml).
@@ -22,25 +22,18 @@ triggers:
   - type: FromExecutePipelineCommand@1
 
 transformations:
-  - type: WeClappFetchStep@1
-    description: Fetch all WeClapp articles for today's AS batch
-    apiConfiguration: WeClappApi  # tenant GlobalConfiguration entry { baseUrl, apiKey }
-    entity: article
-    emitMode: Batch               # one execution per run: { items: [ all articles ], meta: {...} }
-    exportKind: AS                # keys the per-day delivery marker (Industry.Logistics/ExportRun)
-    pageSize: 100
-    # Each run also pulls articleSupplySource (EK price enrichment) — one extra fetch per run.
+  - type: DilosExportRunKey@1
+    description: Today's export-run key (Vienna calendar day)
+    exportKind: AS                  # keys the per-day delivery marker (Industry.Logistics/ExportRun)
+    targetPath: $.meta              # { exportKind, exportDay }
 
   # --- K1 delivery-dedup gate: at most ONE AS delivery per Vienna calendar day.
   # GetOrCreate only queries (fresh id + ModOperation=Insert on miss); multiple
   # fieldFilters combine as AND. The marker is persisted by ApplyChanges@2 as the LAST
   # step, only after a successful upload. A tenant without Industry.Logistics fails
-  # loud before querying — pipeline error, no delivery.
-  # The CK attribute is ExportDay since Industry.Logistics 2.0.0; the in-flight document
-  # key stays $.meta.exportDate, because the fetch step inside the adapter image emits it.
-  # Same value on both sides — renaming the key would tie this yaml to a new image.
+  # loud before querying - pipeline error, no delivery.
   - type: GetOrCreateRtEntitiesByType@1
-    description: Probe today's AS export marker (query only — see gate note)
+    description: Probe today's AS export marker (query only - see gate note)
     ckTypeId: Industry.Logistics/ExportRun
     fieldFilters:
       - attributePath: ExportKind
@@ -48,7 +41,7 @@ transformations:
         comparisonValuePath: $.meta.exportKind
       - attributePath: ExportDay
         operator: Equals
-        comparisonValuePath: $.meta.exportDate
+        comparisonValuePath: $.meta.exportDay
     rtIdTargetPath: $.rt.asExportRunRtId
     ckTypeIdTargetPath: $.rt.asExportRunCkTypeId
     modOperationPath: $.rt.asExportRunModOperation
@@ -60,6 +53,48 @@ transformations:
     value: 0                    # UpdateKind.Insert (no delivery today yet)
     valueType: Enum
     transformations:
+      # Both fetches sit INSIDE the gate: on a day that was already delivered this pipeline
+      # makes no WeClapp request at all, so an outage cannot produce an hourly false alarm.
+      - type: MakeHttpRequest@1
+        description: Fetch all WeClapp articles for today's AS batch
+        method: GET
+        apiConfiguration: WeClappApi    # tenant GlobalConfiguration entry { baseUrl, apiKey }
+        authHeaderName: AuthenticationToken
+        url: /article
+        targetPath: $.rawArticles
+        paging:
+          itemsPath: $.result
+          pageSize: 100
+        retry:
+          maxAttempts: 4
+          backoffBaseSeconds: 1
+        timeoutSeconds: 60
+        onHttpError: Throw              # NEVER omit: the default logs and finishes the run GREEN
+
+      - type: MakeHttpRequest@1
+        description: Fetch the articleSupplySource entities that carry the EK prices
+        method: GET
+        apiConfiguration: WeClappApi
+        authHeaderName: AuthenticationToken
+        url: /articleSupplySource
+        targetPath: $.supplySources
+        paging:
+          itemsPath: $.result
+          pageSize: 100
+        retry:
+          maxAttempts: 4
+          backoffBaseSeconds: 1
+        timeoutSeconds: 60
+        # Throw matters most here: continuing without the prices would deliver an AS file with
+        # every EK-Preis at 0 AND set the daily marker, so the wrong file would stand all day.
+        onHttpError: Throw
+
+      - type: WeClappResolveSupplySources@1
+        description: Replace the supply-source stubs with the entities that carry the prices
+        path: $.rawArticles
+        supplySourcesPath: $.supplySources
+        targetPath: $.items
+
       - type: DilosRender@1
         description: Render ALL article lines into one AS file per run
         mode: AS
@@ -76,10 +111,10 @@ transformations:
         encoding: iso-8859-1                # NEVER omit: the default utf-8 corrupts umlauts
         onEncodingError: Replace            # one '?' per unrepresentable scalar, logged with its code point
 
-      # attributeValueType is REQUIRED per update — without it the update is silently
+      # attributeValueType is REQUIRED per update - without it the update is silently
       # dropped and the marker never persists.
       - type: CreateUpdateInfo@1
-        description: Today's export marker — written ONLY after a successful upload
+        description: Today's export marker - written ONLY after a successful upload
         path: $.meta
         rtIdPath: $.rt.asExportRunRtId
         ckTypeId: Industry.Logistics/ExportRun
@@ -90,12 +125,12 @@ transformations:
             valuePath: $.meta.exportKind
           - attributeName: ExportDay
             attributeValueType: String
-            valuePath: $.meta.exportDate
+            valuePath: $.meta.exportDay
         targetPath: $.updates
         targetValueWriteMode: Append
 
-      # ApplyChanges@1 is deprecated — @2 is the current node; associationUpdatesPath
+      # ApplyChanges@1 is deprecated - @2 is the current node; associationUpdatesPath
       # is optional, this gate has no associations.
       - type: ApplyChanges@2
-        description: Persist the marker (export dedup) — LAST step by contract
+        description: Persist the marker (export dedup) - LAST step by contract
         entityUpdatesPath: $.updates

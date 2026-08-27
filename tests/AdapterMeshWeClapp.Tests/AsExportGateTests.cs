@@ -20,7 +20,7 @@ namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Tests;
 /// Export dedup for the AS delivery pipeline. Unlike the AI gate (where the CK order entity
 /// itself is the marker), the AS batch has no per-order entity to key on — the whole
 /// { items, meta } snapshot is one delivery per Vienna calendar day. A dedicated marker
-/// entity (Industry.Logistics/ExportRun) keyed on meta.exportKind + meta.exportDate carries
+/// entity (Industry.Logistics/ExportRun) keyed on meta.exportKind + meta.exportDay carries
 /// the "already delivered today" fact: the GetOrCreate probe QUERIES it outside the gate, the
 /// If@1 delivers only on a miss (ModOperation Insert), and ApplyChanges@2 persists the marker
 /// as the LAST step — only after a successful upload (at-least-once).
@@ -42,7 +42,9 @@ public class AsExportGateTests
             .RegisterNodeConfiguration<WeClappFetchTriggerNodeConfiguration>()
             .RegisterNodeConfiguration<WeClappToCkNodeConfiguration>()
             .RegisterNodeConfiguration<DilosRenderNodeConfiguration>()
-            .RegisterNodeConfiguration<WeClappFetchStepNodeConfiguration>();
+            .RegisterNodeConfiguration<WeClappFetchStepNodeConfiguration>()
+            .RegisterNodeConfiguration<WeClappResolveSupplySourcesNodeConfiguration>()
+            .RegisterNodeConfiguration<DilosExportRunKeyNodeConfiguration>();
         var lookup = services.BuildServiceProvider().GetRequiredService<INodeQualifiedNameLookupService>();
 
         NodeDefinitionRoot root;
@@ -55,25 +57,28 @@ public class AsExportGateTests
         // Trigger-Pins: passive cron pair. K2 anti-starvation is now structural — a
         // FromPipelineTriggerEvent@1 trigger never fires on (re)deploy by design, so there is
         // no RunOnStart/PollingIntervalSeconds config left to get wrong (AB#4228 trigger
-        // separation). The K1 prerequisites move to the fetch-step pins below.
+        // separation). The K1 prerequisites move to the export-run key pins below.
         Assert.Collection(root.Triggers!,
             t => Assert.IsType<FromPipelineTriggerEventNodeConfiguration>(t),
             t => Assert.IsType<FromExecutePipelineCommandNodeConfiguration>(t));
 
         var top = root.Transformations?.ToList() ?? new List<NodeConfiguration>();
 
-        // Fetch-step pins: Batch/AS feed $.meta.exportKind/$.meta.exportDate that the gate below reads.
-        var fetchStep = Assert.Single(top.OfType<WeClappFetchStepNodeConfiguration>());
-        Assert.Equal("article", fetchStep.Entity);
-        Assert.Equal("Batch", fetchStep.EmitMode);
-        Assert.Equal("AS", fetchStep.ExportKind);
+        // The export-run key is written BEFORE the probe and is the only thing the probe needs:
+        // the whole fetch now sits inside the gate, so a day that was already delivered costs
+        // no WeClapp request at all.
+        var exportRunKey = Assert.Single(top.OfType<DilosExportRunKeyNodeConfiguration>());
+        Assert.Equal("AS", exportRunKey.ExportKind);
+        Assert.Equal("$.meta", exportRunKey.TargetPath);
+        Assert.DoesNotContain(top, n => n is MakeHttpRequestNodeConfiguration);
+        Assert.DoesNotContain(top, n => n is WeClappResolveSupplySourcesNodeConfiguration);
 
         // Lookup (query-only) außerhalb des Gates, nichts Lieferndes/Persistierendes davor:
         var probe = Assert.Single(top.OfType<GetOrCreateRtEntitiesByTypeNodeConfiguration>());
         Assert.Equal("Industry.Logistics/ExportRun", probe.CkTypeId);
         Assert.NotNull(probe.FieldFilters);
         Assert.Contains(probe.FieldFilters!, f => f.ComparisonValuePath == "$.meta.exportKind");
-        Assert.Contains(probe.FieldFilters!, f => f.ComparisonValuePath == "$.meta.exportDate");
+        Assert.Contains(probe.FieldFilters!, f => f.ComparisonValuePath == "$.meta.exportDay");
         Assert.DoesNotContain(top, n => n is DilosRenderNodeConfiguration);
         Assert.DoesNotContain(top, n => n is SftpUploadNodeConfiguration);
         Assert.DoesNotContain(top, n => n is ApplyChangesNodeConfiguration2);
@@ -102,6 +107,23 @@ public class AsExportGateTests
         Assert.True(markerIndex > uploadIndex, "Marker-Update NACH dem Upload (at-least-once)");
         Assert.Equal(persistIndex, children.Count - 1);
 
+        // Inside the gate the order is: articles -> supply sources -> enrichment -> render.
+        // The enrichment must sit between the two fetches and the render, or the EK-Preis column
+        // silently becomes 0 for every article while the file still looks complete.
+        var fetchIndexes = children
+            .Select((n, i) => (Node: n, Index: i))
+            .Where(x => x.Node is MakeHttpRequestNodeConfiguration)
+            .Select(x => x.Index)
+            .ToList();
+        var enrichIndex = children.FindIndex(n => n is WeClappResolveSupplySourcesNodeConfiguration);
+        Assert.Equal(2, fetchIndexes.Count);
+        Assert.All(fetchIndexes, index => Assert.True(index < enrichIndex));
+        Assert.True(enrichIndex < renderIndex, "enrichment runs before the render");
+
+        var enrich = Assert.Single(children.OfType<WeClappResolveSupplySourcesNodeConfiguration>());
+        var render = Assert.Single(children.OfType<DilosRenderNodeConfiguration>());
+        Assert.Equal(enrich.TargetPath, render.Path);
+
         // Pfad-VERDRAHTUNG: jede dieser String-Verbindungen kann per YAML-Edit einseitig
         // brechen, ohne dass Struktur-/Reihenfolge-Pins rot werden — zur Laufzeit wäre das
         // ein STILLER Fehler (Gate liest null ⇒ dauer-zu = Liefer-Starvation; ApplyChanges
@@ -121,10 +143,10 @@ public class AsExportGateTests
 
         // Der Marker schreibt exakt die Attribute/Pfade, auf die die Probe filtert:
         Assert.Contains(probe.FieldFilters!, f => f.AttributePath == "ExportKind" && f.ComparisonValuePath == "$.meta.exportKind");
-        Assert.Contains(probe.FieldFilters!, f => f.AttributePath == "ExportDay" && f.ComparisonValuePath == "$.meta.exportDate");
+        Assert.Contains(probe.FieldFilters!, f => f.AttributePath == "ExportDay" && f.ComparisonValuePath == "$.meta.exportDay");
         Assert.NotNull(marker.AttributeUpdates);
         Assert.Contains(marker.AttributeUpdates!, u => u.AttributeName == "ExportKind" && u.ValuePath == "$.meta.exportKind");
-        Assert.Contains(marker.AttributeUpdates!, u => u.AttributeName == "ExportDay" && u.ValuePath == "$.meta.exportDate");
+        Assert.Contains(marker.AttributeUpdates!, u => u.AttributeName == "ExportDay" && u.ValuePath == "$.meta.exportDay");
     }
 
     private static string FindRepoFile(string relativePath)
