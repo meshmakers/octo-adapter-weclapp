@@ -151,6 +151,10 @@ skips the rest of the chain and finishes the execution GREEN, so a WeClapp outag
 silent no-delivery on alerting built around failed executions;
 `SourceYamls_PagedMakeHttpRequest_ReadsTheWeclappResultArray` pins every paged request's
 `itemsPath` to `$.result`, the envelope every WeClapp entity response wraps its elements in;
+`OrdersToAiYaml_PagedOrderRequest_FiltersOnConfirmedOrders` pins
+`status-eq=ORDER_CONFIRMATION_PRINTED` in that pipeline's order url - the customer's historical
+order stock is CLOSED and the dedup gate stops only REPEAT deliveries, so a url edit that drops
+the filter would mass-deliver the whole backlog on the next tick with nothing failing;
 `OrdersToAiYaml_CustomerLookupFeedsTheOrderTransform` pins the three strings that must agree for
 an AI file to carry a recipient (the lookup's `targetPath`, the transform's `customerPath`, and
 the lookup being the FIRST loop child), plus the lookup addressing THIS order's `customerId`;

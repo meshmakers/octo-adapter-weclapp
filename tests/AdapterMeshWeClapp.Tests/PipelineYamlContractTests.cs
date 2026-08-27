@@ -832,6 +832,25 @@ public class PipelineYamlContractTests
         }
     }
 
+    // ---------- contract: the ai fetch only ever sees confirmed orders ----------
+
+    // The customer's historical order stock is CLOSED, and the dedup gate further down stops
+    // repeat deliveries only - a first-time delivery always passes it. This status filter is
+    // therefore the single thing between one tick and the whole order backlog landing on LKV's
+    // SFTP, and it lives inside a url that reads like an ordinary query: deleting it changes
+    // nothing that fails, neither here nor at the tenant.
+    [Fact]
+    public async Task OrdersToAiYaml_PagedOrderRequest_FiltersOnConfirmedOrders()
+    {
+        var root = await DeserializePipeline("weclapp-orders-to-ai.yaml");
+        var paged = Assert.Single(
+            Walk(root.Transformations).OfType<MakeHttpRequestNodeConfiguration>(),
+            request => request.Paging is not null);
+
+        Assert.Contains("/salesOrder", paged.Url, StringComparison.Ordinal);
+        Assert.Contains("status-eq=ORDER_CONFIRMATION_PRINTED", paged.Url, StringComparison.Ordinal);
+    }
+
     // ---------- contract: the ai customer lookup feeds the order transform ----------
 
     // Three strings have to agree for an AI file to carry a recipient: the lookup's targetPath,
