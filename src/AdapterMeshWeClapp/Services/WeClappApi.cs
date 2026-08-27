@@ -60,6 +60,14 @@ internal sealed class WeClappApi(
             {
                 lastError = ex.Message;
             }
+            catch (TaskCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                // HttpClient reports its own timeout as a cancellation. Without this it would
+                // escape the retry loop on the first attempt, so a single slow response ended
+                // the whole AR/BE run. A cancellation the CALLER asked for still propagates -
+                // that is a shutdown, not a transient failure.
+                lastError = "request timed out";
+            }
 
             if (attempt < attempts && retryBackoffBaseSeconds > 0)
             {
