@@ -162,6 +162,12 @@ public class AiExportGateTests
         Assert.Contains(children, n => n is CreateAssociationUpdateNodeConfiguration);
         Assert.Equal(persistIndex, children.Count - 1);
 
+        // The render reads the loop element ITSELF. The fetch seeds a flat array, so the wrapper
+        // path this once used no longer exists: aimed one level too deep, the render would find
+        // no order and end the branch instead of delivering the AI file.
+        var render = Assert.Single(children.OfType<DilosRenderNodeConfiguration>());
+        Assert.Equal("$.current", render.Path);
+
         // Deep census: the flat asserts above cover the three levels the yaml has TODAY, but a
         // nested container (a second ForEach/If/Switch) could smuggle a delivery/persist node
         // past every one of them — anywhere in the file, every render/deliver/persist/update
