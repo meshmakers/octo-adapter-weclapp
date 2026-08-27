@@ -94,8 +94,8 @@ public class PipelineYamlContractTests
         var updateInfo = Assert.Single(all.OfType<CreateUpdateInfoNodeConfiguration>());
 
         var dataContext = await RunToCkNode(toCk, """
-            {"current":{"item":{"id":"168914","articleNumber":"TW_Z_074","name":"Ersatz Schnellverschlüsse",
-             "articleType":"STORABLE","ean":"9001234567890","active":true}}}
+            {"current":{"id":"168914","articleNumber":"TW_Z_074","name":"Ersatz Schnellverschlüsse",
+             "articleType":"STORABLE","ean":"9001234567890","active":true}}
             """);
 
         foreach (var filter in lookup.FieldFilters ?? [])
@@ -204,7 +204,7 @@ public class PipelineYamlContractTests
     // its own designated fetch-step type, not a loosened "one of either" check.
     [Theory]
     [InlineData("weclapp-articles-to-as.yaml", typeof(WeClappFetchStepNodeConfiguration))]
-    [InlineData("weclapp-articles-to-ck.yaml", typeof(WeClappFetchStepNodeConfiguration))]
+    [InlineData("weclapp-articles-to-ck.yaml", typeof(MakeHttpRequestNodeConfiguration))]
     [InlineData("weclapp-orders-to-ai.yaml", typeof(WeClappFetchStepNodeConfiguration))]
     [InlineData("dilos-ar-to-weclapp.yaml", typeof(SftpListNodeConfiguration))]
     [InlineData("dilos-be-to-weclapp.yaml", typeof(SftpListNodeConfiguration))]
@@ -780,6 +780,53 @@ public class PipelineYamlContractTests
         }
 
         Assert.Empty(violations);
+    }
+
+    // ---------- contract: the source pipelines fail loudly on an HTTP error ----------
+
+    // MakeHttpRequest@1 defaults to LogAndStop: it logs, skips the rest of the chain and the
+    // execution finishes GREEN. The node these pipelines replaced threw, and the operational
+    // alerting is built on failed executions - so a default left in place here would turn every
+    // WeClapp outage into a silent no-delivery.
+    [Fact]
+    public async Task SourceYamls_EveryMakeHttpRequest_FailsLoudlyOnHttpErrors()
+    {
+        foreach (var file in new[]
+                 {
+                     "weclapp-articles-to-as.yaml", "weclapp-articles-to-ck.yaml",
+                     "weclapp-orders-to-ai.yaml",
+                 })
+        {
+            var root = await DeserializePipeline(file);
+            var requests = Walk(root.Transformations).OfType<MakeHttpRequestNodeConfiguration>().ToList();
+            Assert.NotEmpty(requests);
+            Assert.All(requests, request =>
+                Assert.Equal(HttpErrorHandling.Throw, request.OnHttpError));
+        }
+    }
+
+    // ---------- contract: paged requests read WeClapp's result envelope ----------
+
+    // Every WeClapp entity response wraps its elements in a top-level "result" array. An
+    // itemsPath that addresses anything else fails the run rather than reading zero elements,
+    // but only once it runs - this pins it at build time.
+    [Fact]
+    public async Task SourceYamls_PagedMakeHttpRequest_ReadsTheWeclappResultArray()
+    {
+        foreach (var file in new[]
+                 {
+                     "weclapp-articles-to-as.yaml", "weclapp-articles-to-ck.yaml",
+                     "weclapp-orders-to-ai.yaml",
+                 })
+        {
+            var root = await DeserializePipeline(file);
+            var paged = Walk(root.Transformations)
+                .OfType<MakeHttpRequestNodeConfiguration>()
+                .Where(request => request.Paging is not null)
+                .ToList();
+            Assert.NotEmpty(paged);
+            Assert.All(paged, request => Assert.Equal("$.result", request.Paging!.ItemsPath));
+        }
     }
 
     // ---------- helpers ----------
