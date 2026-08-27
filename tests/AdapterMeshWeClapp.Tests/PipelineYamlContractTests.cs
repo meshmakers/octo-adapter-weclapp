@@ -131,9 +131,10 @@ public class PipelineYamlContractTests
         // B2C: private customer without a company — exactly the case Jürgen reported
         // as an empty recipient name on 2026-07-16.
         var dataContext = await RunToCkNode(toCk, """
-            {"current":{"item":{"id":"622075","orderNumber":"SO-1001","customerNumber":"K-77","orderDate":1782820560333,
+            {"current":{"id":"622075","orderNumber":"SO-1001","customerNumber":"K-77","orderDate":1782820560333,
               "orderItems":[]},
-             "customer":{"id":"77","customerNumber":"K-77","company":"","firstName":"Erika","lastName":"Muster"}}}
+             "customerResponse":{"result":[
+              {"id":"77","customerNumber":"K-77","company":"","firstName":"Erika","lastName":"Muster"}]}}
             """);
 
         var namePath = Assert.IsType<string>(nameUpdate.ValuePath);
@@ -159,9 +160,10 @@ public class PipelineYamlContractTests
         var toCk = Assert.Single(all.OfType<WeClappToCkNodeConfiguration>());
 
         var dataContext = await RunToCkNode(toCk, """
-            {"current":{"item":{"id":"622075","orderNumber":"SO-1001","customerNumber":"K-77","orderDate":1782820560333,
+            {"current":{"id":"622075","orderNumber":"SO-1001","customerNumber":"K-77","orderDate":1782820560333,
               "orderItems":[]},
-             "customer":{"id":"77","customerNumber":"K-77","company":"","firstName":"Erika","lastName":"Muster"}}}
+             "customerResponse":{"result":[
+              {"id":"77","customerNumber":"K-77","company":"","firstName":"Erika","lastName":"Muster"}]}}
             """);
 
         var ckPaths = new List<(string What, string Path)>();
@@ -205,7 +207,7 @@ public class PipelineYamlContractTests
     [Theory]
     [InlineData("weclapp-articles-to-as.yaml", typeof(WeClappFetchStepNodeConfiguration))]
     [InlineData("weclapp-articles-to-ck.yaml", typeof(MakeHttpRequestNodeConfiguration))]
-    [InlineData("weclapp-orders-to-ai.yaml", typeof(WeClappFetchStepNodeConfiguration))]
+    [InlineData("weclapp-orders-to-ai.yaml", typeof(MakeHttpRequestNodeConfiguration))]
     [InlineData("dilos-ar-to-weclapp.yaml", typeof(SftpListNodeConfiguration))]
     [InlineData("dilos-be-to-weclapp.yaml", typeof(SftpListNodeConfiguration))]
     public async Task ConvertedYaml_UsesPassiveTriggers_NoPollingFields(string file, Type expectedFirstStepType)
@@ -827,6 +829,45 @@ public class PipelineYamlContractTests
             Assert.NotEmpty(paged);
             Assert.All(paged, request => Assert.Equal("$.result", request.Paging!.ItemsPath));
         }
+    }
+
+    // ---------- contract: the ai customer lookup feeds the order transform ----------
+
+    // Three strings have to agree for an AI file to carry a recipient: the lookup's targetPath,
+    // the transform's customerPath, and the order of the two children. Any one of them can be
+    // edited alone and still ship green - and the run would then fail per order at the earliest,
+    // on staging.
+    [Fact]
+    public async Task OrdersToAiYaml_CustomerLookupFeedsTheOrderTransform()
+    {
+        var root = await DeserializePipeline("weclapp-orders-to-ai.yaml");
+        var loop = Assert.Single(Walk(root.Transformations).OfType<ForEachNodeConfiguration>());
+        var children = loop.Transformations!.ToList();
+
+        var lookup = Assert.IsType<MakeHttpRequestNodeConfiguration>(children[0]);
+        var toCk = Assert.Single(children.OfType<WeClappToCkNodeConfiguration>());
+
+        Assert.Equal("$.current", toCk.Path);
+        Assert.StartsWith(lookup.TargetPath + ".", toCk.CustomerPath);
+        // The lookup addresses THIS order's customer, not a static one.
+        Assert.Contains(lookup.PathParameters,
+            parameter => parameter.ValuePath == "$.current.customerId");
+    }
+
+    // ---------- contract: one poisoned order cannot starve the others ----------
+
+    // The acceptance case: the customer of order 2 fails permanently, orders 1 and 3 are still
+    // delivered, the execution still fails so the alerting sees it, and order 2 is picked up on
+    // the next tick because it wrote no marker. continueOnError is the isolation half of that
+    // and can be removed by deleting one line.
+    [Fact]
+    public async Task OrdersToAiYaml_ForEachIsolatesAFailingOrder()
+    {
+        var root = await DeserializePipeline("weclapp-orders-to-ai.yaml");
+        var loop = Assert.Single(Walk(root.Transformations).OfType<ForEachNodeConfiguration>());
+
+        Assert.True(loop.ContinueOnError,
+            "a permanently failing customer must fail its own order, not the whole tick");
     }
 
     // ---------- helpers ----------

@@ -1,6 +1,6 @@
 # Pipeline: WeClapp sales orders → CK entities + DILOS AI file content (one file per
-# order, file name = Auftragsnummer1). WeClappFetchStep@1 seeds $.orders (cron-driven);
-# a ForEach@1 processes one order per iteration.
+# order, file name = Auftragsnummer1). MakeHttpRequest@1 seeds $.orders (cron-driven);
+# a ForEach@1 processes one order per iteration and looks up that order's customer itself.
 #
 # WeClapp access comes from the tenant GlobalConfiguration entry "WeClappApi"
 # (apiConfiguration below), SFTP access from the entry "LkvSftp".
@@ -10,16 +10,26 @@ triggers:
   - type: FromExecutePipelineCommand@1
 
 transformations:
-  - type: WeClappFetchStep@1
+  - type: MakeHttpRequest@1
     description: Fetch confirmed WeClapp orders for AI delivery
-    apiConfiguration: WeClappApi   # tenant GlobalConfiguration entry { baseUrl, apiKey }
-    entity: salesOrder    # orderItems are part of the default response
-    # Only confirmed orders go to LKV — WeClapp allows createShipment (needed for the
+    method: GET
+    apiConfiguration: WeClappApi    # tenant GlobalConfiguration entry { baseUrl, apiKey }
+    authHeaderName: AuthenticationToken
+    # Only confirmed orders go to LKV - WeClapp allows createShipment (needed for the
     # AR return path) only in this status. The customer's historical order stock is
     # CLOSED, so this status filter is the ONLY flood guard against mass-delivering the
-    # backlog — the dedup gate below cannot stop first-time deliveries.
-    additionalQuery: status-eq=ORDER_CONFIRMATION_PRINTED
-    pageSize: 100
+    # backlog - the dedup gate below cannot stop first-time deliveries.
+    # orderItems are part of the default salesOrder response.
+    url: /salesOrder?status-eq=ORDER_CONFIRMATION_PRINTED
+    targetPath: $.orders            # flat array of raw orders, one ForEach iteration each
+    paging:
+      itemsPath: $.result
+      pageSize: 100
+    retry:
+      maxAttempts: 4
+      backoffBaseSeconds: 1
+    timeoutSeconds: 60
+    onHttpError: Throw              # NEVER omit: the default logs and finishes the run GREEN
 
   - type: ForEach@1
     description: Process one order per iteration
@@ -29,12 +39,31 @@ transformations:
     # the data context instead.
     targetPath: $.loopResult         # NEVER omit: default "$" replaces the document root
     maxDegreeOfParallelism: 1        # NEVER omit: default 0 = Environment.ProcessorCount (parallel!)
+    continueOnError: true            # one order whose customer fails must not starve the others
     transformations:
+      - type: MakeHttpRequest@1
+        description: Look up this order's customer
+        method: GET
+        apiConfiguration: WeClappApi
+        authHeaderName: AuthenticationToken
+        url: /customer?id-eq={customerId}
+        pathParameters:
+          - name: customerId
+            valuePath: $.current.customerId
+        targetPath: $.customerResponse    # raw response; the record sits under result[0]
+        retry:
+          maxAttempts: 4
+          backoffBaseSeconds: 1
+        timeoutSeconds: 60
+        # Throw is what makes the isolation above work: ForEach@1 catches a typed failure and
+        # keeps going, while the default would skip this order silently and report success.
+        onHttpError: Throw
+
       - type: WeClappToCk@1
-        description: WeClapp order + customer → CK-shaped document
+        description: WeClapp order + customer -> CK-shaped document
         mode: Order
-        path: $.current.item
-        customerPath: $.current.customer
+        path: $.current                             # the fetched array is flat
+        customerPath: $.customerResponse.result[0]  # the single match of the id-eq lookup
         targetPath: $.ck
 
       # --- Export dedup: lookups outside the gate (query-only), everything that renders,
@@ -125,7 +154,7 @@ transformations:
             description: Render the AI file content for this order (K* + P* + shipping -1 line)
             mode: AI
             submandant: "51696697501"   # REPLACE per tenant: WeClapp-Mandanten-Kennung (LKV maps it)
-            path: $.current.item
+            path: $.current
             targetPath: $.dilosAi
             fileNameTargetPath: $.dilosAiFileName   # AI<Auftragsnummer1>.txt — the WeClapp id,
                                                     # NOT the shop orderNumber
