@@ -12,14 +12,13 @@ namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp;
 /// </summary>
 public static class WeClappHttpClientRegistration
 {
-    /// <summary>Registers the WeClapp HTTP clients (the default one plus one per WeClapp node)
-    /// with automatic decompression.</summary>
+    /// <summary>Registers the WeClapp HTTP clients (the default one plus one per node that resolves
+    /// a client of its own) with automatic decompression.</summary>
     public static IServiceCollection AddWeClappHttpClients(this IServiceCollection services)
     {
         foreach (var clientName in new[]
                  {
-                     string.Empty,
-                     nameof(WeClappFetchTriggerNode), nameof(WeClappArWriteNode), nameof(WeClappBeWriteNode),
+                     string.Empty, nameof(WeClappArWriteNode), nameof(WeClappBeWriteNode),
                  })
         {
             services.AddHttpClient(clientName)

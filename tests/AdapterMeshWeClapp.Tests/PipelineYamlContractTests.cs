@@ -548,12 +548,10 @@ public class PipelineYamlContractTests
             Assert.DoesNotContain("${", raw);
 
             // Per-FILE gate (a raw-text scan cannot attribute properties to nodes): every yaml
-            // with any WeClapp node — the legacy trigger included — must reference the tenant
-            // entry. A per-NODE assert through the typed config layer should follow once the
-            // local SDK feed is >= r3.4.91 and the ar/be yamls deserialize again.
-            if (raw.Contains("WeClappFetchStep@1", StringComparison.Ordinal) ||
-                raw.Contains("WeClappFetch@1", StringComparison.Ordinal) ||
-                raw.Contains("MakeHttpRequest@1", StringComparison.Ordinal) ||
+            // that talks to WeClapp at all must reference the tenant entry. A per-NODE assert
+            // through the typed config layer should follow once the local SDK feed is >= r3.4.91
+            // and the ar/be yamls deserialize again.
+            if (raw.Contains("MakeHttpRequest@1", StringComparison.Ordinal) ||
                 raw.Contains("WeClappArWrite@1", StringComparison.Ordinal) ||
                 raw.Contains("WeClappBeWrite@1", StringComparison.Ordinal))
             {
@@ -919,14 +917,10 @@ public class PipelineYamlContractTests
         services.AddDataPipeline()
             .AddMeshDataPipelineNodes()
             .RegisterNodeConfiguration<IfNodeConfiguration>()
-            .RegisterNodeConfiguration<WeClappFetchTriggerNodeConfiguration>()
             .RegisterNodeConfiguration<WeClappToCkNodeConfiguration>()
             .RegisterNodeConfiguration<DilosRenderNodeConfiguration>()
-            .RegisterNodeConfiguration<DilosFileFetchTriggerNodeConfiguration>()
             .RegisterNodeConfiguration<WeClappArWriteNodeConfiguration>()
             .RegisterNodeConfiguration<WeClappBeWriteNodeConfiguration>()
-            .RegisterNodeConfiguration<WeClappFetchStepNodeConfiguration>()
-            .RegisterNodeConfiguration<DilosFileFetchStepNodeConfiguration>()
             .RegisterNodeConfiguration<DilosFileGateNodeConfiguration>()
             .RegisterNodeConfiguration<DilosFileConfirmNodeConfiguration>()
             .RegisterNodeConfiguration<WeClappResolveSupplySourcesNodeConfiguration>()

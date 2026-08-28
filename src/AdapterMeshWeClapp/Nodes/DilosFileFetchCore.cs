@@ -1,76 +1,14 @@
-using System.Text.RegularExpressions;
-using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Services;
-
 namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Nodes;
 
 /// <summary>
-/// Configuration surface <see cref="DilosFileFetchCore"/> needs to identify and list one DILOS
-/// fetch scope on the LKV SFTP server — implemented by both
-/// <see cref="DilosFileFetchTriggerNodeConfiguration"/> (the legacy polling trigger) and
-/// <see cref="DilosFileFetchStepNodeConfiguration"/> (the cron-trigger-redesign step node,
-/// AB#4228/G2), so the two node families share one listing/key implementation without either
-/// depending on the other's configuration type. Counterpart of
-/// <see cref="IWeClappFetchConfiguration"/> on the WeClapp ingestion side.
-/// </summary>
-internal interface IDilosFileFetchConfiguration
-{
-    /// <summary>Name of the tenant GlobalConfiguration entry holding the SFTP connection settings.</summary>
-    string ServerConfiguration { get; }
-
-    /// <summary>Remote directory to list.</summary>
-    string RemoteDirectory { get; }
-
-    /// <summary>Case-insensitive glob (Billbee semantics), e.g. "AR*TXT" or "BE*txt".</summary>
-    string FilePattern { get; }
-}
-
-/// <summary>
-/// DILOS SFTP listing and key/scope format shared by <see cref="DilosFileFetchTriggerNode"/>
-/// (legacy polling trigger), <see cref="DilosFileFetchStepNode"/> (cron-trigger-redesign step
-/// node, AB#4228/G2) and the <see cref="Services.DilosFileFetchState"/> key contract — one home
-/// for the pieces both node families must agree on byte-for-byte. The per-file loops themselves
-/// stay node-specific: the trigger executes each file inline and deletes right after its own
-/// <c>ITriggerContext.ExecuteAsync</c>, while the step only emits <c>$.files</c> and defers
-/// first-time keep/delete bookkeeping to <c>DilosFileConfirm@1</c>. Counterpart of
-/// <see cref="WeClappFetchCore"/> on the WeClapp ingestion side; lives in its own file so it
-/// survives the legacy trigger's removal once every environment runs the passive-trigger YAMLs.
+/// The DILOS file identity and scope format shared by <see cref="DilosFileGateNode"/> (which builds
+/// a key per listed file) and the <see cref="Services.DilosFileFetchState"/> key contract (which
+/// stores and prunes by it) - one home for the pieces both must agree on byte-for-byte.
+/// <c>DilosFileConfirm@1</c> receives the finished key opaquely through the data context and never
+/// composes one itself.
 /// </summary>
 internal static class DilosFileFetchCore
 {
-    /// <summary>Billbee-compatible glob: '*' → any run, '?' → one char, anchored, case-insensitive.</summary>
-    internal static bool GlobMatch(string fileName, string pattern)
-    {
-        var regex = "^" + Regex.Escape(pattern).Replace(@"\*", ".*").Replace(@"\?", ".") + "$";
-        return Regex.IsMatch(fileName, regex, RegexOptions.IgnoreCase);
-    }
-
-    /// <summary>Lists <see cref="IDilosFileFetchConfiguration.RemoteDirectory"/> and returns the
-    /// non-directory entries matching <see cref="IDilosFileFetchConfiguration.FilePattern"/> in
-    /// Ordinal name order — the shared listing surface of both fetch nodes.</summary>
-    internal static List<SftpFileEntry> ListMatchingFiles(ISftpFileSystem sftp, IDilosFileFetchConfiguration config)
-    {
-        if (string.IsNullOrEmpty(config.FilePattern))
-        {
-            // C# 'required' is not enforced by the pipeline YAML deserializer (strict mode only
-            // rejects UNKNOWN properties) — without this guard a missing filePattern surfaces as
-            // a NullReferenceException from the glob regex on every non-empty listing.
-            throw new WeClappPipelineExecutionException(
-                "DilosFileFetch: 'filePattern' is not configured — the pipeline YAML must set it (e.g. \"AR*TXT\")");
-        }
-
-        return sftp.ListFiles(config.RemoteDirectory)
-            .Where(f => !f.IsDirectory && GlobMatch(f.Name, config.FilePattern))
-            .OrderBy(f => f.Name, StringComparer.Ordinal)
-            .ToList();
-    }
-
-    /// <summary>Identity of one remote file snapshot: name, size and mtime — a file rewritten
-    /// under the same name gets a new key and is treated as new.</summary>
-    internal static string FileKey(SftpFileEntry file)
-    {
-        return $"{file.Name}|{file.Length}|{file.LastWriteTimeUtc.Ticks}";
-    }
-
     /// <summary>Identity of one remote file snapshot whose mtime arrives as text rather than as
     /// a <see cref="DateTime"/> — the shape <c>SftpList@1</c> emits, which <c>DilosFileGate@1</c>
     /// reads after the value has crossed a JSON boundary. The timestamp is taken VERBATIM: it is
@@ -82,20 +20,13 @@ internal static class DilosFileFetchCore
         return $"{name}|{length}|{lastWriteTimeUtc}";
     }
 
-    /// <summary>The per-pipeline scope prefix namespacing a step's keys in the shared
+    /// <summary>The per-pipeline scope prefix namespacing one fetch scope's keys in the shared
     /// <see cref="Services.DilosFileFetchState"/> singleton, so its keys can never collide with —
-    /// or be pruned by — a DIFFERENT pipeline's <c>DilosFileFetchStep@1</c> (e.g. ar vs be)
-    /// sharing the same singleton. Deliberately built only from the step's own config, not from
-    /// any global or tenant identifier: two chains with the same server/directory/pattern are,
-    /// by definition, the same logical fetch scope.</summary>
-    internal static string ScopePrefix(IDilosFileFetchConfiguration config)
-    {
-        return ScopePrefix(config.ServerConfiguration, config.RemoteDirectory, config.FilePattern);
-    }
-
-    /// <summary>The same scope prefix built from the three values themselves, for a caller that
-    /// reads them off a listed element instead of off its own configuration — one home for the
-    /// format, so a scope means the same thing on both sides.</summary>
+    /// or be pruned by - a DIFFERENT pipeline (e.g. ar vs be) sharing the same singleton.
+    /// Deliberately built only from the server/directory/pattern triple, not from any global or
+    /// tenant identifier: two chains with the same triple are, by definition, the same logical
+    /// fetch scope. The gate reads the triple off the listed element, so the values live in one
+    /// place - on the listing node - and mean the same thing on both sides.</summary>
     internal static string ScopePrefix(string serverConfiguration, string remoteDirectory, string filePattern)
     {
         return $"{Escape(serverConfiguration)}|{Escape(remoteDirectory)}|{Escape(filePattern)}|";

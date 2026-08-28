@@ -4,7 +4,7 @@ namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Tests.Services;
 
 /// <summary>
 /// <see cref="DilosFileFetchState"/> is ONE DI singleton shared by every pipeline that uses
-/// <c>DilosFileFetchStep@1</c>/<c>DilosFileConfirm@1</c> — today that means BOTH the ar and the
+/// <c>DilosFileGate@1</c>/<c>DilosFileConfirm@1</c> - today that means BOTH the ar and the
 /// be pipeline resolve the same instance (<c>Program.cs</c>). <see cref="DilosFileFetchState.PruneScopeTo"/>
 /// must therefore prune only the keys that belong to the calling pipeline's OWN scope: before
 /// the scope parameter existed, an ar tick's prune call intersected

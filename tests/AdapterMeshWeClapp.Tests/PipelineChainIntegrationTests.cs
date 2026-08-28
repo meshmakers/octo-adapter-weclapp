@@ -1,7 +1,6 @@
 using System.Reflection;
 using System.Text;
 using System.Text.Json;
-using System.Text.Json.Nodes;
 using FakeItEasy;
 using Lkv.WeClapp.Core.Model;
 using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Nodes;
@@ -9,78 +8,58 @@ using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Tests.Nodes;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
-using Meshmakers.Octo.Sdk.Common.Services;
 using Meshmakers.Octo.Sdk.MeshAdapter;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
-using Microsoft.Extensions.Logging;
 
 namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Tests;
 
 /// <summary>
-/// End-to-end chain over the three custom nodes with a REAL pipeline data context
-/// (DataContextImpl, as the platform's own full-chain tests use): WeClapp JSON →
-/// WeClappFetch (fake HTTP) → per-order document → WeClappToCk → DilosRender → AI lines.
-/// The platform built-ins (GetOrCreate/ApplyChanges) need a repository and are exercised
-/// in the tenant spike instead.
+/// End-to-end chain over the custom nodes with a REAL pipeline data context (DataContextImpl, as
+/// the platform's own full-chain tests use): the document the shipped pipelines seed →
+/// WeClappToCk → DilosRender → AI lines, and the article batch → DilosRender → AS content →
+/// SftpUpload@1 bytes. The seeding itself is the product's MakeHttpRequest@1 and is not re-tested
+/// here; what the chain must agree on is the document SHAPE, so the fixtures below carry exactly
+/// the paths the yamls configure ($.current and $.customerResponse.result[0] for the order chain,
+/// $.items for the article batch). The platform built-ins (GetOrCreate/ApplyChanges) need a
+/// repository and are exercised in the tenant spike instead.
 /// </summary>
 public class PipelineChainIntegrationTests
 {
     [Fact]
-    public async Task WeClappOrder_FlowsThroughFetchToCkAndDilosRenderToAiLines()
+    public async Task WeClappOrder_FlowsThroughCkAndDilosRenderToAiLines()
     {
-        // --- Phase 1: real fetch node against scripted HTTP ---
-        var triggerContext = A.Fake<ITriggerContext>();
-        var nodeContext = A.Fake<INodeContext>();
-        A.CallTo(() => triggerContext.NodeContext).Returns(nodeContext);
-        var fetchConfig = new WeClappFetchTriggerNodeConfiguration
-        {
-            BaseUrl = "https://demo.weclapp.com/webapp/api/v1",
-            ApiKey = "test-key",
-            Entity = "salesOrder",
-            RetryBackoffBaseSeconds = 0,
-        };
-        A.CallTo(() => nodeContext.GetNodeConfiguration<WeClappFetchTriggerNodeConfiguration>())
-            .Returns(fetchConfig);
-
-        var handler = new FakeHttpMessageHandler((req, _) =>
-            req.RequestUri!.ToString().Contains("salesOrder")
-                ? FakeHttpMessageHandler.Json("""
-                    {"result":[{
-                      "id":"5910986621265","orderNumber":"74299","customerNumber":"7067387625809",
-                      "customerId":"7","orderDate":1707177600000,
-                      "deliveryAddress":{"company":"TJ Lucas","countryCode":"DE","zipcode":"51503",
-                                         "street1":"Im Wielputzfeld 15a","city":"Rösrath"},
-                      "orderItems":[{"positionNumber":1,"articleId":"43222003744925",
-                                     "quantity":"1","netAmount":"29.99","title":"Ersatzglas VOLT"}],
-                      "shippingCostItems":[{"netAmount":"4.50","title":"DHL Standard (DE)"}]
-                    }]}
-                    """)
-                : FakeHttpMessageHandler.Json("""
-                    {"result":[{"id":"7","customerNumber":"7067387625809","company":"TJ Lucas GmbH",
-                                "email":"tj@example.com",
-                                "addresses":[{"street1":"Im Wielputzfeld 15a","zipcode":"51503",
-                                              "city":"Rösrath","countryCode":"DE"}]}]}
-                    """));
-        var httpClientFactory = A.Fake<IHttpClientFactory>();
-        A.CallTo(() => httpClientFactory.CreateClient(A<string>._)).Returns(new HttpClient(handler));
-
-        JsonNode? document = null;
-        A.CallTo(() => triggerContext.ExecuteAsync(A<ExecutePipelineOptions>._, A<object?>._))
-            .Invokes(call => document = (JsonNode?)call.Arguments[1])
-            .Returns(Task.FromResult<object?>(null));
-
-        var fetch = new WeClappFetchTriggerNode(A.Fake<ILogger<WeClappFetchTriggerNode>>(), httpClientFactory);
-        await fetch.FetchOnceAsync(triggerContext);
-        Assert.NotNull(document);
+        // --- Phase 1: the per-order document weclapp-orders-to-ai.yaml builds. The order is one
+        //     flat element of the fetched array (ForEach@1 keyPath $.current), the customer the
+        //     single match of the id-eq lookup, which lands as the raw response body. ---
+        const string document = """
+            {
+              "current":{
+                "id":"5910986621265","orderNumber":"74299","customerNumber":"7067387625809",
+                "customerId":"7","orderDate":1707177600000,
+                "deliveryAddress":{"company":"TJ Lucas","countryCode":"DE","zipcode":"51503",
+                                   "street1":"Im Wielputzfeld 15a","city":"Rösrath"},
+                "orderItems":[{"positionNumber":1,"articleId":"43222003744925",
+                               "quantity":"1","netAmount":"29.99","title":"Ersatzglas VOLT"}],
+                "shippingCostItems":[{"netAmount":"4.50","title":"DHL Standard (DE)"}]
+              },
+              "customerResponse":{"result":[
+                {"id":"7","customerNumber":"7067387625809","company":"TJ Lucas GmbH",
+                 "email":"tj@example.com",
+                 "addresses":[{"street1":"Im Wielputzfeld 15a","zipcode":"51503",
+                               "city":"Rösrath","countryCode":"DE"}]}
+              ]}
+            }
+            """;
 
         // --- Phase 2: real data context + real transform/render chain ---
-        using var dataContext = new DataContextImpl(JsonDocument.Parse(document.ToJsonString()));
+        var nodeContext = A.Fake<INodeContext>();
+        using var dataContext = new DataContextImpl(JsonDocument.Parse(document));
         A.CallTo(() => nodeContext.GetNodeConfiguration<WeClappToCkNodeConfiguration>())
             .Returns(new WeClappToCkNodeConfiguration
             {
                 Mode = "Order",
-                Path = "$.item",
-                CustomerPath = "$.customer",
+                Path = "$.current",
+                CustomerPath = "$.customerResponse.result[0]",
                 TargetPath = "$.ck",
             });
         A.CallTo(() => nodeContext.GetNodeConfiguration<DilosRenderNodeConfiguration>())
@@ -88,7 +67,7 @@ public class PipelineChainIntegrationTests
             {
                 Mode = "AI",
                 Submandant = "51696697501",
-                Path = "$.item",
+                Path = "$.current",
                 TargetPath = "$.dilos",
                 FileNameTargetPath = "$.dilosFileName",
             });
@@ -134,50 +113,29 @@ public class PipelineChainIntegrationTests
     }
 
     /// <summary>
-    /// AS collector chain: WeClappFetch in Batch mode emits ONE execution with ALL
-    /// articles; DilosRender renders them into ONE AS content and stamps the golden
-    /// Vienna-local file name (golden precedent: one AS file per run, AS20240206020204.txt).
+    /// AS collector chain: the article batch the as pipeline assembles renders into ONE AS content
+    /// with the golden Vienna-local file name (golden precedent: one AS file per run,
+    /// AS20240206020204.txt), and the delivery node writes it as Latin-1.
     /// </summary>
     [Fact]
-    public async Task WeClappArticles_BatchFlowRendersOneAsFileWithViennaName()
+    public async Task WeClappArticles_BatchRendersOneAsFileWithViennaName()
     {
-        // --- Phase 1: real fetch node in Batch mode against scripted HTTP ---
-        var triggerContext = A.Fake<ITriggerContext>();
-        var nodeContext = A.Fake<INodeContext>();
-        A.CallTo(() => triggerContext.NodeContext).Returns(nodeContext);
-        A.CallTo(() => nodeContext.GetNodeConfiguration<WeClappFetchTriggerNodeConfiguration>())
-            .Returns(new WeClappFetchTriggerNodeConfiguration
-            {
-                BaseUrl = "https://demo.weclapp.com/webapp/api/v1",
-                ApiKey = "test-key",
-                Entity = "article",
-                EmitMode = "Batch",
-                RetryBackoffBaseSeconds = 0,
-            });
-
-        var handler = new FakeHttpMessageHandler((_, _) => FakeHttpMessageHandler.Json("""
-            {"result":[
+        // --- Phase 1: the batch weclapp-articles-to-as.yaml holds at $.items after the fetch and
+        //     the supply-source resolution. The loading equipment is part of it on purpose: the
+        //     delivery must drop system articles. ---
+        const string document = """
+            {"items":[
               {"id":"43222003744925","name":"Ersatzglas VOLT","articleNumber":"VOLT-EG","unitName":"pc."},
               {"id":"43222003744999","name":"Brille NOVA Größe L","articleNumber":"NOVA-01","unitName":"pc."},
               {"id":"43222003745000","name":"Europalette","articleNumber":"PAL-1","unitName":"pc.",
                "articleType":"LOADING_EQUIPMENT"}
             ]}
-            """));
-        var httpClientFactory = A.Fake<IHttpClientFactory>();
-        A.CallTo(() => httpClientFactory.CreateClient(A<string>._)).Returns(new HttpClient(handler));
-
-        JsonNode? document = null;
-        A.CallTo(() => triggerContext.ExecuteAsync(A<ExecutePipelineOptions>._, A<object?>._))
-            .Invokes(call => document = (JsonNode?)call.Arguments[1])
-            .Returns(Task.FromResult<object?>(null));
-
-        var fetch = new WeClappFetchTriggerNode(A.Fake<ILogger<WeClappFetchTriggerNode>>(), httpClientFactory);
-        await fetch.FetchOnceAsync(triggerContext);
-        Assert.NotNull(document);
+            """;
 
         // --- Phase 2: real data context + render (fixed clock: 2026-02-05 13:31:34 UTC
         //     = 14:31:34 Vienna/CET) ---
-        using var dataContext = new DataContextImpl(JsonDocument.Parse(document.ToJsonString()));
+        var nodeContext = A.Fake<INodeContext>();
+        using var dataContext = new DataContextImpl(JsonDocument.Parse(document));
         A.CallTo(() => nodeContext.GetNodeConfiguration<DilosRenderNodeConfiguration>())
             .Returns(new DilosRenderNodeConfiguration
             {

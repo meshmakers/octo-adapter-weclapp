@@ -23,10 +23,9 @@ dotnet build Octo.WeClappAdapter.slnx -c DebugL
   the product's `MakeHttpRequest@1` and the delivery its `SftpUpload@1`, see "AS/AI Delivery"
   below; return path: `DilosFileGate@1`, `DilosFileConfirm@1`, `WeClappArWrite@1`,
   `WeClappBeWrite@1` — the listing and the reading themselves are the product's `SftpList@1`
-  and `SftpDownload@1`, see "AR/BE Return Path" below; `WeClappFetchStep@1`,
-  `DilosFileFetchStep@1` and the legacy poll-trigger nodes `WeClappFetch@1`/`DilosFileFetch@1`
-  stay registered but are no longer used by any shipped yaml, see "Pipeline Trigger
-  Architecture" below)
+  and `SftpDownload@1`, see "AR/BE Return Path" below. That is the complete inventory: EIGHT
+  declared node types, and no trigger node of its own - every pipeline is driven by a passive
+  product trigger, see "Pipeline Trigger Architecture" below)
 - `src/Lkv.WeClapp.Core/` - plain core lib: WeClapp DTOs/JSON, WeClapp→DILOS value rules,
   DILOS AS/AI writers, DILOS AR/BE parsers + write-back planners (fail-loud, golden-file verified)
 - `src/charts/octo-weclapp-adapter/` - Helm chart (deployed by the Communication Operator;
@@ -240,8 +239,8 @@ claims completeness invites re-pinning an invariant that already holds.
   pipeline, which is why every key carries a scope prefix. A pod restart clears it (a kept file
   is let through once more — downstream idempotency covers that); a pipeline REdeploy does not.
   **Accepted residue:** the gate derives the scopes it prunes from the elements it is handed, so
-  an EMPTY listing prunes nothing, where the retired `DilosFileFetchStep@1` pruned its own
-  configured scope unconditionally. In keep mode a file that disappears from the server and later
+  an EMPTY listing prunes nothing, where a node configured with its own scope could prune it
+  unconditionally. In keep mode a file that disappears from the server and later
   returns byte-identical with its modification time preserved therefore keys the same and is
   dropped as already processed - until any non-empty listing of that scope runs without it, or
   at the latest until the pod restarts. Reading the scope off the elements is

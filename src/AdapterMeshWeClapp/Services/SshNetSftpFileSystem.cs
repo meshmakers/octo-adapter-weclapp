@@ -22,7 +22,7 @@ public class SshNetSftpFileSystemFactory : ISftpFileSystemFactory
         {
             // The disposing wrapper only exists after a successful connect — a failed
             // Connect() (unreachable host, bad credentials) must not leak the client
-            // and its socket on every poll.
+            // and its socket on every attempt.
             client.Dispose();
             throw;
         }
@@ -46,31 +46,9 @@ public class SshNetSftpFileSystemFactory : ISftpFileSystemFactory
     }
 }
 
-/// <summary>An open SSH.NET SFTP session; disposed after each poll.</summary>
+/// <summary>An open SSH.NET SFTP session; disposed after the delete it was opened for.</summary>
 internal sealed class SshNetSftpFileSystem(SftpClient client) : ISftpFileSystem
 {
-    public IReadOnlyList<SftpFileEntry> ListFiles(string directory)
-    {
-        return client.ListDirectory(directory)
-            .Select(f => new SftpFileEntry(f.Name, f.FullName, f.IsDirectory, f.LastWriteTimeUtc, f.Length))
-            .ToList();
-    }
-
-    public string DownloadText(string fullPath)
-    {
-        using var stream = new MemoryStream();
-        client.DownloadFile(fullPath, stream);
-        // DilosFile.Encoding (ISO-8859-1) — identical to UTF-8 for the pure-ASCII golden
-        // AR/BE files, and unlike UTF-8 it cannot mangle a future Latin-1 umlaut byte.
-        return Lkv.WeClapp.Core.Dilos.DilosFile.Encoding.GetString(stream.ToArray());
-    }
-
-    public void UploadBytes(string fullPath, byte[] content)
-    {
-        using var stream = new MemoryStream(content);
-        client.UploadFile(stream, fullPath, canOverride: true);
-    }
-
     public void DeleteFile(string fullPath)
     {
         client.DeleteFile(fullPath);

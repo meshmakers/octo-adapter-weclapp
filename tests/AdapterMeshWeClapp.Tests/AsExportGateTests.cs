@@ -39,10 +39,8 @@ public class AsExportGateTests
         services.AddDataPipeline()
             .AddMeshDataPipelineNodes()          // GetOrCreate/CreateUpdateInfo/ApplyChanges/…
             .RegisterNodeConfiguration<IfNodeConfiguration>()
-            .RegisterNodeConfiguration<WeClappFetchTriggerNodeConfiguration>()
             .RegisterNodeConfiguration<WeClappToCkNodeConfiguration>()
             .RegisterNodeConfiguration<DilosRenderNodeConfiguration>()
-            .RegisterNodeConfiguration<WeClappFetchStepNodeConfiguration>()
             .RegisterNodeConfiguration<WeClappResolveSupplySourcesNodeConfiguration>()
             .RegisterNodeConfiguration<DilosExportRunKeyNodeConfiguration>();
         var lookup = services.BuildServiceProvider().GetRequiredService<INodeQualifiedNameLookupService>();

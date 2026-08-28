@@ -36,35 +36,33 @@ await adapterBuilder.RunAsync(args, builder =>
     // MakeHttpRequest@1 node resolves a plain injected HttpClient, which is that default.
     builder.Services.AddWeClappHttpClients();
 
-    // SFTP seam for the DILOS AR/BE return path — shared by the legacy DilosFileFetch trigger
-    // AND its cron-trigger replacements DilosFileFetchStep@1/DilosFileConfirm@1 — SSH.NET-backed
-    // in production, faked in tests.
+    // SFTP seam for the DILOS AR/BE return path - the remote delete both DilosFileGate@1 (settling
+    // a delete an earlier tick still owed) and DilosFileConfirm@1 (the keep/delete decision after a
+    // successful write) perform. SSH.NET-backed in production, faked in tests. The listing and the
+    // download themselves are the product's SftpList@1 / SftpDownload@1 and never reach this seam.
     builder.Services.AddSingleton<ISftpFileSystemFactory, SshNetSftpFileSystemFactory>();
 
-    // Cross-tick memory for DilosFileFetchStep@1 / DilosFileConfirm@1 (AR/BE return path,
-    // AB#4228/G2 cron-trigger redesign) — nodes are constructed fresh per pipeline chain (per
-    // tick), so the poll-loop instance fields the legacy DilosFileFetch trigger relies on would
-    // lose their state between ticks; this singleton replaces them.
+    // Cross-tick memory for DilosFileGate@1 / DilosFileConfirm@1 (AR/BE return path): the pipeline
+    // engine constructs a fresh node instance per chain, i.e. per tick, so which files an earlier
+    // tick already processed cannot live on the nodes themselves. ONE instance is shared by the ar
+    // AND the be pipeline, which is why every key carries a scope prefix. A pod restart clears it;
+    // a pipeline redeploy does not.
     builder.Services.AddSingleton<DilosFileFetchState>();
 
-    // Add mesh adapter nodes and services to the container:
-    // outbound ingestion design (WeClappFetch → WeClappToCk → DilosRender → the product's
-    // SftpUpload@1) plus the AR/BE return path (DilosFileFetch → WeClappArWrite /
-    // WeClappBeWrite) — both still registered as the legacy poll-loop triggers, alongside their
-    // cron-trigger counterparts WeClappFetchStep@1 and DilosFileFetchStep@1/DilosFileConfirm@1
-    // (the latter pair sharing cross-tick state through the DilosFileFetchState singleton above).
+    // Add the adapter's own nodes to the container. Outbound: DilosExportRunKey@1 →
+    // WeClappResolveSupplySources@1 → WeClappToCk@1 / DilosRender@1, with the product's
+    // MakeHttpRequest@1 fetching and SftpUpload@1 delivering. Return path: DilosFileGate@1 →
+    // WeClappArWrite@1 / WeClappBeWrite@1 → DilosFileConfirm@1, with the product's SftpList@1 and
+    // SftpDownload@1 doing the SFTP mechanics. Every pipeline is driven by a passive trigger from
+    // the product, so this adapter declares no trigger node of its own.
     builder.Services.AddOctoMeshAdapter()
-        .RegisterTriggerNode<WeClappFetchTriggerNode>()
-        .RegisterTriggerNode<DilosFileFetchTriggerNode>()
+        .RegisterNode<DilosExportRunKeyNode>()
+        .RegisterNode<WeClappResolveSupplySourcesNode>()
         .RegisterNode<WeClappToCkNode>()
         .RegisterNode<DilosRenderNode>()
+        .RegisterNode<DilosFileGateNode>()
         .RegisterNode<WeClappArWriteNode>()
         .RegisterNode<WeClappBeWriteNode>()
-        .RegisterNode<WeClappFetchStepNode>()
-        .RegisterNode<WeClappResolveSupplySourcesNode>()
-        .RegisterNode<DilosExportRunKeyNode>()
-        .RegisterNode<DilosFileFetchStepNode>()
-        .RegisterNode<DilosFileGateNode>()
         .RegisterNode<DilosFileConfirmNode>();
 
 }, app =>

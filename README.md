@@ -8,17 +8,15 @@ template.
 
 - `src/AdapterMeshWeClapp` — the adapter host (`WebAdapterBuilder`, `IAdapterService`,
   observability/health endpoints, pipeline registration) plus the custom pipeline nodes:
-  - outbound: `WeClappFetch@1` and `WeClappFetchStep@1` (the poll trigger and its cron-driven
-    step node; both superseded by the product's `MakeHttpRequest@1`, kept registered for
-    rollback), `DilosExportRunKey@1` (writes `{ exportKind, exportDay }` from the Vienna
+  - outbound: `DilosExportRunKey@1` (writes `{ exportKind, exportDay }` from the Vienna
     calendar day - a stand-in until `DateTime@1` gains a time zone),
     `WeClappResolveSupplySources@1` (replaces the article supply-source stubs with the fetched
     entities that carry the EK prices), `WeClappToCk@1`, `DilosRender@1` (content + golden file
-    names; the delivery itself is the product's `SftpUpload@1` with `encoding: iso-8859-1`)
-  - return path: `DilosFileFetch@1` (legacy trigger, superseded by the passive cron-trigger +
-    step-node pipelines; kept registered for rollback until the standard-node switch),
-    `DilosFileFetchStep@1` (lists the LKV SFTP server into `$.files` for the cron-triggered
-    pipelines), `DilosFileConfirm@1` (per-file keep/delete confirmation; last child of the
+    names; the fetching itself is the product's `MakeHttpRequest@1` and the delivery its
+    `SftpUpload@1` with `encoding: iso-8859-1`)
+  - return path: `DilosFileGate@1` (per-file keep/delete state between ticks; the listing and
+    the download themselves are the product's `SftpList@1` and `SftpDownload@1`),
+    `DilosFileConfirm@1` (per-file keep/delete confirmation; last child of the
     return-path `ForEach@1`), `WeClappArWrite@1`, `WeClappBeWrite@1`
 - `src/Lkv.WeClapp.Core` — plain .NET core library, no platform dependencies:
   - **WeClapp → DILOS (outbound)**: `WeClappJson`, `WeClappToDilos` value rules,

@@ -4,7 +4,7 @@ namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Services;
 /// SFTP connection settings resolved from a tenant GlobalConfiguration entry. The JSON shape is
 /// identical to the (private) server configuration record of the built-in SftpUpload@1 node, so
 /// one tenant entry (e.g. "LkvSftp") serves both the outbound AS/AI upload and the inbound
-/// DILOS AR/BE fetch — credentials live in tenant configuration, never in pipeline YAML.
+/// DILOS AR/BE return path - credentials live in tenant configuration, never in pipeline YAML.
 /// </summary>
 public record SftpConnectionSettings
 {
@@ -27,25 +27,15 @@ public record SftpConnectionSettings
     public string? PrivateKeyPassphrase { get; init; }
 }
 
-/// <summary>A remote file listing entry (the subset of SSH.NET's ISftpFile the fetch trigger needs).</summary>
-public record SftpFileEntry(string Name, string FullPath, bool IsDirectory, DateTime LastWriteTimeUtc, long Length);
-
 /// <summary>
 /// Thin seam over an open SFTP session so nodes stay unit-testable (the IHttpClientFactory
-/// analogue for SFTP); the production implementation wraps SSH.NET.
+/// analogue for SFTP); the production implementation wraps SSH.NET. Listing and downloading are
+/// the product's SftpList@1 / SftpDownload@1 and never come through here - what is left is the
+/// remote delete, which stays adapter-side because WHEN a DILOS file may be removed is DILOS
+/// policy, decided by DilosFileGate@1 and DilosFileConfirm@1.
 /// </summary>
 public interface ISftpFileSystem : IDisposable
 {
-    /// <summary>Lists the entries of a remote directory (files and directories).</summary>
-    IReadOnlyList<SftpFileEntry> ListFiles(string directory);
-
-    /// <summary>Downloads a remote file as text (DILOS AR/BE files are pure ASCII — golden-verified).</summary>
-    string DownloadText(string fullPath);
-
-    /// <summary>Uploads raw bytes to a remote path, overwriting an existing file — encoding
-    /// is the CALLER's contract (DILOS delivery writes ISO-8859-1).</summary>
-    void UploadBytes(string fullPath, byte[] content);
-
     /// <summary>Deletes a remote file.</summary>
     void DeleteFile(string fullPath);
 }
@@ -53,15 +43,15 @@ public interface ISftpFileSystem : IDisposable
 /// <summary>Creates connected SFTP sessions from tenant-configured connection settings.</summary>
 public interface ISftpFileSystemFactory
 {
-    /// <summary>Opens a connected session; the caller disposes it after the poll.</summary>
+    /// <summary>Opens a connected session; the caller disposes it after use.</summary>
     ISftpFileSystem Connect(SftpConnectionSettings settings);
 }
 
 /// <summary>
 /// Shared resolution of a tenant SFTP GlobalConfiguration entry — one validation for every
-/// node that opens the LKV SFTP (DilosFileFetch@1, DilosFileFetchStep@1, DilosFileConfirm@1),
-/// so a half-configured entry fails with the same clear message everywhere instead of reaching
-/// SSH.NET with empty credentials.
+/// node that opens the LKV SFTP (DilosFileGate@1, DilosFileConfirm@1), so a half-configured
+/// entry fails with the same clear message everywhere instead of reaching SSH.NET with empty
+/// credentials.
 /// </summary>
 public static class SftpConnectionSettingsResolver
 {
