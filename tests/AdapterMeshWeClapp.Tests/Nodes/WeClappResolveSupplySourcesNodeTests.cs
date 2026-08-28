@@ -311,4 +311,31 @@ public class WeClappResolveSupplySourcesNodeTests
         Assert.Empty(items);
         A.CallTo(() => _next(data, node)).MustHaveHappenedOnceExactly();
     }
+
+    // WeClapp never returns a non-object element, but a mis-aimed path can: an array of ids is
+    // still an array, so the array guard above passes it. Measured before this guard existed: a
+    // JSON null travelled through to the renderer as a phantom record, and any other non-object
+    // failed deep inside System.Text.Json with "The node must be of type 'JsonObject'" - loud, but
+    // naming neither this node nor which element.
+    [Theory]
+    [InlineData("\"not an object\"")]
+    [InlineData("[1,2]")]
+    [InlineData("null")]
+    public async Task NonObjectArticleElement_FailsNamingTheNodeAndTheIndex(string element)
+    {
+        var config = Configure();
+        var (data, node) = Context(
+            $$"""
+              {"rawArticles":[{"id":"1","articleType":"STORABLE","supplySources":[]},{{element}}],
+               "supplySources":[]}
+              """, config);
+
+        var ex = await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
+            () => new WeClappResolveSupplySourcesNode(_next).ProcessObjectAsync(data, node));
+
+        Assert.Contains("WeClappResolveSupplySources", ex.Message);
+        Assert.Contains("1", ex.Message);            // the index of the offending element
+        Assert.Contains("$.rawArticles", ex.Message);
+        A.CallTo(() => _next(A<IDataContext>._, A<INodeContext>._)).MustNotHaveHappened();
+    }
 }

@@ -72,31 +72,38 @@ public class WeClappResolveSupplySourcesNode(NodeDelegate next) : IPipelineNode
 
         var enriched = new JsonArray();
         var systemArticles = 0;
-        foreach (var article in articles)
+        for (var index = 0; index < articles.Count; index++)
         {
-            var item = Resolve(article, sourcesById);
+            // WeClapp never returns a non-object element, but a mis-aimed path can - an array of
+            // ids is still an array, so the array check above passes it. Measured before this
+            // guard existed: a JSON null travelled on to the renderer as a phantom record, and any
+            // other non-object failed inside System.Text.Json with "The node must be of type
+            // 'JsonObject'" - loud, but naming neither this node nor which element.
+            if (articles[index] is not JsonObject article)
+            {
+                throw new WeClappPipelineExecutionException(
+                    $"WeClappResolveSupplySources: element {index} at '{config.Path}' is not an " +
+                    "article object");
+            }
+
+            var resolved = Resolve(article, sourcesById);
+            var parsed = resolved.Deserialize<WeClappArticle>(CaseInsensitive)
+                         ?? throw new WeClappPipelineExecutionException(
+                             $"WeClappResolveSupplySources: element {index} at '{config.Path}' is " +
+                             "not a WeClapp article");
 
             // The two pieces of WeClapp knowledge a column renderer cannot express, applied here
             // because this step already holds the articles: loading equipment never belongs in the
             // article master delivery, and the DILOS EK-Preis is a SELECTION over the resolved
             // supply sources (first parseable price, absent means 0) which no path read performs.
-            if (item is JsonObject resolved)
+            if (WeClappToDilos.IsSystemArticle(parsed))
             {
-                var parsed = resolved.Deserialize<WeClappArticle>(CaseInsensitive)
-                             ?? throw new WeClappPipelineExecutionException(
-                                 "WeClappResolveSupplySources: an element of " +
-                                 $"'{config.Path}' is not a WeClapp article");
-
-                if (WeClappToDilos.IsSystemArticle(parsed))
-                {
-                    systemArticles++;
-                    continue;
-                }
-
-                resolved["ekPreis"] = WeClappToDilos.Num(WeClappToDilos.EkPreis(parsed.PurchasePrice));
+                systemArticles++;
+                continue;
             }
 
-            enriched.Add(item);
+            resolved["ekPreis"] = WeClappToDilos.Num(WeClappToDilos.EkPreis(parsed.PurchasePrice));
+            enriched.Add(resolved);
         }
 
         if (systemArticles > 0)
@@ -111,10 +118,10 @@ public class WeClappResolveSupplySourcesNode(NodeDelegate next) : IPipelineNode
         await next(dataContext, nodeContext);
     }
 
-    private static JsonNode? Resolve(JsonNode? article, Dictionary<string, JsonNode> sourcesById)
+    private static JsonObject Resolve(JsonObject article, Dictionary<string, JsonNode> sourcesById)
     {
-        var item = article?.DeepClone();
-        if (item?["supplySources"]?.AsArray() is not { Count: > 0 } stubs)
+        var item = (JsonObject)article.DeepClone();
+        if (item["supplySources"]?.AsArray() is not { Count: > 0 } stubs)
         {
             return item;
         }
