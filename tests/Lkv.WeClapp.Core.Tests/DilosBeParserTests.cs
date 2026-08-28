@@ -52,18 +52,94 @@ public class DilosBeParserTests
         Assert.Equal(1, ex.LineNumber);
     }
 
+    /// <summary>
+    /// This parser used to reject the 7-field variant on purpose, so that it would surface rather
+    /// than parse shifted if it ever arrived. It arrived, and the extra column is exactly what the
+    /// guard predicted: the SKU, in second position. Both layouts are live now - the 6-field one in
+    /// the LKV spec and in 1114 golden lines, the 7-field one in what the customer sends today - so
+    /// both are read, told apart by the field count alone.
+    /// </summary>
     [Fact]
-    public void Parse_WrongFieldCountThrows_IncludingBillbee7FieldVariant()
+    public void Parse_SevenFieldVariant_ReadsTheSkuAndShiftsNothing()
     {
-        // Billbee's CsvBestandsmeldung expects 7 fields (extra SKU column) — the LKV
-        // spec + all 1114 golden lines have 6. If the new customer ever gets the
-        // 7-field variant, this must surface immediately, not parse shifted.
-        var sevenFields = "A1|SKU-1|0|0||5|VER\r\n";
+        var lines = DilosBeParser.Parse("A1|SKU-1|c1|c2|LOT|5|VER\r\n");
 
-        var ex = Assert.Throws<DilosParseException>(() => DilosBeParser.Parse(sevenFields));
+        var line = lines[0];
+        Assert.Equal("A1", line.ArticleNumber);
+        Assert.Equal("SKU-1", line.ArticleCode);
+        Assert.Equal("c1", line.Characteristic1);
+        Assert.Equal("c2", line.Characteristic2);
+        Assert.Equal("LOT", line.LotNumber);
+        Assert.Equal(5m, line.Quantity);
+        Assert.Equal(DilosStockStatus.Available, line.Status);
+    }
+
+    /// <summary>The 6-field layout carries no SKU; the remaining fields keep their meaning.</summary>
+    [Fact]
+    public void Parse_SixFieldVariant_LeavesTheArticleCodeEmpty()
+    {
+        var lines = DilosBeParser.Parse("A1|c1|c2|LOT|5|VER\r\n");
+
+        var line = lines[0];
+        Assert.Equal("A1", line.ArticleNumber);
+        Assert.Equal("", line.ArticleCode);
+        Assert.Equal("c1", line.Characteristic1);
+        Assert.Equal("c2", line.Characteristic2);
+        Assert.Equal("LOT", line.LotNumber);
+        Assert.Equal(5m, line.Quantity);
+    }
+
+    [Theory]
+    [InlineData("A1|0|0||5\r\n")]
+    [InlineData("A1|SKU|0|0||5|VER|extra\r\n")]
+    public void Parse_AnyOtherFieldCountThrows(string content)
+    {
+        var ex = Assert.Throws<DilosParseException>(() => DilosBeParser.Parse(content));
 
         Assert.Equal(1, ex.LineNumber);
-        Assert.Contains("expected 6", ex.Message);
+    }
+
+    /// <summary>
+    /// The real file the customer sends is CRLF terminated, so the record separator must not end up
+    /// inside the last field: a status of "VER\r" would fail the enum mapping, and a stray carriage
+    /// return anywhere else would travel onward as part of a value.
+    /// </summary>
+    [Fact]
+    public void Parse_RealCustomerFile_ReadsEveryLineWithoutCarriageReturns()
+    {
+        var lines = DilosBeParser.Parse(Fixture("BE_20260828071116067.txt"));
+
+        Assert.Equal(46, lines.Count);
+        Assert.All(lines, l =>
+        {
+            Assert.DoesNotContain('\r', l.ArticleNumber);
+            Assert.DoesNotContain('\r', l.ArticleCode);
+            Assert.Equal(DilosStockStatus.Available, l.Status);
+        });
+
+        // First line: 155294|TS_001|0|0||15|VER
+        var first = lines[0];
+        Assert.Equal("155294", first.ArticleNumber);
+        Assert.Equal("TS_001", first.ArticleCode);
+        Assert.Equal("0", first.Characteristic1);
+        Assert.Equal("0", first.Characteristic2);
+        Assert.Equal("", first.LotNumber);
+        Assert.Equal(15m, first.Quantity);
+    }
+
+    /// <summary>
+    /// The match key the write side uses is field 1, and the extra column must not displace it:
+    /// every article number in the real file is one this adapter itself delivered in an AS file,
+    /// while the SKU beside it is the AS description field.
+    /// </summary>
+    [Fact]
+    public void Parse_RealCustomerFile_KeepsTheArticleNumberAsTheFirstField()
+    {
+        var lines = DilosBeParser.Parse(Fixture("BE_20260828071116067.txt"));
+
+        Assert.All(lines, l => Assert.Matches("^[0-9]+$", l.ArticleNumber));
+        Assert.All(lines, l => Assert.NotEqual(l.ArticleNumber, l.ArticleCode));
+        Assert.Contains(lines, l => l.ArticleNumber == "4269");
     }
 
     [Fact]
