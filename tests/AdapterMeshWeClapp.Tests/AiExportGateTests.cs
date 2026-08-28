@@ -68,12 +68,12 @@ public class AiExportGateTests
 
         var gateConfiguration = GateConfiguration(new List<NodeConfiguration>
         {
-            new AiGateProbeNodeConfiguration { TargetPath = "$.probe" },
+            new GateProbeNodeConfiguration { TargetPath = "$.probe" },
         });
 
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddDataPipeline().RegisterNode<AiGateProbeNode>();
+        services.AddDataPipeline().RegisterNode<GateProbeNode>();
         var rootContext = NodeContext.CreateRootNodeContext(services.BuildServiceProvider(),
             A.Fake<IPipelineLogger>(), dataContext);
         var nodeContext = rootContext.RegisterChildNode("If", 0, gateConfiguration, dataContext);
@@ -183,19 +183,4 @@ public class AiExportGateTests
             or CreateUpdateInfoNodeConfiguration
             or CreateAssociationUpdateNodeConfiguration;
 
-}
-
-// Minimal probe node so the gate tests can observe whether the If children actually ran.
-[NodeName("AiGateProbe", 1)]
-internal record AiGateProbeNodeConfiguration : TargetPathNodeConfiguration;
-
-[NodeConfiguration(typeof(AiGateProbeNodeConfiguration))]
-internal class AiGateProbeNode(NodeDelegate next) : IPipelineNode
-{
-    public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
-    {
-        var c = nodeContext.GetNodeConfiguration<AiGateProbeNodeConfiguration>();
-        dataContext.Set(c.TargetPath, 1, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
-        await next(dataContext, nodeContext);
-    }
 }

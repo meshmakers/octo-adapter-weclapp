@@ -79,8 +79,14 @@ public class WeClappResolveSupplySourcesNodeTests
         Assert.Equal(987m, Assert.Single(articles)!.PurchasePrice);
     }
 
+    // A stub that resolves to nothing used to be dropped in silence, and the article then rendered
+    // EK-Preis 0 - which is a LEGITIMATE value for an article without a purchase price, so neither
+    // the delivered file nor anything downstream could tell the two apart. The AS delivery burns
+    // the per-day marker on its way out, so that file would stand at LKV for the whole Vienna day.
+    // A throw costs the next tick and no data. Live census of the customer account (2026-08-28):
+    // 48 articles, 16 entities, 15 stubs, zero of them dangling - live data does not reach here.
     [Fact]
-    public async Task StubWithoutAMatch_IsDropped()
+    public async Task StubWithoutAMatch_FailsNamingTheArticleAndTheReference()
     {
         var config = Configure();
         var (data, node) = Context("""
@@ -88,10 +94,32 @@ public class WeClappResolveSupplySourcesNodeTests
              "supplySources":[{"id":"9001","articlePrices":[{"price":"987"}]}]}
             """, config);
 
-        await new WeClappResolveSupplySourcesNode(_next).ProcessObjectAsync(data, node);
+        var ex = await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
+            () => new WeClappResolveSupplySourcesNode(_next).ProcessObjectAsync(data, node));
 
-        var items = data.Get<JsonArray>("$.items");
-        Assert.Empty(items![0]!["supplySources"]!.AsArray());
+        // Both ends of the broken join, so the message alone identifies the master-data record:
+        Assert.Contains("article ", ex.Message);
+        Assert.Contains("missing", ex.Message);
+        Assert.False(data.Exists("$.items"));
+        A.CallTo(() => _next(A<IDataContext>._, A<INodeContext>._)).MustNotHaveHappened();
+    }
+
+    // Same rule for a stub that names nothing at all: it cannot resolve either, and the article
+    // would carry EK-Preis 0 without a trace.
+    [Fact]
+    public async Task StubWithoutAReference_FailsNamingTheStubIndex()
+    {
+        var config = Configure();
+        var (data, node) = Context("""
+            {"rawArticles":[{"id":"1","supplySources":[{}]}],
+             "supplySources":[{"id":"9001","articlePrices":[{"price":"987"}]}]}
+            """, config);
+
+        var ex = await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
+            () => new WeClappResolveSupplySourcesNode(_next).ProcessObjectAsync(data, node));
+
+        Assert.Contains("<none>", ex.Message);
+        Assert.Contains("stub 0", ex.Message);
     }
 
     [Fact]
@@ -125,8 +153,10 @@ public class WeClappResolveSupplySourcesNodeTests
         A.CallTo(() => _next(A<IDataContext>._, A<INodeContext>._)).MustHaveHappenedOnceExactly();
     }
 
+    // An id is the only thing an article stub can point at, so an entity without one is
+    // unreachable: every stub aimed at it resolves to nothing and the price is lost silently.
     [Fact]
-    public async Task SupplySourceWithoutAnId_IsIgnored()
+    public async Task SupplySourceWithoutAnId_FailsNamingTheEntityIndex()
     {
         var config = Configure();
         var (data, node) = Context("""
@@ -134,10 +164,13 @@ public class WeClappResolveSupplySourcesNodeTests
              "supplySources":[{"articlePrices":[{"price":"1"}]},{"id":"9001","articlePrices":[{"price":"987"}]}]}
             """, config);
 
-        await new WeClappResolveSupplySourcesNode(_next).ProcessObjectAsync(data, node);
+        var ex = await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
+            () => new WeClappResolveSupplySourcesNode(_next).ProcessObjectAsync(data, node));
 
-        var sources = data.Get<JsonArray>("$.items")![0]!["supplySources"]!.AsArray();
-        Assert.Equal("987", Assert.Single(sources)!["articlePrices"]![0]!["price"]!.ToString());
+        // The index is what makes an unreachable entity findable inside a fetched page.
+        Assert.Contains("entity 0", ex.Message);
+        Assert.Contains("$.supplySources", ex.Message);
+        Assert.False(data.Exists("$.items"));
     }
 
     [Fact]
@@ -336,6 +369,73 @@ public class WeClappResolveSupplySourcesNodeTests
         Assert.Contains("WeClappResolveSupplySources", ex.Message);
         Assert.Contains("1", ex.Message);            // the index of the offending element
         Assert.Contains("$.rawArticles", ex.Message);
+        A.CallTo(() => _next(A<IDataContext>._, A<INodeContext>._)).MustNotHaveHappened();
+    }
+
+    // An explicit "supplySources": null is what an ABSENT property means - no supply sources, so
+    // no price, so EK-Preis 0. It still has to be normalised rather than passed on:
+    // System.Text.Json does not enforce nullable annotations, so an explicit null lands on the
+    // model OVER its initializer, and the price walk then failed as "Value cannot be null.
+    // (Parameter 'source')" - measured against this exact document before the normalisation existed.
+    [Fact]
+    public async Task ExplicitNullSupplySources_ReadsAsNoneAndProjectsZero()
+    {
+        var config = Configure();
+        var (data, node) = Context("""
+            {"rawArticles":[{"id":"1","articleType":"STORABLE","supplySources":null}],
+             "supplySources":[]}
+            """, config);
+
+        await new WeClappResolveSupplySourcesNode(_next).ProcessObjectAsync(data, node);
+
+        Assert.Equal("0", data.Get<string>("$.items[0].ekPreis"));
+        A.CallTo(() => _next(data, node)).MustHaveHappenedOnceExactly();
+    }
+
+    // A present-but-non-array supplySources reached the raw AsArray() cast and threw "The node
+    // must be of type JsonArray" - naming neither this node, the property nor the element, forty
+    // lines below the guard that was built to do exactly that for the article itself.
+    [Theory]
+    [InlineData("""{"articleSupplySourceId":"9001"}""")]
+    [InlineData("\"9001\"")]
+    public async Task NonArraySupplySources_FailsNamingTheNodeAndTheElement(string value)
+    {
+        var config = Configure();
+        var (data, node) = Context(
+            $$"""
+              {"rawArticles":[{"id":"1","articleType":"STORABLE","supplySources":{{value}}}],
+               "supplySources":[]}
+              """, config);
+
+        var ex = await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
+            () => new WeClappResolveSupplySourcesNode(_next).ProcessObjectAsync(data, node));
+
+        Assert.Contains("WeClappResolveSupplySources", ex.Message);
+        Assert.Contains("supplySources", ex.Message);
+        Assert.Contains("$.rawArticles", ex.Message);
+        A.CallTo(() => _next(A<IDataContext>._, A<INodeContext>._)).MustNotHaveHappened();
+    }
+
+    // WeClapp money and identifier fields are strings, but a shape change (or a path aimed at a
+    // differently-shaped array of objects) hands the model a number. That failed as a bare
+    // JsonException naming the JSON path only - WHICH article it came from was not in the message.
+    [Fact]
+    public async Task ArticleThatDoesNotMatchTheModel_FailsNamingTheNodeAndTheElement()
+    {
+        var config = Configure();
+        var (data, node) = Context("""
+            {"rawArticles":[{"id":"1","articleType":"STORABLE","supplySources":[]},
+                            {"id":"2","articleType":"STORABLE","ean":9120103151353,"supplySources":[]}],
+             "supplySources":[]}
+            """, config);
+
+        var ex = await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
+            () => new WeClappResolveSupplySourcesNode(_next).ProcessObjectAsync(data, node));
+
+        Assert.Contains("WeClappResolveSupplySources", ex.Message);
+        Assert.Contains("element 1", ex.Message);          // WHICH article, not just which path
+        Assert.Contains("$.rawArticles", ex.Message);
+        Assert.IsType<JsonException>(ex.InnerException);   // the original survives for the log
         A.CallTo(() => _next(A<IDataContext>._, A<INodeContext>._)).MustNotHaveHappened();
     }
 }

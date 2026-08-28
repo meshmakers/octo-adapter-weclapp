@@ -206,8 +206,10 @@ claims completeness invites re-pinning an invariant that already holds.
   name2 ("Nachname Vorname") stays empty unless a company fills name1.
 
 ## AS/AI Delivery (WeClapp → SFTP)
-- Render and transport are separate nodes: the content comes from `DilosRender@1`, the file name
-  from `DilosRender@1` for AI (per order) and from `DilosExportRunKey@1` for AS (per Vienna day,
+- Render and transport are separate nodes, and the RENDER differs per delivery kind: AI content
+  comes from `DilosRender@1`, AS content from the product's `RenderDelimitedText@1` (see "The AS
+  file format lives in the yaml" below). The file name comes from `DilosRender@1` for AI (per
+  order) and from `DilosExportRunKey@1` for AS (per Vienna day,
   same clock read as the marker), and `SftpUpload@1` (`encoding: iso-8859-1`,
   `onEncodingError: Replace`) writes both to the LKV SFTP root. The tenant entry (`LkvSftp`) MUST carry a `MaxConcurrentConnections` value
   (3) — the CK attribute is optional but the node reads a non-nullable int, and an unset value
@@ -224,7 +226,19 @@ claims completeness invites re-pinning an invariant that already holds.
   spelled out there; the two things a column model cannot do stay adapter-side in
   `WeClappResolveSupplySources@1`, which drops system articles (`LOADING_EQUIPMENT`) and projects
   the EK-Preis as a finished scalar on `ekPreis` (first parseable
-  `supplySources[].articlePrices[].price`, absent means `0`, format `0.####` invariant). The byte
+  `supplySources[].articlePrices[].price`, absent means `0`, format `0.####` invariant).
+  **The join fails LOUD**: an `articleSupplySource` without an `id`, a stub pointing at an
+  entity that was not fetched, a `supplySources` value that is not an array — each one throws
+  naming the element, because all of them end in the same place, `ekPreis` = `0`, which is
+  also the legitimate value for an article without a purchase price. Neither the delivered
+  file nor any downstream step can tell those apart, and the delivery burns the per-day
+  marker on its way out, so a silently mispriced article master would stand at LKV for the
+  whole Vienna day (recoverable only by deleting the CK marker). A throw costs the next tick
+  and no data — the same trade both fetches (`onHttpError: Throw`) and the render
+  (`onDelimiterInValue: Fail`) already make. Read-only census of the customer account
+  (2026-08-28): 48 articles, 16 `articleSupplySource` entities, 15 stubs, **0 dangling** — the
+  loud path is not reachable from today's live data. An explicit `"supplySources": null` is
+  NOT part of that: it means what an absent property means (no price) and is normalised. The byte
   anchor is `AsDeliveryParityTests`: it drives the SHIPPED yaml's own node configurations over a
   fixture batch and compares the result byte-for-byte, in ISO-8859-1, against
   `tests/AdapterMeshWeClapp.Tests/Fixtures/as-parity-expected.txt` - the frozen output of the
@@ -296,6 +310,15 @@ claims completeness invites re-pinning an invariant that already holds.
   no longer accepts `deleteAfterSuccess`/`serverConfiguration` on `DilosFileConfirm@1`, so the
   stored definition and the running image disagree until the re-import — for those two pipelines
   only, and only until it runs.
+- **The AS swap is a THIRD case of the same rule, and it fails LATER than the other two.**
+  `RenderDelimitedText@1` ships in SDK **3.4.101 and in no earlier version** (verified across the
+  whole local package cache and the hand-maintained `999.0.0` DebugL feed), so importing the new
+  `weclapp-articles-to-as.yaml` against an older image fails registration outright. The reverse
+  order fails at RUN time instead: the stored definition still names `DilosRender@1` with
+  `mode: AS`, every property on `DilosRenderNodeConfiguration` still exists, registration
+  succeeds silently, and the next tick throws "Unknown DilosRender mode 'AS'" — no delivery, no
+  marker, hourly, until someone re-imports the as yaml. Both directions leave a window without an
+  AS delivery: deploy the image FIRST, then re-import **every** changed yaml including the as one.
 - `WeClappArWrite@1`: AR K* Auftragsnummer1 = WeClapp `salesOrder.id` (404 = dead-letter
   log, file still consumed). Idempotency: SHIPPED shipment with same tracking = skip;
   reuse non-CANCELLED; else `createShipment`. Quantities match by **articleId, never by

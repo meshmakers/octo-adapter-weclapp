@@ -144,6 +144,53 @@ public class DilosRenderNodeTests
             () => _sut.ProcessObjectAsync(_dataContext, _nodeContext));
     }
 
+    // The properties are non-nullable, but a yaml carrying an explicit null ("submandant:" with no
+    // value) assigns null OVER the initializer, so null is a real state a definition produces. Both
+    // guards used to dereference it: measured as a bare NullReferenceException, raised INSIDE the
+    // per-order ForEach@1 - which continueOnError then swallows as one failed order rather than
+    // the configuration defect it is. Null now means what the empty string means at both sites.
+    [Fact]
+    public async Task ProcessObjectAsync_NullSubmandant_FailsAsAConfigurationError()
+    {
+        Configure("AI", submandant: null!);
+        A.CallTo(() => _dataContext.GetArray<WeClappSalesOrder>("$.items"))
+            .Returns(new List<WeClappSalesOrder?> { MinimalOrder() });
+
+        var ex = await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
+            () => _sut.ProcessObjectAsync(_dataContext, _nodeContext));
+
+        Assert.Contains("Submandant", ex.Message);
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_NullFileNameTargetPath_RendersWithoutWritingAName()
+    {
+        Configure("AI", submandant: "51696697501", fileNameTargetPath: null!);
+        A.CallTo(() => _dataContext.GetArray<WeClappSalesOrder>("$.items"))
+            .Returns(new List<WeClappSalesOrder?> { MinimalOrder() });
+
+        await _sut.ProcessObjectAsync(_dataContext, _nodeContext);
+
+        // Exactly one string write - the content. No name is written, and above all nothing is
+        // written to a null path.
+        A.CallTo(() => _dataContext.Set(A<string>._, A<string>._, A<DocumentModes>._,
+            A<ValueKinds>._, A<TargetValueWriteModes>._)).MustHaveHappenedOnceExactly();
+        A.CallTo(() => _next(_dataContext, _nodeContext)).MustHaveHappenedOnceExactly();
+    }
+
+    private static WeClappSalesOrder MinimalOrder() => new()
+    {
+        Id = "5910986621265",
+        CustomerNumber = "7067387625809",
+        OrderItems =
+        {
+            new WeClappOrderItem
+            {
+                PositionNumber = 1, ArticleId = "43222003744925", Quantity = "1", NetAmount = "29.99",
+            },
+        },
+    };
+
     [Fact]
     public async Task ProcessObjectAsync_MissingPath_Throws()
     {

@@ -24,16 +24,28 @@ public record WeClappResolveSupplySourcesNodeConfiguration : SourceTargetPathNod
 }
 
 /// <summary>
-/// Prepares the raw WeClapp articles for the DILOS article master delivery, doing the three
-/// things a generic column renderer cannot: it replaces each <c>article.supplySources</c>
-/// reference stub with the full <c>articleSupplySource</c> entity it points at (a stub without a
-/// matching entity is dropped, an article without stubs passes through untouched); it drops
-/// system articles (loading equipment such as pallets), which never belong in the article master;
-/// and it projects the DILOS EK-Preis as a finished scalar on <c>ekPreis</c>, because that value
-/// is a SELECTION - the first parseable <c>supplySources[].articlePrices[].price</c>, absent
-/// meaning 0 - and a renderer can only read a path. The selection and the number format itself
-/// stay in the core library next to the other DILOS value rules; only the call site is here.
+/// Prepares the raw WeClapp articles for the DILOS article master delivery, doing the two things a
+/// generic column renderer cannot: it replaces each <c>article.supplySources</c> reference stub
+/// with the full <c>articleSupplySource</c> entity it points at (an article without stubs passes
+/// through untouched; a stub that does NOT resolve fails the run, see below); it drops system
+/// articles (loading equipment such as pallets), which never belong in the article master; and it
+/// projects the DILOS EK-Preis as a finished scalar on <c>ekPreis</c>, because that value is a
+/// SELECTION - the first parseable <c>supplySources[].articlePrices[].price</c>, absent meaning 0
+/// - and a renderer can only read a path. The selection and the number format itself stay in the
+/// core library next to the other DILOS value rules; only the call site is here.
 /// </summary>
+/// <remarks>
+/// Every way the join can come apart fails the run rather than resolving to less: an entity
+/// without an id, a stub pointing at an entity that was not fetched, a supplySources value that is
+/// not an array. All of them share one consequence - the article's EK-Preis falls back to 0, which
+/// is itself a LEGITIMATE value (an article without a purchase price renders 0), so no downstream
+/// step and no delivered file can tell a lost price from an absent one. The delivery would look
+/// complete, and it burns the per-day marker on its way out, so the wrong file would stand at LKV
+/// for the whole Vienna day. A throw costs the next tick and no data, which is the same trade the
+/// yaml already makes at both fetches (onHttpError: Throw) and at the render (onDelimiterInValue:
+/// Fail). Live census of the customer account on 2026-08-28: 48 articles, 16 articleSupplySource
+/// entities, 15 stubs, zero of them dangling - the loud path is not a live-data risk today.
+/// </remarks>
 [NodeConfiguration(typeof(WeClappResolveSupplySourcesNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
 public class WeClappResolveSupplySourcesNode(NodeDelegate next) : IPipelineNode
@@ -55,14 +67,20 @@ public class WeClappResolveSupplySourcesNode(NodeDelegate next) : IPipelineNode
         var sources = ReadArray(dataContext, config.SupplySourcesPath, "articleSupplySource");
 
         var sourcesById = new Dictionary<string, JsonNode>();
-        foreach (var source in sources.OfType<JsonObject>())
+        for (var index = 0; index < sources.Count; index++)
         {
-            if (source["id"]?.ToString() is not { Length: > 0 } id)
+            // The id is the ONLY thing an article stub can point at. An entity that carries none
+            // is unreachable, and the stubs aimed at it would resolve to nothing - which is
+            // indistinguishable from "this article has no purchase price" once the file is
+            // written. Loud here, where the entity index still exists to name.
+            if ((sources[index] as JsonObject)?["id"]?.ToString() is not { Length: > 0 } id)
             {
-                continue;
+                throw new WeClappPipelineExecutionException(
+                    $"WeClappResolveSupplySources: entity {index} at '{config.SupplySourcesPath}' carries " +
+                    "no 'id' - article stubs resolve against it, so its price could not be reached");
             }
 
-            if (!sourcesById.TryAdd(id, source))
+            if (!sourcesById.TryAdd(id, sources[index]!))
             {
                 throw new WeClappPipelineExecutionException(
                     $"WeClappResolveSupplySources: articleSupplySource id '{id}' appears more than once at " +
@@ -86,24 +104,42 @@ public class WeClappResolveSupplySourcesNode(NodeDelegate next) : IPipelineNode
                     "article object");
             }
 
-            var resolved = Resolve(article, sourcesById);
-            var parsed = resolved.Deserialize<WeClappArticle>(CaseInsensitive)
-                         ?? throw new WeClappPipelineExecutionException(
-                             $"WeClappResolveSupplySources: element {index} at '{config.Path}' is " +
-                             "not a WeClapp article");
+            var resolved = Resolve(article, sourcesById, index, config);
 
-            // The two pieces of WeClapp knowledge a column renderer cannot express, applied here
-            // because this step already holds the articles: loading equipment never belongs in the
-            // article master delivery, and the DILOS EK-Preis is a SELECTION over the resolved
-            // supply sources (first parseable price, absent means 0) which no path read performs.
-            if (WeClappToDilos.IsSystemArticle(parsed))
+            // Everything below reads the element AS a WeClapp article, and every way that can fail
+            // - a collection carrying an explicit null, a number where the model holds a string, a
+            // price shape that does not walk - surfaces from inside System.Text.Json or LINQ as a
+            // raw exception naming neither this node nor the element (measured: "Value cannot be
+            // null. (Parameter 'source')" for a null supplySources, a bare JsonException for a
+            // numeric ean). One attribution point covers them all, including the shapes nobody has
+            // met yet.
+            try
             {
-                systemArticles++;
-                continue;
-            }
+                var parsed = resolved.Deserialize<WeClappArticle>(CaseInsensitive)
+                             ?? throw new WeClappPipelineExecutionException(
+                                 $"WeClappResolveSupplySources: element {index} at '{config.Path}' is " +
+                                 "not a WeClapp article");
 
-            resolved["ekPreis"] = WeClappToDilos.Num(WeClappToDilos.EkPreis(parsed.PurchasePrice));
-            enriched.Add(resolved);
+                // The two pieces of WeClapp knowledge a column renderer cannot express, applied
+                // here because this step already holds the articles: loading equipment never
+                // belongs in the article master delivery, and the DILOS EK-Preis is a SELECTION
+                // over the resolved supply sources (first parseable price, absent means 0) which
+                // no path read performs.
+                if (WeClappToDilos.IsSystemArticle(parsed))
+                {
+                    systemArticles++;
+                    continue;
+                }
+
+                resolved["ekPreis"] = WeClappToDilos.Num(WeClappToDilos.EkPreis(parsed.PurchasePrice));
+                enriched.Add(resolved);
+            }
+            catch (Exception ex) when (ex is not WeClappPipelineExecutionException)
+            {
+                throw new WeClappPipelineExecutionException(
+                    $"WeClappResolveSupplySources: element {index} at '{config.Path}' is not a usable " +
+                    $"WeClapp article ({ex.GetType().Name}: {ex.Message})", ex);
+            }
         }
 
         if (systemArticles > 0)
@@ -118,22 +154,53 @@ public class WeClappResolveSupplySourcesNode(NodeDelegate next) : IPipelineNode
         await next(dataContext, nodeContext);
     }
 
-    private static JsonObject Resolve(JsonObject article, Dictionary<string, JsonNode> sourcesById)
+    /// <summary>Replaces the article's supply-source reference stubs with the entities they point
+    /// at. A stub that resolves to nothing is an error, not an omission - see the class remarks.
+    /// </summary>
+    private static JsonObject Resolve(JsonObject article, Dictionary<string, JsonNode> sourcesById,
+        int index, WeClappResolveSupplySourcesNodeConfiguration config)
     {
         var item = (JsonObject)article.DeepClone();
-        if (item["supplySources"]?.AsArray() is not { Count: > 0 } stubs)
+        if (!item.TryGetPropertyValue("supplySources", out var value))
         {
             return item;
         }
 
-        var resolved = new JsonArray();
-        foreach (var stub in stubs.OfType<JsonObject>())
+        // An explicit JSON null means what an absent property means here - no supply sources, so
+        // no price, so EK-Preis 0. It still has to be normalised rather than passed on: an
+        // explicit null deserializes OVER the model's initializer, and the price walk would then
+        // run against a null collection and fail as a bare ArgumentNullException naming nothing.
+        if (value is null)
         {
-            if (stub["articleSupplySourceId"]?.ToString() is { } refId &&
-                sourcesById.TryGetValue(refId, out var source))
+            item["supplySources"] = new JsonArray();
+            return item;
+        }
+
+        // A present-but-non-array value is a shape change, and it must not reach a raw AsArray()
+        // cast: that throws an InvalidOperationException naming neither the node, the property nor
+        // the element - exactly the diagnosis gap the article guard above closes.
+        if (value is not JsonArray stubs)
+        {
+            throw new WeClappPipelineExecutionException(
+                $"WeClappResolveSupplySources: element {index} at '{config.Path}' carries a " +
+                $"'supplySources' value of kind {value.GetValueKind()} - an array of reference stubs " +
+                "is required");
+        }
+
+        var resolved = new JsonArray();
+        for (var stub = 0; stub < stubs.Count; stub++)
+        {
+            var refId = (stubs[stub] as JsonObject)?["articleSupplySourceId"]?.ToString();
+            if (string.IsNullOrEmpty(refId) || !sourcesById.TryGetValue(refId, out var source))
             {
-                resolved.Add(source.DeepClone());
+                throw new WeClappPipelineExecutionException(
+                    $"WeClappResolveSupplySources: article '{item["id"]}' (element {index} at " +
+                    $"'{config.Path}') references articleSupplySource '{refId ?? "<none>"}' in stub " +
+                    $"{stub}, which is not among the {sourcesById.Count} entities at " +
+                    $"'{config.SupplySourcesPath}' - its EK-Preis would silently fall back to 0");
             }
+
+            resolved.Add(source.DeepClone());
         }
 
         item["supplySources"] = resolved;

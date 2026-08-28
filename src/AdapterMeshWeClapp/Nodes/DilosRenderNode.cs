@@ -57,7 +57,13 @@ public class DilosRenderNode(NodeDelegate next) : IPipelineNode
 
         var orders = ReadOneOrMany<WeClappSalesOrder>(dataContext, config.Path, "order");
         var content = RenderOrders(orders, config);
-        var fileName = config.FileNameTargetPath.Length > 0
+
+        // IsNullOrEmpty rather than .Length: the properties are non-nullable, but a yaml
+        // carrying an explicit null ("fileNameTargetPath:" with no value) assigns null OVER the
+        // initializer, and a bare dereference here fails as an unattributable
+        // NullReferenceException inside the per-order loop - which continueOnError then
+        // swallows as one failed order instead of the configuration defect it is.
+        var fileName = !string.IsNullOrEmpty(config.FileNameTargetPath)
             ? EnsurePlainFileName(BuildAiFileName(orders))
             : "";
 
@@ -89,7 +95,7 @@ public class DilosRenderNode(NodeDelegate next) : IPipelineNode
 
     private static string RenderOrders(List<WeClappSalesOrder> orders, DilosRenderNodeConfiguration config)
     {
-        if (config.Submandant.Length == 0)
+        if (string.IsNullOrEmpty(config.Submandant))
         {
             throw new WeClappPipelineExecutionException("DilosRender mode 'AI' requires Submandant");
         }

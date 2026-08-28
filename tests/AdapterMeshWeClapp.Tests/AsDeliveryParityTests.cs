@@ -3,8 +3,10 @@ using FakeItEasy;
 using Lkv.WeClapp.Core.Dilos;
 using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Nodes;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration.DependencyInjection;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Control;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
 using Microsoft.Extensions.DependencyInjection;
@@ -77,6 +79,62 @@ public class AsDeliveryParityTests
         var lines = DilosFile.Encoding.GetString(content).TrimEnd('\n').Split('\n');
         Assert.All(lines, line => Assert.Equal(34, line.Split('|').Length));
         Assert.All(lines, line => Assert.StartsWith("A*|", line, StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// The empty-batch brake, EXECUTED rather than inspected. A day whose articles are all system
+    /// articles (and a tenant bootstrap) renders nothing, and the yaml gates the delivery on the
+    /// rendered content being != "" because SftpUpload@1 would otherwise put a 0-byte AS file on
+    /// LKV's server and the marker behind it would burn the Vienna day - recoverable only by
+    /// deleting the CK entity. Both halves are load-bearing and neither is provable from the yaml
+    /// shape: that the renderer writes exactly the empty string for an empty batch (it also has a
+    /// trailing-separator option, and "\n" != "" would OPEN the gate), and that If@1 with the
+    /// shipped literals then closes. Driven with the real nodes and the shipped configurations.
+    /// </summary>
+    [Theory]
+    [InlineData("""{"rawArticles":[],"supplySources":[]}""", false)]
+    [InlineData("""{"rawArticles":[{"id":"4250","articleType":"LOADING_EQUIPMENT"}],"supplySources":[]}""", false)]
+    [InlineData("""{"rawArticles":[{"id":"1","name":"B","articleType":"STORABLE"}],"supplySources":[]}""", true)]
+    public async Task TheEmptyBatchBrake_OpensOnlyForContent(string document, bool expectDelivery)
+    {
+        var root = await PipelineDefinitions.DeserializeAsync("weclapp-articles-to-as.yaml");
+        var nodes = Walk(root.Transformations).ToList();
+        var resolve = Assert.Single(nodes.OfType<WeClappResolveSupplySourcesNodeConfiguration>());
+        var render = Assert.Single(nodes.OfType<RenderDelimitedTextNodeConfiguration>());
+
+        // The content brake is the INNER If@1 - the one reading the render's target path. Picking
+        // it by that path rather than by position is what keeps this test honest if the yaml grows
+        // another gate.
+        var brake = Assert.Single(nodes.OfType<IfNodeConfiguration>(),
+            gate => gate.Path == render.TargetPath);
+
+        using var dataContext = new DataContextImpl(JsonDocument.Parse(document));
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddDataPipeline().RegisterNode<GateProbeNode>();
+        var rootContext = NodeContext.CreateRootNodeContext(services.BuildServiceProvider(),
+            A.Fake<IPipelineLogger>(), dataContext);
+
+        await new WeClappResolveSupplySourcesNode((_, _) => Task.CompletedTask)
+            .ProcessObjectAsync(dataContext,
+                rootContext.RegisterChildNode("WeClappResolveSupplySources", 0, resolve, dataContext));
+        await new RenderDelimitedTextNode((_, _) => Task.CompletedTask)
+            .ProcessObjectAsync(dataContext,
+                rootContext.RegisterChildNode("RenderDelimitedText", 1, render, dataContext));
+
+        // The shipped gate, with its children swapped for a probe: the literals under test are the
+        // yaml's own (path, operator, valueType, value), the delivery itself is not re-run here.
+        var probed = brake with
+        {
+            Transformations = new List<NodeConfiguration>
+            {
+                new GateProbeNodeConfiguration { TargetPath = "$.probe" },
+            },
+        };
+        await new IfNode(A.Fake<NodeDelegate>()).ProcessObjectAsync(dataContext,
+            rootContext.RegisterChildNode("If", 2, probed, dataContext));
+
+        Assert.Equal(expectDelivery ? 1 : null, dataContext.Get<int?>("$.probe"));
     }
 
     /// <summary>Runs the batch through the nodes the shipped as yaml configures, in the order it

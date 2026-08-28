@@ -594,16 +594,19 @@ public class PipelineYamlContractTests
 
             checkedYamls++;
 
-            if (!Regex.IsMatch(raw, @"(?m)^\s*dryRun\s*:\s*true\s*(#.*)?$"))
-            {
-                continue; // go-live mode: deleting is intended, the parity test guards the rest
-            }
-
+            // Both sides are read for EVERY ar/be yaml and only the COMBINATION is a violation -
+            // the guard never skips itself. It used to return early when the dry-run probe missed,
+            // which made a spelling the probe did not know ("True", quoted) silently disable the
+            // whole check. YAML reads true/True/TRUE and their quoted forms all as true, so the
+            // probe matches them all; the go-live combination (dryRun false/absent + deleting) is
+            // legitimate and simply produces no violation.
+            var dryRun = Regex.IsMatch(raw, @"(?mi)^\s*dryRun\s*:\s*[""']?true[""']?\s*(#.*)?$");
             var deleting = Regex.Matches(raw, @"(?m)^\s*deleteAfterSuccess\s*:\s*(\S+)")
-                .Where(m => !m.Groups[1].Value.Equals("false", StringComparison.OrdinalIgnoreCase))
+                .Where(m => !m.Groups[1].Value.Trim('"', '\'')
+                    .Equals("false", StringComparison.OrdinalIgnoreCase))
                 .ToList();
 
-            if (deleting.Count > 0)
+            if (dryRun && deleting.Count > 0)
             {
                 violations.Add(
                     $"{yaml}: a write node runs with dryRun: true while {deleting.Count} " +
