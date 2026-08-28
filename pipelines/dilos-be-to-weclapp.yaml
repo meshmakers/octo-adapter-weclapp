@@ -59,7 +59,7 @@ transformations:
         apiConfiguration: WeClappApi  # tenant GlobalConfiguration entry { baseUrl, apiKey }
         fileNamePath: $.current.name
         contentPath: $.fileContent
-        warehouseId: "4239"           # id from the former trial tenant — customer id TBD
+        warehouseId: "4156"           # customer main warehouse (Hauptlager)
         dryRun: true                  # movements are logged, not booked; set to false for
                                       # go-live, together with deleteAfterSuccess: true on
                                       # the gate

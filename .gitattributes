@@ -1,0 +1,9 @@
+# The stock report captured from the customer's DILOS instance is a byte-for-byte record of what
+# that system actually sends, carriage returns included. Line-ending normalisation would rewrite it
+# on the way into the repository, and the tests that assert the parser copes with CRLF would then
+# be asserting it against a file that no longer has any.
+#
+# Deliberately scoped to this one file rather than to the fixture folder: the older stock report
+# fixtures are stored with LF and checked out with CRLF, so exempting them from normalisation would
+# make the next "git add" of one of them rewrite the stored blob.
+tests/Lkv.WeClapp.Core.Tests/Fixtures/BE_20260828071116067.txt -text
