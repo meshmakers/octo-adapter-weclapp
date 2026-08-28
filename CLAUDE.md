@@ -28,7 +28,8 @@ dotnet build Octo.WeClappAdapter.slnx -c DebugL
   declared node types, and no trigger node of its own - every pipeline is driven by a passive
   product trigger, see "Pipeline Trigger Architecture" below)
 - `src/Lkv.WeClapp.Core/` - plain core lib: WeClapp DTOs/JSON, WeClapp→DILOS value rules,
-  DILOS AS/AI writers, DILOS AR/BE parsers + write-back planners (fail-loud, golden-file verified)
+  DILOS AI writer (the AS article master is a column list in the yaml now), DILOS AR/BE parsers
+  + write-back planners (fail-loud, golden-file verified)
 - `src/charts/octo-weclapp-adapter/` - Helm chart (deployed by the Communication Operator;
   httpGet probes on `/healthz/live|ready`)
 - `pipelines/` - tenant pipeline YAMLs (orders→AI per order; articles split into per-item

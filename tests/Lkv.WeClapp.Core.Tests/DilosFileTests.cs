@@ -13,23 +13,23 @@ public class DilosFileTests
     }
 
     [Fact]
-    public void AsFileName_StampsViennaLocalTime_Cet()
+    public void DeliveryFileName_StampsViennaLocalTime_Cet()
     {
         // 2026-02-05 13:31:34 UTC = 14:31:34 Vienna (CET, UTC+1); golden 14-digit format.
         Assert.Equal("AS20260205143134.txt",
-            DilosFile.AsFileName(new DateTimeOffset(2026, 2, 5, 13, 31, 34, TimeSpan.Zero)));
+            DilosFile.DeliveryFileName("AS", new DateTimeOffset(2026, 2, 5, 13, 31, 34, TimeSpan.Zero)));
     }
 
     [Fact]
-    public void AsFileName_LateEveningUtcRollsToNextViennaDay_Cest()
+    public void DeliveryFileName_LateEveningUtcRollsToNextViennaDay_Cest()
     {
         // 2026-07-11 22:30 UTC = 2026-07-12 00:30 Vienna (CEST) — name carries the NEXT day.
         Assert.Equal("AS20260712003000.txt",
-            DilosFile.AsFileName(new DateTimeOffset(2026, 7, 11, 22, 30, 0, TimeSpan.Zero)));
+            DilosFile.DeliveryFileName("AS", new DateTimeOffset(2026, 7, 11, 22, 30, 0, TimeSpan.Zero)));
     }
 
     [Fact]
-    public void AsFileName_IsCultureInvariant()
+    public void DeliveryFileName_IsCultureInvariant()
     {
         // th-TH defaults to the Thai Buddhist calendar (year + 543) — the golden stamp
         // must stay Gregorian regardless of the process culture.
@@ -38,7 +38,7 @@ public class DilosFileTests
         {
             CultureInfo.CurrentCulture = new CultureInfo("th-TH");
             Assert.Equal("AS20260205143134.txt",
-                DilosFile.AsFileName(new DateTimeOffset(2026, 2, 5, 13, 31, 34, TimeSpan.Zero)));
+                DilosFile.DeliveryFileName("AS", new DateTimeOffset(2026, 2, 5, 13, 31, 34, TimeSpan.Zero)));
         }
         finally
         {

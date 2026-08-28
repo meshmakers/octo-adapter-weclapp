@@ -22,7 +22,8 @@ template.
     return-path `ForEach@1`), `WeClappArWrite@1`, `WeClappBeWrite@1`
 - `src/Lkv.WeClapp.Core` — plain .NET core library, no platform dependencies:
   - **WeClapp → DILOS (outbound)**: `WeClappJson`, `WeClappToDilos` value rules,
-    `DilosArticleWriter` (AS `A*`), `DilosOrderWriter` (AI `K*`/`P*`)
+    `DilosOrderWriter` (AI `K*`/`P*`; the AS `A*` layout is the column list in
+    `pipelines/weclapp-articles-to-as.yaml`)
   - **DILOS → WeClapp (return path)**: `DilosArParser` (AR `K*`/`C*`/`P*`/`L*` →
     `DilosArShipment` aggregates), `DilosBeParser` (BE stock lines), write-back
     planners (AR shipment / BE stock delta)

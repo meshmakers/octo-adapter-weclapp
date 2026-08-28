@@ -23,10 +23,6 @@ public static class DilosFile
     /// K* line carries; the shop orderNumber (Auftragsnummer2) must not name the file.</summary>
     public static string AiFileName(string auftragsnummer1) => $"AI{auftragsnummer1}.txt";
 
-    /// <summary>Golden AS name: "AS" + Vienna-local yyyyMMddHHmmss + ".txt" (Billbee
-    /// precedent AS20240206020204.txt).</summary>
-    public static string AsFileName(DateTimeOffset utcNow) => DeliveryFileName("AS", utcNow);
-
     /// <summary>The name of one timestamp-stamped batch delivery: the export kind, the
     /// Vienna-local yyyyMMddHHmmss stamp and ".txt". Vienna because DILOS runs Austrian local
     /// time - a UTC stamp would date a late-evening delivery to the previous day. Invariant

@@ -9,7 +9,13 @@ using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.MeshAdapter;
+using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
+using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
+using Microsoft.Extensions.DependencyInjection;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration.DependencyInjection;
+using static Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Tests.PipelineYamlWalk;
 
 namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Tests;
 
@@ -113,82 +119,90 @@ public class PipelineChainIntegrationTests
     }
 
     /// <summary>
-    /// AS collector chain: the article batch the as pipeline assembles renders into ONE AS content
-    /// with the golden Vienna-local file name (golden precedent: one AS file per run,
-    /// AS20240206020204.txt), and the delivery node writes it as Latin-1.
+    /// AS delivery chain, driven by the SHIPPED yaml's own node configurations: the export-run key
+    /// stamps the day and the file name from one Vienna clock read, the preparation step drops the
+    /// system article and projects the EK-Preis, the product's column node renders the 34-column
+    /// document, and SftpUpload@1 encodes it. What this adds over the byte anchor in
+    /// AsDeliveryParityTests is the two ends the anchor does not reach: the NAME the delivery is
+    /// given, and the BYTES that leave the process.
     /// </summary>
     [Fact]
     public async Task WeClappArticles_BatchRendersOneAsFileWithViennaName()
     {
-        // --- Phase 1: the batch weclapp-articles-to-as.yaml holds at $.items after the fetch and
-        //     the supply-source resolution. The loading equipment is part of it on purpose: the
-        //     delivery must drop system articles. ---
+        // The shape the as pipeline holds after its two paged fetches. The loading equipment is
+        // part of it on purpose: the delivery must drop system articles.
         const string document = """
-            {"items":[
-              {"id":"43222003744925","name":"Ersatzglas VOLT","articleNumber":"VOLT-EG","unitName":"pc."},
-              {"id":"43222003744999","name":"Brille NOVA Größe L","articleNumber":"NOVA-01","unitName":"pc."},
-              {"id":"43222003745000","name":"Europalette","articleNumber":"PAL-1","unitName":"pc.",
-               "articleType":"LOADING_EQUIPMENT"}
-            ]}
+            {
+              "rawArticles":[
+                {"id":"43222003744925","name":"Ersatzglas VOLT","articleNumber":"VOLT-EG",
+                 "unitName":"pc.","articleType":"STORABLE","supplySources":[]},
+                {"id":"43222003744999","name":"Brille NOVA Größe L","articleNumber":"NOVA-01",
+                 "unitName":"pc.","articleType":"STORABLE","supplySources":[]},
+                {"id":"43222003745000","name":"Europalette","articleNumber":"PAL-1","unitName":"pc.",
+                 "articleType":"LOADING_EQUIPMENT","supplySources":[]}
+              ],
+              "supplySources":[]
+            }
             """;
 
-        // --- Phase 2: real data context + render (fixed clock: 2026-02-05 13:31:34 UTC
-        //     = 14:31:34 Vienna/CET) ---
-        var nodeContext = A.Fake<INodeContext>();
+        var root = await PipelineDefinitions.DeserializeAsync("weclapp-articles-to-as.yaml");
+        var nodes = Walk(root.Transformations).ToList();
+        var exportRunKey = Assert.Single(nodes.OfType<DilosExportRunKeyNodeConfiguration>());
+        var resolve = Assert.Single(nodes.OfType<WeClappResolveSupplySourcesNodeConfiguration>());
+        var render = Assert.Single(nodes.OfType<RenderDelimitedTextNodeConfiguration>());
+        var upload = Assert.Single(nodes.OfType<SftpUploadNodeConfiguration>());
+
         using var dataContext = new DataContextImpl(JsonDocument.Parse(document));
-        A.CallTo(() => nodeContext.GetNodeConfiguration<DilosRenderNodeConfiguration>())
-            .Returns(new DilosRenderNodeConfiguration
-            {
-                Mode = "AS",
-                Path = "$.items",
-                TargetPath = "$.dilosAs",
-                FileNameTargetPath = "$.dilosAsFileName",
-            });
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddDataPipeline();
+        var rootContext = NodeContext.CreateRootNodeContext(services.BuildServiceProvider(),
+            A.Fake<IPipelineLogger>(), dataContext);
 
-        var render = new DilosRenderNode((_, _) => Task.CompletedTask,
-            new FixedTimeProvider(new DateTimeOffset(2026, 2, 5, 13, 31, 34, TimeSpan.Zero)));
-        await render.ProcessObjectAsync(dataContext, nodeContext);
+        Task Step(IPipelineNode node, string name, uint index, NodeConfiguration configuration) =>
+            node.ProcessObjectAsync(dataContext,
+                rootContext.RegisterChildNode(name, index, configuration, dataContext));
 
-        var dilos = dataContext.Get<string>("$.dilosAs");
+        // Fixed clock: 2026-02-05 13:31:34 UTC = 14:31:34 Vienna (CET).
+        await Step(new DilosExportRunKeyNode((_, _) => Task.CompletedTask,
+                new FixedTimeProvider(new DateTimeOffset(2026, 2, 5, 13, 31, 34, TimeSpan.Zero))),
+            "DilosExportRunKey", 0, exportRunKey);
+        await Step(new WeClappResolveSupplySourcesNode((_, _) => Task.CompletedTask),
+            "WeClappResolveSupplySources", 1, resolve);
+        await Step(new RenderDelimitedTextNode((_, _) => Task.CompletedTask),
+            "RenderDelimitedText", 2, render);
+
+        var dilos = dataContext.Get<string>(render.TargetPath);
         Assert.NotNull(dilos);
         var lines = dilos.TrimEnd('\n').Split("\n");
-        Assert.Equal(2, lines.Length);            // ONE content with ALL articles
-        Assert.Equal("43222003744925", lines[0].Split('|')[2]); // f[3] Artikelnummer = WeClapp id
+        Assert.Equal(2, lines.Length);                          // ONE document, system article dropped
+        Assert.Equal("43222003744925", lines[0].Split('|')[2]); // DILOS field 3 = Artikelnummer
         Assert.Equal("43222003744999", lines[1].Split('|')[2]);
 
-        Assert.Equal("AS20260205143134.txt", dataContext.Get<string>("$.dilosAsFileName"));
+        // The name the delivery reads is the one the export-run node wrote, from the same clock
+        // read as the marker day - the yaml pins the two paths to each other, this pins the value
+        // behind them.
+        Assert.Equal("AS20260205143134.txt", dataContext.Get<string>(upload.FileNamePath!));
 
-        // --- Phase 3: Latin-1 delivery through the node the shipped pipelines use,
-        //     SftpUpload@1 configured exactly as the yamls configure it — the umlaut in
-        //     "Größe" must land as ONE ISO-8859-1 byte (0xF6), like the golden
-        //     Billbee-produced files. The encoding happens while the node builds its upload
-        //     stream; the product keeps that step internal (its own suite reaches it through
-        //     InternalsVisibleTo), so reflection is the only way to certify the delivered
-        //     BYTES from here. A rename turns this test red rather than leaving the byte
-        //     assertion quietly unexercised. ---
-        var uploadConfiguration = new SftpUploadNodeConfiguration
-        {
-            ServerConfiguration = "LkvSftp",
-            RemoteDirectory = "/",
-            FileNamePath = "$.dilosAsFileName",
-            Path = "$.dilosAs",
-            Encoding = "iso-8859-1",
-            OnEncodingError = EncodingErrorHandling.Replace,
-        };
+        // Latin-1 delivery through the node the shipped pipelines use, configured exactly as the
+        // yaml configures it - the umlaut in "Größe" must land as ONE ISO-8859-1 byte (0xF6), like
+        // the golden Billbee-produced files. The encoding happens while the node builds its upload
+        // stream; the product keeps that step internal (its own suite reaches it through
+        // InternalsVisibleTo), so reflection is the only way to certify the delivered BYTES from
+        // here. A rename turns this test red rather than leaving the byte assertion quietly
+        // unexercised.
         var uploadNode = CreateSftpUploadNode();
         var buildUploadStream = typeof(SftpUploadNode).GetMethod("GetUploadStreamAsync",
             BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(buildUploadStream);
 
+        var uploadContext = rootContext.RegisterChildNode("SftpUpload", 3, upload, dataContext);
         await using var uploadStream = await (Task<Stream>)buildUploadStream!
-            .Invoke(uploadNode, [uploadConfiguration, dataContext, nodeContext])!;
+            .Invoke(uploadNode, [upload, dataContext, uploadContext])!;
         using var uploaded = new MemoryStream();
         await uploadStream.CopyToAsync(uploaded);
         var uploadedBytes = uploaded.ToArray();
 
-        // The name the delivery reads is the one the render wrote — the yaml pins the two
-        // paths to each other, this pins the value behind them.
-        Assert.Equal("AS20260205143134.txt", dataContext.Get<string>(uploadConfiguration.FileNamePath));
         Assert.Equal(Encoding.Latin1.GetBytes(dilos), uploadedBytes);
         Assert.Contains((byte)0xF6, uploadedBytes); // ö as a single Latin-1 byte, not UTF-8 0xC3 0xB6
     }
