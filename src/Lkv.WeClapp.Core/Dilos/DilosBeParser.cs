@@ -11,7 +11,11 @@ public enum DilosStockStatus
     Blocked,
 }
 
-/// <summary>One line of a DILOS BE file ("Bestandsmeldung", stock report). 6 pipe fields, no record prefix.</summary>
+/// <summary>
+/// One line of a DILOS BE file ("Bestandsmeldung", stock report): six or seven pipe fields, no
+/// record prefix. The seven-field layout carries the article code in second position and shifts
+/// every field after it.
+/// </summary>
 public sealed record DilosStockLine
 {
     /// <summary>DILOS "Artikelnummer", field 1 in both layouts. The key the write side matches on.</summary>

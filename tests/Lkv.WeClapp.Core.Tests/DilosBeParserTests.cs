@@ -107,7 +107,16 @@ public class DilosBeParserTests
     [Fact]
     public void Parse_RealCustomerFile_ReadsEveryLineWithoutCarriageReturns()
     {
-        var lines = DilosBeParser.Parse(Fixture("BE_20260828071116067.txt"));
+        var content = Fixture("BE_20260828071116067.txt");
+
+        // The fixture has to still BE carriage-return terminated for the rest of this test to mean
+        // anything. Line-ending normalisation on the way into the repository would strip them and
+        // leave every assertion below trivially true, which is a hollow test rather than a failing
+        // one - so the premise is checked instead of assumed.
+        Assert.Contains("\r\n", content, StringComparison.Ordinal);
+        Assert.Equal(46, content.Split("\r\n", StringSplitOptions.RemoveEmptyEntries).Length);
+
+        var lines = DilosBeParser.Parse(content);
 
         Assert.Equal(46, lines.Count);
         Assert.All(lines, l =>
