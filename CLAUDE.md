@@ -68,10 +68,15 @@ former per-execution chain out over that array, one iteration per element
 is the exception on two counts: its FIRST child is a per-order `MakeHttpRequest@1` customer
 lookup, and it carries `continueOnError: true`, so a customer that fails permanently fails its
 own order instead of starving the tick. The as pipeline starts with `DilosExportRunKey@1`
-instead of a fetch - it writes `{ exportKind, exportDay }` from the Vienna calendar day, and
-BOTH its fetches sit inside the K1 gate, so an already-delivered day costs no WeClapp request
-at all. That node is a stand-in for a capability `DateTime@1` does not have (a time zone) and
-goes away once it does.
+instead of a fetch - it writes `{ exportKind, exportDay, fileName }` from the Vienna calendar
+day, and BOTH its fetches sit inside the K1 gate, so an already-delivered day costs no WeClapp
+request at all. The delivery file name comes from that node, out of the SAME clock read as the
+marker day (decision D3): two reads can straddle Vienna midnight, and the file would then carry
+day N+1 under the marker of day N - with no marker for N+1, the next tick delivers that day a
+second time. `DilosExportRunKeyNodeTests.AClockThatMovesBetweenReads_CannotSplitTheDayFromTheFileName`
+is the only test that a two-read implementation fails; a fixed clock answers both reads alike, so
+the other coupling tests would stay green. That node is a stand-in for a capability `DateTime@1`
+does not have (a time zone) and goes away once it does.
 
 **Canonical ForEach block** (use exactly this shape — the guard tests below pin
 `keyPath`/`targetPath`/`maxDegreeOfParallelism` against every shipped `ForEach@1`):
@@ -136,10 +141,12 @@ mojibake to LKV without failing anything). The name pin exists because the retir
 had no static-name property at all: the swap widened that surface, and a static name would make
 every delivery overwrite the previous one;
 `AsAiYamls_SftpUpload_ReadsTheRenderOutputAndTargetsTheLkvRoot` pins what contract 13 leaves
-open: that `SftpUpload@1` reads exactly what `DilosRender@1` wrote (`path` == `targetPath`,
-`fileNamePath` == `fileNameTargetPath`), delivers to the SFTP root, and names the same tenant
-SFTP entry the AR/BE return path uses — every one of those strings can be renamed on ONE side,
-ship green and surface on staging at the earliest; `AllPipelineYamls_ApplyChanges_IsVersion2`
+open: that `SftpUpload@1` reads exactly what the render wrote (`path` == `targetPath`), that its
+`fileNamePath` matches whichever node names that delivery (the ai render's `fileNameTargetPath`,
+the as `DilosExportRunKey@1`'s `targetPath` + `.fileName`) and that only ONE node writes the name,
+that it delivers to the SFTP root, and that it names the same tenant SFTP entry the AR/BE return
+path uses - every one of those strings can be renamed on ONE side, ship green and surface on
+staging at the earliest; `AllPipelineYamls_ApplyChanges_IsVersion2`
 forbids the deprecated `ApplyChanges@1` — its configuration is a bare record with no association
 property at all, so adding an `associationUpdatesPath` there does NOT drop associations quietly:
 the strict deserializer rejects the unknown property and the pipeline registration fails at the
@@ -185,9 +192,10 @@ claims completeness invites re-pinning an invariant that already holds.
   name2 ("Nachname Vorname") stays empty unless a company fills name1.
 
 ## AS/AI Delivery (WeClapp → SFTP)
-- Render and transport are separate nodes: `DilosRender@1` builds the content AND the golden
-  file name, `SftpUpload@1` (`encoding: iso-8859-1`, `onEncodingError: Replace`) writes both to
-  the LKV SFTP root. The tenant entry (`LkvSftp`) MUST carry a `MaxConcurrentConnections` value
+- Render and transport are separate nodes: the content comes from `DilosRender@1`, the file name
+  from `DilosRender@1` for AI (per order) and from `DilosExportRunKey@1` for AS (per Vienna day,
+  same clock read as the marker), and `SftpUpload@1` (`encoding: iso-8859-1`,
+  `onEncodingError: Replace`) writes both to the LKV SFTP root. The tenant entry (`LkvSftp`) MUST carry a `MaxConcurrentConnections` value
   (3) — the CK attribute is optional but the node reads a non-nullable int, and an unset value
   kills every run while the entry is deserialized (staging, 2026-08-21).
 - `DilosRender@1` owns BOTH content guards because nothing downstream repeats them:

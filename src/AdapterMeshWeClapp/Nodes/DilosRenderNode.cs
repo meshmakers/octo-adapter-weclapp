@@ -176,7 +176,7 @@ public class DilosRenderNode(NodeDelegate next, TimeProvider? timeProvider = nul
     /// name without complaining. Rejecting here is loud and retried on the next tick.</summary>
     private static string EnsurePlainFileName(string fileName)
     {
-        if (fileName.Contains('/') || fileName.Contains('\\') || fileName.Contains(".."))
+        if (!DilosFile.IsPlainFileName(fileName))
         {
             throw new WeClappPipelineExecutionException(
                 $"DILOS file name '{fileName}' contains a path separator or dot segment — refusing to deliver");

@@ -1,5 +1,5 @@
 # Pipeline: WeClapp articles → ONE DILOS AS file per Vienna calendar day (article master
-# delivery). DilosExportRunKey@1 writes today's key { exportKind, exportDay } and the
+# delivery). DilosExportRunKey@1 writes today's key { exportKind, exportDay, fileName } and the
 # fetch, enrichment, render and delivery all run inside the dedup gate; CK persistence of
 # articles lives in weclapp-articles-to-ck.yaml. WeClapp access comes from the tenant
 # GlobalConfiguration entry "WeClappApi" (apiConfiguration below), SFTP from "LkvSftp".
@@ -13,12 +13,8 @@
 # Timing: with hourly cron ticks the delivery settles on the first tick after Vienna
 # midnight; across the day boundary two deliveries in short succession are possible
 # (yesterday's late run + today's early one) — deliberately accepted.
-# Same trade one clock tick further: the marker day is stamped here, BEFORE the two fetches
-# (the gate needs it, and the fetches deliberately sit inside the gate), while the file name is
-# built from a fresh clock at render time. A run that crosses Vienna midnight can therefore pair
-# a next-day file name with the previous day's marker, and the next tick delivers that day once
-# more - the same full-delivery-no-data-loss trade as above, and in practice only reachable by a
-# misfire catch-up run started just before midnight.
+# The marker day AND the delivery file name are stamped together at DilosExportRunKey@1, from a
+# single clock read, so they cannot name different days even when a run crosses Vienna midnight.
 # System articles (LOADING_EQUIPMENT) are excluded by the AS render itself.
 # Encoding: delivered as ISO-8859-1 (DILOS file format) — SftpUpload@1 defaults to UTF-8,
 # so the encoding property on the delivery node is what keeps umlauts single-byte.
@@ -31,7 +27,7 @@ transformations:
   - type: DilosExportRunKey@1
     description: Today's export-run key (Vienna calendar day)
     exportKind: AS                  # keys the per-day delivery marker (Industry.Logistics/ExportRun)
-    targetPath: $.meta              # { exportKind, exportDay }
+    targetPath: $.meta              # { exportKind, exportDay, fileName }
 
   # --- K1 delivery-dedup gate: at most ONE AS delivery per Vienna calendar day.
   # GetOrCreate only queries (fresh id + ModOperation=Insert on miss); multiple
@@ -106,13 +102,12 @@ transformations:
         mode: AS
         path: $.items
         targetPath: $.dilosAs
-        fileNameTargetPath: $.dilosAsFileName   # AS<yyyyMMddHHmmss>.txt, Vienna local time
 
       - type: SftpUpload@1
         description: Deliver the AS file to the LKV SFTP root as ISO-8859-1
         serverConfiguration: LkvSftp        # SAME tenant GlobalConfiguration as the return path
         remoteDirectory: /
-        fileNamePath: $.dilosAsFileName
+        fileNamePath: $.meta.fileName       # AS<yyyyMMddHHmmss>.txt, Vienna local time
         path: $.dilosAs
         encoding: iso-8859-1                # NEVER omit: the default utf-8 corrupts umlauts
         onEncodingError: Replace            # one '?' per unrepresentable scalar, logged with its code point

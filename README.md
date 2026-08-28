@@ -8,8 +8,8 @@ template.
 
 - `src/AdapterMeshWeClapp` — the adapter host (`WebAdapterBuilder`, `IAdapterService`,
   observability/health endpoints, pipeline registration) plus the custom pipeline nodes:
-  - outbound: `DilosExportRunKey@1` (writes `{ exportKind, exportDay }` from the Vienna
-    calendar day - a stand-in until `DateTime@1` gains a time zone),
+  - outbound: `DilosExportRunKey@1` (writes `{ exportKind, exportDay, fileName }` from ONE
+    Vienna clock read - a stand-in until `DateTime@1` gains a time zone),
     `WeClappResolveSupplySources@1` (replaces the article supply-source stubs with the fetched
     entities that carry the EK prices), `WeClappToCk@1`, `DilosRender@1` (content + golden file
     names; the fetching itself is the product's `MakeHttpRequest@1` and the delivery its

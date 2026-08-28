@@ -692,10 +692,10 @@ public class PipelineYamlContractTests
     // Contract 13 pins HOW the delivery encodes, not WHAT it reads or WHERE it writes. Each of
     // the strings below can be renamed on ONE side and still ship green: an upload whose path no
     // longer matches the render's targetPath reads an unset value, one whose fileNamePath no
-    // longer matches fileNameTargetPath has no name, a remoteDirectory other than the root puts
-    // the file where the LKV import does not look, and a serverConfiguration drifting away from
-    // the return path's entry delivers to a different server than the AR/BE files come from.
-    // None of it fails locally - the first evidence would be a staging run.
+    // longer matches the node that writes the name has no name at all, a remoteDirectory other
+    // than the root puts the file where the LKV import does not look, and a serverConfiguration
+    // drifting away from the return path's entry delivers to a different server than the AR/BE
+    // files come from. None of it fails locally - the first evidence would be a staging run.
     [Fact]
     public async Task AsAiYamls_SftpUpload_ReadsTheRenderOutputAndTargetsTheLkvRoot()
     {
@@ -738,10 +738,32 @@ public class PipelineYamlContractTests
                                $"SftpUpload reads '{upload.Path}'");
             }
 
-            if (!string.Equals(render.FileNameTargetPath, upload.FileNamePath, StringComparison.Ordinal))
+            // Two name sources, one per delivery, and the yaml itself says which: the AI name is
+            // per ORDER and can only come from the render that knows the order, while the AS name
+            // is the timestamp DilosExportRunKey@1 stamps from the SAME clock read as the day
+            // marker - deliberately, because two reads can straddle Vienna midnight and name
+            // different days. Whichever node owns the name, the upload must read exactly where
+            // that node writes it.
+            var exportRunKeys = nodes.OfType<DilosExportRunKeyNodeConfiguration>().ToList();
+            var namedBy = exportRunKeys.Count == 1 ? "DilosExportRunKey" : "DilosRender";
+            var expectedNamePath = exportRunKeys.Count == 1
+                ? exportRunKeys[0].TargetPath + ".fileName"
+                : render.FileNameTargetPath;
+
+            if (!string.Equals(expectedNamePath, upload.FileNamePath, StringComparison.Ordinal))
             {
-                violations.Add($"{yaml}: DilosRender writes the file name to '{render.FileNameTargetPath}' " +
+                violations.Add($"{yaml}: {namedBy} writes the file name to '{expectedNamePath}' " +
                                $"but SftpUpload reads '{upload.FileNamePath}'");
+            }
+
+            // Exactly ONE node may write the name. Leaving a fileNameTargetPath on the render of a
+            // pipeline whose export-run node already names the file would put two writers on the
+            // same delivery, and which one the upload ends up reading depends on nothing visible
+            // in the yaml.
+            if (exportRunKeys.Count == 1 && render.FileNameTargetPath.Length > 0)
+            {
+                violations.Add($"{yaml}: DilosExportRunKey names the delivery, but DilosRender also " +
+                               $"writes a file name to '{render.FileNameTargetPath}'");
             }
 
             if (upload.RemoteDirectory != "/")
