@@ -11,9 +11,11 @@ template.
   - outbound: `DilosExportRunKey@1` (writes `{ exportKind, exportDay, fileName }` from ONE
     Vienna clock read - a stand-in until `DateTime@1` gains a time zone),
     `WeClappResolveSupplySources@1` (replaces the article supply-source stubs with the fetched
-    entities that carry the EK prices), `WeClappToCk@1`, `DilosRender@1` (content + golden file
-    names; the fetching itself is the product's `MakeHttpRequest@1` and the delivery its
-    `SftpUpload@1` with `encoding: iso-8859-1`)
+    entities that carry the EK prices, drops system articles and projects the DILOS EK-Preis),
+    `WeClappToCk@1`, `DilosRender@1` (AI content + golden file name; the AS article master
+    renders through the product's `RenderDelimitedText@1` with the 34 columns spelled out in the
+    yaml, the fetching is the product's `MakeHttpRequest@1` and the delivery its `SftpUpload@1`
+    with `encoding: iso-8859-1`)
   - return path: `DilosFileGate@1` (per-file keep/delete state between ticks; the listing and
     the download themselves are the product's `SftpList@1` and `SftpDownload@1`),
     `DilosFileConfirm@1` (per-file keep/delete confirmation; last child of the

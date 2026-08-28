@@ -107,7 +107,7 @@ public class AiExportGateTests
         var lookup = services.BuildServiceProvider().GetRequiredService<INodeQualifiedNameLookupService>();
 
         NodeDefinitionRoot root;
-        await using (var stream = File.OpenRead(FindRepoFile(Path.Combine("pipelines", "weclapp-orders-to-ai.yaml"))))
+        await using (var stream = File.OpenRead(RepoFiles.Find(Path.Combine("pipelines", "weclapp-orders-to-ai.yaml"))))
         {
             root = await new YamlPipelineConfigurationSerializer(lookup).DeserializeAsync(stream)
                    ?? throw new InvalidOperationException("pipeline yaml deserialized to null");
@@ -183,22 +183,6 @@ public class AiExportGateTests
             or CreateUpdateInfoNodeConfiguration
             or CreateAssociationUpdateNodeConfiguration;
 
-    private static string FindRepoFile(string relativePath)
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir != null)
-        {
-            var candidate = Path.Combine(dir.FullName, relativePath);
-            if (File.Exists(candidate))
-            {
-                return candidate;
-            }
-
-            dir = dir.Parent;
-        }
-
-        throw new FileNotFoundException($"'{relativePath}' not found above {AppContext.BaseDirectory}");
-    }
 }
 
 // Minimal probe node so the gate tests can observe whether the If children actually ran.

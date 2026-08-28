@@ -46,7 +46,7 @@ public class AsExportGateTests
         var lookup = services.BuildServiceProvider().GetRequiredService<INodeQualifiedNameLookupService>();
 
         NodeDefinitionRoot root;
-        await using (var stream = File.OpenRead(FindRepoFile(Path.Combine("pipelines", "weclapp-articles-to-as.yaml"))))
+        await using (var stream = File.OpenRead(RepoFiles.Find(Path.Combine("pipelines", "weclapp-articles-to-as.yaml"))))
         {
             root = await new YamlPipelineConfigurationSerializer(lookup).DeserializeAsync(stream)
                    ?? throw new InvalidOperationException("pipeline yaml deserialized to null");
@@ -77,7 +77,7 @@ public class AsExportGateTests
         Assert.NotNull(probe.FieldFilters);
         Assert.Contains(probe.FieldFilters!, f => f.ComparisonValuePath == "$.meta.exportKind");
         Assert.Contains(probe.FieldFilters!, f => f.ComparisonValuePath == "$.meta.exportDay");
-        Assert.DoesNotContain(top, n => n is DilosRenderNodeConfiguration);
+        Assert.DoesNotContain(top, n => n is RenderDelimitedTextNodeConfiguration);
         Assert.DoesNotContain(top, n => n is SftpUploadNodeConfiguration);
         Assert.DoesNotContain(top, n => n is ApplyChangesNodeConfiguration2);
         Assert.DoesNotContain(top, n => n is CreateUpdateInfoNodeConfiguration);
@@ -94,16 +94,25 @@ public class AsExportGateTests
         var gateIndex = top.FindIndex(n => n is IfNodeConfiguration);
         Assert.True(probeIndex < gateIndex, "probe must run before the gate");
 
-        // Im Gate: render → upload → Marker-CreateUpdateInfo → ApplyChanges@2 als LETZTER Schritt:
+        // Im Gate: render, dann das Leer-Gate, und DARIN upload -> Marker -> ApplyChanges@2 als
+        // LETZTER Schritt. Zwei Ebenen tief - dass die Verschachtelung traegt, ist ein eigener
+        // Nachweis: das Tagesgate darf nichts liefern, wenn der Batch leer gerendert hat, und der
+        // Marker darf erst nach einem erfolgreichen Upload persistieren.
         var children = gate.Transformations!.ToList();
-        var renderIndex = children.FindIndex(n => n is DilosRenderNodeConfiguration);
-        var uploadIndex = children.FindIndex(n => n is SftpUploadNodeConfiguration);
-        var markerIndex = children.FindIndex(n => n is CreateUpdateInfoNodeConfiguration);
-        var persistIndex = children.FindIndex(n => n is ApplyChangesNodeConfiguration2);
+        var renderIndex = children.FindIndex(n => n is RenderDelimitedTextNodeConfiguration);
+        var contentGateIndex = children.FindIndex(n => n is IfNodeConfiguration);
         Assert.True(renderIndex >= 0);
-        Assert.True(uploadIndex > renderIndex, "Upload nach Render, im Gate");
+        Assert.True(contentGateIndex > renderIndex, "das Leer-Gate steht hinter dem Render");
+        Assert.Equal(children.Count - 1, contentGateIndex);
+
+        var contentGate = Assert.Single(children.OfType<IfNodeConfiguration>());
+        var delivery = contentGate.Transformations!.ToList();
+        var uploadIndex = delivery.FindIndex(n => n is SftpUploadNodeConfiguration);
+        var markerIndex = delivery.FindIndex(n => n is CreateUpdateInfoNodeConfiguration);
+        var persistIndex = delivery.FindIndex(n => n is ApplyChangesNodeConfiguration2);
+        Assert.True(uploadIndex >= 0, "Upload im Leer-Gate");
         Assert.True(markerIndex > uploadIndex, "Marker-Update NACH dem Upload (at-least-once)");
-        Assert.Equal(persistIndex, children.Count - 1);
+        Assert.Equal(persistIndex, delivery.Count - 1);
 
         // Inside the gate the order is: articles -> supply sources -> enrichment -> render.
         // The enrichment must sit between the two fetches and the render, or the EK-Preis column
@@ -119,7 +128,7 @@ public class AsExportGateTests
         Assert.True(enrichIndex < renderIndex, "enrichment runs before the render");
 
         var enrich = Assert.Single(children.OfType<WeClappResolveSupplySourcesNodeConfiguration>());
-        var render = Assert.Single(children.OfType<DilosRenderNodeConfiguration>());
+        var render = Assert.Single(children.OfType<RenderDelimitedTextNodeConfiguration>());
         Assert.Equal(enrich.TargetPath, render.Path);
 
         // Pfad-VERDRAHTUNG: jede dieser String-Verbindungen kann per YAML-Edit einseitig
@@ -131,12 +140,12 @@ public class AsExportGateTests
         Assert.Equal(probe.ModOperationPath, gate.Path);
         Assert.Equal("$.rt.asExportRunRtId", probe.RtIdTargetPath);
 
-        var marker = Assert.Single(children.OfType<CreateUpdateInfoNodeConfiguration>());
+        var marker = Assert.Single(delivery.OfType<CreateUpdateInfoNodeConfiguration>());
         Assert.Equal(probe.RtIdTargetPath, marker.RtIdPath);
         Assert.Equal(probe.ModOperationPath, marker.UpdateKindPath);
         Assert.Equal(probe.CkTypeId, marker.CkTypeId);
 
-        var persist = Assert.Single(children.OfType<ApplyChangesNodeConfiguration2>());
+        var persist = Assert.Single(delivery.OfType<ApplyChangesNodeConfiguration2>());
         Assert.Equal(marker.TargetPath, persist.EntityUpdatesPath);
 
         // Der Marker schreibt exakt die Attribute/Pfade, auf die die Probe filtert:
@@ -145,22 +154,5 @@ public class AsExportGateTests
         Assert.NotNull(marker.AttributeUpdates);
         Assert.Contains(marker.AttributeUpdates!, u => u.AttributeName == "ExportKind" && u.ValuePath == "$.meta.exportKind");
         Assert.Contains(marker.AttributeUpdates!, u => u.AttributeName == "ExportDay" && u.ValuePath == "$.meta.exportDay");
-    }
-
-    private static string FindRepoFile(string relativePath)
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir != null)
-        {
-            var candidate = Path.Combine(dir.FullName, relativePath);
-            if (File.Exists(candidate))
-            {
-                return candidate;
-            }
-
-            dir = dir.Parent;
-        }
-
-        throw new FileNotFoundException($"'{relativePath}' not found above {AppContext.BaseDirectory}");
     }
 }

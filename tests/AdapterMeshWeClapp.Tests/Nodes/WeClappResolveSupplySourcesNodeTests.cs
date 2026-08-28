@@ -228,4 +228,87 @@ public class WeClappResolveSupplySourcesNodeTests
 
         Assert.Contains("$.supplySources", ex.Message);
     }
+
+    // ---- the two WeClapp rules a column model cannot express (spec: adapter-half step 1) ----
+
+    // Column 20 of the AS layout is the only column that needs a RULE rather than a path read,
+    // and the rule is entirely WeClapp: the first parseable supplySources[].articlePrices[].price
+    // of the resolved shape, formatted with the invariant 0.#### the golden files show. A column
+    // renderer can only read a path, so the finished scalar has to exist before it runs.
+    [Fact]
+    public async Task ProjectsThePurchasePriceAsAFinishedDilosScalar()
+    {
+        var config = Configure();
+        var (data, node) = Context("""
+            {"rawArticles":[{"id":"4262","articleNumber":"000123","articleType":"STORABLE",
+              "supplySources":[{"articleSupplySourceId":"9001"}]}],
+             "supplySources":[{"id":"9001","articlePrices":[{"price":"1.6200"}]}]}
+            """, config);
+
+        await new WeClappResolveSupplySourcesNode(_next).ProcessObjectAsync(data, node);
+
+        // 1.6200 -> 1.62: trailing zeros are trimmed, the separator is a dot, and the value is a
+        // STRING so no downstream re-formatting can reintroduce a culture.
+        Assert.Equal("1.62", data.Get<string>("$.items[0].ekPreis"));
+    }
+
+    // The zero rule is load-bearing and visible in the delivered files: column 20 is filled on
+    // every line and 0 occurs among its values, whereas a plain path read of a missing price
+    // would render an empty field.
+    [Fact]
+    public async Task ArticleWithoutASupplySourcePrice_ProjectsZeroRatherThanNothing()
+    {
+        var config = Configure();
+        var (data, node) = Context("""
+            {"rawArticles":[{"id":"4262","articleNumber":"000123","articleType":"STORABLE",
+              "supplySources":[]}],
+             "supplySources":[]}
+            """, config);
+
+        await new WeClappResolveSupplySourcesNode(_next).ProcessObjectAsync(data, node);
+
+        Assert.Equal("0", data.Get<string>("$.items[0].ekPreis"));
+    }
+
+    // System articles (loading equipment such as pallets) never belong in the article master
+    // delivery. The render used to drop them; a column renderer emits one line per element and
+    // cannot, so the step that already touches the articles does it.
+    [Fact]
+    public async Task DropsSystemArticles_AndKeepsTheRest()
+    {
+        var config = Configure();
+        var (data, node) = Context("""
+            {"rawArticles":[
+               {"id":"4250","articleNumber":"Default loading equipment","articleType":"LOADING_EQUIPMENT",
+                "supplySources":[]},
+               {"id":"4262","articleNumber":"000123","articleType":"STORABLE","supplySources":[]}],
+             "supplySources":[]}
+            """, config);
+
+        await new WeClappResolveSupplySourcesNode(_next).ProcessObjectAsync(data, node);
+
+        var items = data.Get<JsonArray>("$.items");
+        Assert.NotNull(items);
+        Assert.Equal("4262", Assert.Single(items)!["id"]!.ToString());
+    }
+
+    // A batch of nothing but loading equipment resolves to an EMPTY array, not to a missing path:
+    // the delivery is gated on the rendered content being non-empty, and a missing path would
+    // read as null there, which is not equal to the empty string and would let the gate open.
+    [Fact]
+    public async Task BatchOfOnlySystemArticles_WritesAnEmptyArray()
+    {
+        var config = Configure();
+        var (data, node) = Context("""
+            {"rawArticles":[{"id":"4250","articleType":"LOADING_EQUIPMENT","supplySources":[]}],
+             "supplySources":[]}
+            """, config);
+
+        await new WeClappResolveSupplySourcesNode(_next).ProcessObjectAsync(data, node);
+
+        var items = data.Get<JsonArray>("$.items");
+        Assert.NotNull(items);
+        Assert.Empty(items);
+        A.CallTo(() => _next(data, node)).MustHaveHappenedOnceExactly();
+    }
 }

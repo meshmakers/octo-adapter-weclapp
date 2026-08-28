@@ -1,4 +1,7 @@
+using System.Text.Json;
 using System.Text.Json.Nodes;
+using Lkv.WeClapp.Core.Mapping;
+using Lkv.WeClapp.Core.Model;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
@@ -8,8 +11,8 @@ namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Nodes;
 /// <summary>
 /// Configuration for the WeClappResolveSupplySources node. Reads the raw article array from
 /// <c>Path</c> and the fetched <c>articleSupplySource</c> entities from
-/// <see cref="SupplySourcesPath"/>, and writes the articles with their supply-source stubs
-/// resolved to <c>TargetPath</c>.
+/// <see cref="SupplySourcesPath"/>, and writes the deliverable articles - stubs resolved, system
+/// articles removed, each carrying its DILOS EK-Preis on <c>ekPreis</c> - to <c>TargetPath</c>.
 /// </summary>
 [NodeName("WeClappResolveSupplySources", 1)]
 public record WeClappResolveSupplySourcesNodeConfiguration : SourceTargetPathNodeConfiguration
@@ -21,15 +24,22 @@ public record WeClappResolveSupplySourcesNodeConfiguration : SourceTargetPathNod
 }
 
 /// <summary>
-/// Replaces each <c>article.supplySources</c> reference stub with the full
-/// <c>articleSupplySource</c> entity it points at, so a downstream renderer sees the purchase
-/// prices. A stub without a matching entity is dropped and an article without stubs passes
-/// through untouched, exactly as the fetch-side enrichment this node replaces did.
+/// Prepares the raw WeClapp articles for the DILOS article master delivery, doing the three
+/// things a generic column renderer cannot: it replaces each <c>article.supplySources</c>
+/// reference stub with the full <c>articleSupplySource</c> entity it points at (a stub without a
+/// matching entity is dropped, an article without stubs passes through untouched); it drops
+/// system articles (loading equipment such as pallets), which never belong in the article master;
+/// and it projects the DILOS EK-Preis as a finished scalar on <c>ekPreis</c>, because that value
+/// is a SELECTION - the first parseable <c>supplySources[].articlePrices[].price</c>, absent
+/// meaning 0 - and a renderer can only read a path. The selection and the number format itself
+/// stay in the core library next to the other DILOS value rules; only the call site is here.
 /// </summary>
 [NodeConfiguration(typeof(WeClappResolveSupplySourcesNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
 public class WeClappResolveSupplySourcesNode(NodeDelegate next) : IPipelineNode
 {
+    private static readonly JsonSerializerOptions CaseInsensitive = new() { PropertyNameCaseInsensitive = true };
+
     /// <inheritdoc />
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
@@ -61,9 +71,38 @@ public class WeClappResolveSupplySourcesNode(NodeDelegate next) : IPipelineNode
         }
 
         var enriched = new JsonArray();
+        var systemArticles = 0;
         foreach (var article in articles)
         {
-            enriched.Add(Resolve(article, sourcesById));
+            var item = Resolve(article, sourcesById);
+
+            // The two pieces of WeClapp knowledge a column renderer cannot express, applied here
+            // because this step already holds the articles: loading equipment never belongs in the
+            // article master delivery, and the DILOS EK-Preis is a SELECTION over the resolved
+            // supply sources (first parseable price, absent means 0) which no path read performs.
+            if (item is JsonObject resolved)
+            {
+                var parsed = resolved.Deserialize<WeClappArticle>(CaseInsensitive)
+                             ?? throw new WeClappPipelineExecutionException(
+                                 "WeClappResolveSupplySources: an element of " +
+                                 $"'{config.Path}' is not a WeClapp article");
+
+                if (WeClappToDilos.IsSystemArticle(parsed))
+                {
+                    systemArticles++;
+                    continue;
+                }
+
+                resolved["ekPreis"] = WeClappToDilos.Num(WeClappToDilos.EkPreis(parsed.PurchasePrice));
+            }
+
+            enriched.Add(item);
+        }
+
+        if (systemArticles > 0)
+        {
+            nodeContext.Info("WeClappResolveSupplySources: dropped {0} system article(s) (loading equipment)",
+                systemArticles);
         }
 
         dataContext.Set<JsonNode>(config.TargetPath, enriched, config.DocumentMode,

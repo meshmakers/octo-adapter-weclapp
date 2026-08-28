@@ -5,6 +5,7 @@ using System.Text.RegularExpressions;
 using Lkv.WeClapp.Core.Dilos;
 using FakeItEasy;
 using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Nodes;
+using Meshmakers.Octo.ConstructionKit.Contracts.DataTransferObjects;
 using Meshmakers.Octo.MeshAdapter.Nodes;
 using Meshmakers.Octo.MeshAdapter.Nodes.Configuration;
 using Meshmakers.Octo.MeshAdapter.Nodes.Extract;
@@ -43,7 +44,7 @@ public class PipelineYamlContractTests
     {
         get
         {
-            var pipelinesDir = Path.GetDirectoryName(FindRepoFile(Path.Combine("pipelines",
+            var pipelinesDir = Path.GetDirectoryName(RepoFiles.Find(Path.Combine("pipelines",
                 "weclapp-articles-to-ck.yaml")))!;
             return Directory.GetFiles(pipelinesDir, "*.yaml")
                 .Concat(Directory.GetFiles(pipelinesDir, "*.yml"))
@@ -65,7 +66,7 @@ public class PipelineYamlContractTests
 
         foreach (var yaml in AllPipelineYamls)
         {
-            var root = await DeserializePipeline(yaml);
+            var root = await PipelineDefinitions.DeserializeAsync(yaml);
             foreach (var config in Walk(root.Transformations).OfType<CreateUpdateInfoNodeConfiguration>())
             {
                 foreach (var update in config.AttributeUpdates ?? [])
@@ -87,7 +88,7 @@ public class PipelineYamlContractTests
     [Fact]
     public async Task ArticlesToCkYaml_ConfiguredPaths_ResolveAgainstTransformOutput()
     {
-        var root = await DeserializePipeline("weclapp-articles-to-ck.yaml");
+        var root = await PipelineDefinitions.DeserializeAsync("weclapp-articles-to-ck.yaml");
         var all = Walk(root.Transformations).ToList();
         var toCk = Assert.Single(all.OfType<WeClappToCkNodeConfiguration>());
         var lookup = Assert.Single(all.OfType<GetOrCreateRtEntitiesByTypeNodeConfiguration>());
@@ -119,7 +120,7 @@ public class PipelineYamlContractTests
     [Fact]
     public async Task OrdersToAiYaml_CustomerNameUpdate_ResolvesForB2cCustomers()
     {
-        var root = await DeserializePipeline("weclapp-orders-to-ai.yaml");
+        var root = await PipelineDefinitions.DeserializeAsync("weclapp-orders-to-ai.yaml");
         var all = Walk(root.Transformations).ToList();
         var toCk = Assert.Single(all.OfType<WeClappToCkNodeConfiguration>());
         var gate = Assert.Single(all.OfType<IfNodeConfiguration>());
@@ -155,7 +156,7 @@ public class PipelineYamlContractTests
         // "flattening" of the ai yaml would break the dedup-gate probe (filter resolves
         // to null → every order re-delivered per poll + duplicated CK entities), so every
         // $.ck path in the file is pinned here against the real transform output.
-        var root = await DeserializePipeline("weclapp-orders-to-ai.yaml");
+        var root = await PipelineDefinitions.DeserializeAsync("weclapp-orders-to-ai.yaml");
         var all = Walk(root.Transformations).ToList();
         var toCk = Assert.Single(all.OfType<WeClappToCkNodeConfiguration>());
 
@@ -213,7 +214,7 @@ public class PipelineYamlContractTests
     [InlineData("dilos-be-to-weclapp.yaml", typeof(SftpListNodeConfiguration))]
     public async Task ConvertedYaml_UsesPassiveTriggers_NoPollingFields(string file, Type expectedFirstStepType)
     {
-        var root = await DeserializePipeline(file);
+        var root = await PipelineDefinitions.DeserializeAsync(file);
         Assert.Collection(root.Triggers!,
             t => Assert.IsType<FromPipelineTriggerEventNodeConfiguration>(t),
             t => Assert.IsType<FromExecutePipelineCommandNodeConfiguration>(t));
@@ -222,7 +223,7 @@ public class PipelineYamlContractTests
         Assert.NotEmpty(transformations);
         Assert.IsType(expectedFirstStepType, transformations[0]);
 
-        var raw = File.ReadAllText(FindRepoFile(Path.Combine("pipelines", file)));
+        var raw = File.ReadAllText(RepoFiles.Find(Path.Combine("pipelines", file)));
         Assert.DoesNotContain("pollingIntervalSeconds", raw);
         Assert.DoesNotContain("runOnStart", raw);
     }
@@ -262,7 +263,7 @@ public class PipelineYamlContractTests
 
         foreach (var yaml in AllPipelineYamls)
         {
-            var root = await DeserializePipeline(yaml);
+            var root = await PipelineDefinitions.DeserializeAsync(yaml);
             foreach (var forEach in Walk(root.Transformations).OfType<ForEachNodeConfiguration>())
             {
                 if (forEach.TargetPath is null or "$")
@@ -297,7 +298,7 @@ public class PipelineYamlContractTests
 
         foreach (var yaml in AllPipelineYamls)
         {
-            var root = await DeserializePipeline(yaml);
+            var root = await PipelineDefinitions.DeserializeAsync(yaml);
             foreach (var forEach in Walk(root.Transformations).OfType<ForEachNodeConfiguration>())
             {
                 if (forEach.KeyPath != "$.current")
@@ -329,7 +330,7 @@ public class PipelineYamlContractTests
 
         foreach (var yaml in AllPipelineYamls)
         {
-            var root = await DeserializePipeline(yaml);
+            var root = await PipelineDefinitions.DeserializeAsync(yaml);
             var nodes = Walk(root.Transformations).ToList();
             if (!nodes.OfType<DilosFileConfirmNodeConfiguration>().Any())
             {
@@ -423,7 +424,7 @@ public class PipelineYamlContractTests
 
         foreach (var yaml in AllPipelineYamls)
         {
-            var raw = File.ReadAllText(FindRepoFile(Path.Combine("pipelines", yaml)));
+            var raw = File.ReadAllText(RepoFiles.Find(Path.Combine("pipelines", yaml)));
             if (!raw.Contains("DilosFileConfirm@1", StringComparison.Ordinal))
             {
                 continue; // no DILOS return path in this yaml (as/ck/ai)
@@ -456,7 +457,7 @@ public class PipelineYamlContractTests
 
         foreach (var yaml in AllPipelineYamls)
         {
-            var root = await DeserializePipeline(yaml);
+            var root = await PipelineDefinitions.DeserializeAsync(yaml);
 
             foreach (var download in Walk(root.Transformations).OfType<SftpDownloadNodeConfiguration>())
             {
@@ -493,7 +494,7 @@ public class PipelineYamlContractTests
 
         foreach (var yaml in AllPipelineYamls)
         {
-            var root = await DeserializePipeline(yaml);
+            var root = await PipelineDefinitions.DeserializeAsync(yaml);
             var nodes = Walk(root.Transformations).ToList();
             if (!nodes.OfType<DilosFileConfirmNodeConfiguration>().Any())
             {
@@ -536,7 +537,7 @@ public class PipelineYamlContractTests
 
         foreach (var yaml in AllPipelineYamls)
         {
-            var raw = File.ReadAllText(FindRepoFile(Path.Combine("pipelines", yaml)));
+            var raw = File.ReadAllText(RepoFiles.Find(Path.Combine("pipelines", yaml)));
 
             // Key-position syntax, including YAML-legal spellings a plain substring would miss
             // ("apiKey :", quoted "apiKey"). The entry-shape note "{ baseUrl, apiKey }" in the
@@ -585,7 +586,7 @@ public class PipelineYamlContractTests
 
         foreach (var yaml in AllPipelineYamls)
         {
-            var raw = File.ReadAllText(FindRepoFile(Path.Combine("pipelines", yaml)));
+            var raw = File.ReadAllText(RepoFiles.Find(Path.Combine("pipelines", yaml)));
             if (!raw.Contains("DilosFileConfirm@1", StringComparison.Ordinal))
             {
                 continue; // no confirm node - this yaml deletes no source file (as/ck/ai)
@@ -623,7 +624,7 @@ public class PipelineYamlContractTests
     // silently, because nothing fails. Replace keeps the historic behaviour of one '?' per
     // unrepresentable scalar; Fail would drop a whole day's delivery over a single character.
     // The retired custom delivery node needs no check of its own any more: its configuration type
-    // is gone, so a yaml naming it no longer reaches this loop at all - DeserializePipeline below
+    // is gone, so a yaml naming it no longer reaches this loop at all - the shared deserializer
     // throws PipelineSerializationException ("Unknown discriminator ...", verified on the yaml),
     // which reds every contract test at once instead of adding one violation here.
     [Fact]
@@ -634,7 +635,7 @@ public class PipelineYamlContractTests
 
         foreach (var yaml in AllPipelineYamls)
         {
-            var root = await DeserializePipeline(yaml);
+            var root = await PipelineDefinitions.DeserializeAsync(yaml);
 
             foreach (var upload in Walk(root.Transformations).OfType<SftpUploadNodeConfiguration>())
             {
@@ -705,7 +706,7 @@ public class PipelineYamlContractTests
 
         foreach (var yaml in AllPipelineYamls)
         {
-            var root = await DeserializePipeline(yaml);
+            var root = await PipelineDefinitions.DeserializeAsync(yaml);
             var nodes = Walk(root.Transformations).ToList();
 
             // The return path names its entry on the product nodes now. Reading it off the
@@ -729,12 +730,30 @@ public class PipelineYamlContractTests
 
             deliveries++;
             var upload = Assert.Single(uploads);
-            var render = Assert.Single(nodes.OfType<DilosRenderNodeConfiguration>());
             sftpEntries.Add(upload.ServerConfiguration);
 
-            if (!string.Equals(render.TargetPath, upload.Path, StringComparison.Ordinal))
+            // Two delivery shapes, and a yaml must be exactly one of them. The AI file mixes K*
+            // and P* record types with a synthesised shipping line and a position counter, which
+            // is not column rendering and stays custom; the AS file IS column rendering and goes
+            // through the product node. A yaml with neither has no content source at all, and one
+            // with both has two - which of them the upload reads would then be invisible here.
+            var dilosRenders = nodes.OfType<DilosRenderNodeConfiguration>().ToList();
+            var columnRenders = nodes.OfType<RenderDelimitedTextNodeConfiguration>().ToList();
+            if (dilosRenders.Count + columnRenders.Count != 1)
             {
-                violations.Add($"{yaml}: DilosRender writes the content to '{render.TargetPath}' but " +
+                violations.Add($"{yaml}: a delivery needs exactly ONE content source, found " +
+                               $"{dilosRenders.Count} DilosRender@1 and " +
+                               $"{columnRenders.Count} RenderDelimitedText@1");
+                continue;
+            }
+
+            var contentTargetPath = dilosRenders.Count == 1
+                ? dilosRenders[0].TargetPath
+                : columnRenders[0].TargetPath;
+
+            if (!string.Equals(contentTargetPath, upload.Path, StringComparison.Ordinal))
+            {
+                violations.Add($"{yaml}: the render writes the content to '{contentTargetPath}' but " +
                                $"SftpUpload reads '{upload.Path}'");
             }
 
@@ -748,7 +767,7 @@ public class PipelineYamlContractTests
             var namedBy = exportRunKeys.Count == 1 ? "DilosExportRunKey" : "DilosRender";
             var expectedNamePath = exportRunKeys.Count == 1
                 ? exportRunKeys[0].TargetPath + ".fileName"
-                : render.FileNameTargetPath;
+                : dilosRenders.Count == 1 ? dilosRenders[0].FileNameTargetPath : "";
 
             if (!string.Equals(expectedNamePath, upload.FileNamePath, StringComparison.Ordinal))
             {
@@ -760,10 +779,11 @@ public class PipelineYamlContractTests
             // pipeline whose export-run node already names the file would put two writers on the
             // same delivery, and which one the upload ends up reading depends on nothing visible
             // in the yaml.
-            if (exportRunKeys.Count == 1 && render.FileNameTargetPath.Length > 0)
+            if (exportRunKeys.Count == 1 && dilosRenders.Count == 1 &&
+                dilosRenders[0].FileNameTargetPath.Length > 0)
             {
                 violations.Add($"{yaml}: DilosExportRunKey names the delivery, but DilosRender also " +
-                               $"writes a file name to '{render.FileNameTargetPath}'");
+                               $"writes a file name to '{dilosRenders[0].FileNameTargetPath}'");
             }
 
             if (upload.RemoteDirectory != "/")
@@ -794,7 +814,7 @@ public class PipelineYamlContractTests
 
         foreach (var yaml in AllPipelineYamls)
         {
-            var root = await DeserializePipeline(yaml);
+            var root = await PipelineDefinitions.DeserializeAsync(yaml);
 
             foreach (var legacy in Walk(root.Transformations).OfType<ApplyChangesNodeConfiguration>())
             {
@@ -821,7 +841,7 @@ public class PipelineYamlContractTests
                      "weclapp-orders-to-ai.yaml",
                  })
         {
-            var root = await DeserializePipeline(file);
+            var root = await PipelineDefinitions.DeserializeAsync(file);
             var requests = Walk(root.Transformations).OfType<MakeHttpRequestNodeConfiguration>().ToList();
             Assert.NotEmpty(requests);
             Assert.All(requests, request =>
@@ -843,7 +863,7 @@ public class PipelineYamlContractTests
                      "weclapp-orders-to-ai.yaml",
                  })
         {
-            var root = await DeserializePipeline(file);
+            var root = await PipelineDefinitions.DeserializeAsync(file);
             var paged = Walk(root.Transformations)
                 .OfType<MakeHttpRequestNodeConfiguration>()
                 .Where(request => request.Paging is not null)
@@ -863,7 +883,7 @@ public class PipelineYamlContractTests
     [Fact]
     public async Task OrdersToAiYaml_PagedOrderRequest_FiltersOnConfirmedOrders()
     {
-        var root = await DeserializePipeline("weclapp-orders-to-ai.yaml");
+        var root = await PipelineDefinitions.DeserializeAsync("weclapp-orders-to-ai.yaml");
         var paged = Assert.Single(
             Walk(root.Transformations).OfType<MakeHttpRequestNodeConfiguration>(),
             request => request.Paging is not null);
@@ -881,7 +901,7 @@ public class PipelineYamlContractTests
     [Fact]
     public async Task OrdersToAiYaml_CustomerLookupFeedsTheOrderTransform()
     {
-        var root = await DeserializePipeline("weclapp-orders-to-ai.yaml");
+        var root = await PipelineDefinitions.DeserializeAsync("weclapp-orders-to-ai.yaml");
         var loop = Assert.Single(Walk(root.Transformations).OfType<ForEachNodeConfiguration>());
         var children = loop.Transformations!.ToList();
 
@@ -904,7 +924,7 @@ public class PipelineYamlContractTests
     [Fact]
     public async Task OrdersToAiYaml_ForEachIsolatesAFailingOrder()
     {
-        var root = await DeserializePipeline("weclapp-orders-to-ai.yaml");
+        var root = await PipelineDefinitions.DeserializeAsync("weclapp-orders-to-ai.yaml");
         var loop = Assert.Single(Walk(root.Transformations).OfType<ForEachNodeConfiguration>());
 
         Assert.True(loop.ContinueOnError,
@@ -925,34 +945,110 @@ public class PipelineYamlContractTests
                      "dilos-be-to-weclapp.yaml",
                  })
         {
-            var raw = File.ReadAllText(FindRepoFile(Path.Combine("pipelines", file)));
+            var raw = File.ReadAllText(RepoFiles.Find(Path.Combine("pipelines", file)));
             Assert.Matches(@"(?m)^\s*apiConfiguration\s*:\s*[""']?WeClappApi[""']?\s*(#.*)?$", raw);
         }
     }
 
-    // ---------- helpers ----------
+    // ---------- contract 20: the AS empty-batch brake ----------
 
-    private static async Task<NodeDefinitionRoot> DeserializePipeline(string fileName)
+    // The render writes an EMPTY STRING for an empty batch and calls next; SftpUpload@1 would
+    // upload that as a 0-byte file and the marker behind it would burn the Vienna day, after
+    // which the day can only be re-delivered by deleting the marker. The brake is this gate, and
+    // it only works while its path is EXACTLY the render's targetPath: If@1 reads a MISSING path
+    // as null, and null != "" is TRUE, so a mistyped path opens the gate instead of closing it.
+    // The comparison value has to stay a non-null empty string for the same reason - it is what
+    // puts If@1 on its string branch at all.
+    [Fact]
+    public async Task AsYaml_EmptyRenderOutput_IsGatedBeforeTheDeliveryAndTheMarker()
     {
-        var services = new ServiceCollection();
-        services.AddLogging();
-        services.AddDataPipeline()
-            .AddMeshDataPipelineNodes()
-            .RegisterNodeConfiguration<IfNodeConfiguration>()
-            .RegisterNodeConfiguration<WeClappToCkNodeConfiguration>()
-            .RegisterNodeConfiguration<DilosRenderNodeConfiguration>()
-            .RegisterNodeConfiguration<WeClappArWriteNodeConfiguration>()
-            .RegisterNodeConfiguration<WeClappBeWriteNodeConfiguration>()
-            .RegisterNodeConfiguration<DilosFileGateNodeConfiguration>()
-            .RegisterNodeConfiguration<DilosFileConfirmNodeConfiguration>()
-            .RegisterNodeConfiguration<WeClappResolveSupplySourcesNodeConfiguration>()
-            .RegisterNodeConfiguration<DilosExportRunKeyNodeConfiguration>();
-        var lookup = services.BuildServiceProvider().GetRequiredService<INodeQualifiedNameLookupService>();
+        var root = await PipelineDefinitions.DeserializeAsync("weclapp-articles-to-as.yaml");
+        var nodes = Walk(root.Transformations).ToList();
+        var render = Assert.Single(nodes.OfType<RenderDelimitedTextNodeConfiguration>());
 
-        await using var stream = File.OpenRead(FindRepoFile(Path.Combine("pipelines", fileName)));
-        return await new YamlPipelineConfigurationSerializer(lookup).DeserializeAsync(stream)
-               ?? throw new InvalidOperationException($"'{fileName}' deserialized to null");
+        var contentGate = Assert.Single(nodes.OfType<IfNodeConfiguration>(),
+            gate => gate.Path == render.TargetPath);
+        Assert.Equal(CompareOperator.NotEqual, contentGate.Operator);
+        Assert.Equal(AttributeValueTypesDto.String, contentGate.ValueType);
+        Assert.NotNull(contentGate.Value);
+        Assert.Equal(string.Empty, Assert.IsType<string>(contentGate.Value));
+
+        // Everything that delivers or persists sits INSIDE it - a step left outside would run on
+        // an empty batch, which is the whole failure the gate exists to prevent.
+        var gated = Walk(contentGate.Transformations).ToList();
+        Assert.Single(gated.OfType<SftpUploadNodeConfiguration>());
+        Assert.Single(gated.OfType<CreateUpdateInfoNodeConfiguration>());
+        Assert.Single(gated.OfType<ApplyChangesNodeConfiguration2>());
+        Assert.Equal(nodes.OfType<SftpUploadNodeConfiguration>().Count(),
+            gated.OfType<SftpUploadNodeConfiguration>().Count());
+        Assert.Equal(nodes.OfType<ApplyChangesNodeConfiguration2>().Count(),
+            gated.OfType<ApplyChangesNodeConfiguration2>().Count());
     }
+
+    // ---------- contract 21: the 34-column DILOS AS layout lives in the yaml ----------
+
+    // Since the delivery renders through the product node, the column list IS the file format:
+    // there is no writer left to compare it against, so the yaml is what has to be pinned. A
+    // column inserted, removed or reordered shifts every following field, and LKV's import reads
+    // the result without noticing - the failure surfaces as wrong master data in the customer's
+    // system, not as a failed run. Field numbers below are DILOS 1-based, the list index is 0-based,
+    // and that off-by-one is exactly the trap the layout is spelled out to avoid.
+    [Fact]
+    public async Task AsYaml_RenderDelimitedText_SpellsOutTheThirtyFourColumnDilosLayout()
+    {
+        var root = await PipelineDefinitions.DeserializeAsync("weclapp-articles-to-as.yaml");
+        var render = Assert.Single(Walk(root.Transformations).OfType<RenderDelimitedTextNodeConfiguration>());
+
+        Assert.Equal("|", render.Delimiter);
+        // Read as the node reads them: the options are nullable and their defaults are resolved
+        // where they are used, so an omitted property must be checked as its EFFECTIVE value.
+        Assert.Equal(DelimitedLineEnding.Lf,
+            render.LineEnding ?? RenderDelimitedTextNodeConfiguration.DefaultLineEnding);
+        Assert.True(render.TrailingNewLine ?? RenderDelimitedTextNodeConfiguration.DefaultTrailingNewLine,
+            "the delivered file ends on 0x0A");
+        Assert.Equal(DelimiterInValueHandling.Fail,
+            render.OnDelimiterInValue ?? RenderDelimitedTextNodeConfiguration.DefaultOnDelimiterInValue);
+
+        var columns = render.Columns?.ToList() ?? [];
+        Assert.Equal(34, columns.Count);
+
+        // The eight positions that ever carry a value, counted over the delivered files.
+        var expected = new Dictionary<int, (string? Value, string? ValuePath)>
+        {
+            [1] = ("A*", null),                 // Satzart
+            [3] = (null, "$.id"),               // Artikelnummer
+            [4] = (null, "$.name"),             // Bezeichnung1
+            [5] = (null, "$.articleNumber"),    // Bezeichnung2 (SKU)
+            [11] = (null, "$.ean"),             // EAN - legitimately absent on most articles
+            [12] = (null, "$.unitName"),        // Lagereinheit
+            [20] = (null, "$.ekPreis"),         // EK-Preis, projected by WeClappResolveSupplySources@1
+            [23] = ("1", null),                 // Artikelart
+        };
+
+        for (var field = 1; field <= 34; field++)
+        {
+            var column = columns[field - 1];
+            if (expected.TryGetValue(field, out var want))
+            {
+                Assert.Equal(want.Value, column.Value);
+                Assert.Equal(want.ValuePath, column.ValuePath);
+            }
+            else
+            {
+                Assert.True(string.IsNullOrEmpty(column.Value) && string.IsNullOrEmpty(column.ValuePath),
+                    $"DILOS field {field} is reserved and must render empty, but the yaml fills it");
+            }
+        }
+
+        // _specs/AS.md marks exactly one mandatory field, and an article without an id would ship
+        // a record LKV cannot key on. Required is inert everywhere else, which is what the 26
+        // reserved columns need.
+        Assert.True(columns[2].Required, "DILOS field 3 (Artikelnummer) is the one mandatory field");
+        Assert.All(columns.Where((_, i) => i != 2),
+            column => Assert.True(column.Required != true, "only field 3 may be required"));
+    }
+
+    // ---------- helpers ----------
 
     private static async Task<IDataContext> RunToCkNode(WeClappToCkNodeConfiguration config, string documentJson)
     {
@@ -966,22 +1062,5 @@ public class PipelineYamlContractTests
 
         await new WeClappToCkNode(A.Fake<NodeDelegate>()).ProcessObjectAsync(dataContext, nodeContext);
         return dataContext;
-    }
-
-    private static string FindRepoFile(string relativePath)
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir != null)
-        {
-            var candidate = Path.Combine(dir.FullName, relativePath);
-            if (File.Exists(candidate))
-            {
-                return candidate;
-            }
-
-            dir = dir.Parent;
-        }
-
-        throw new FileNotFoundException($"'{relativePath}' not found above {AppContext.BaseDirectory}");
     }
 }
