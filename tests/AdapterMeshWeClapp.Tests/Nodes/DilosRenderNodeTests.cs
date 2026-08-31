@@ -162,6 +162,47 @@ public class DilosRenderNodeTests
         Assert.Contains("Submandant", ex.Message);
     }
 
+    // The same class of defect as the null Submandant above, on the two paths this node reads and
+    // writes. A null Path reached CanonicalPath as a raw NullReferenceException, raised inside the
+    // per-order ForEach@1 - which continueOnError then books as one failed order instead of the
+    // configuration defect it is, so the AI delivery stops with nothing pointing at the yaml.
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task ProcessObjectAsync_BlankPath_FailsAsAConfigurationError(string? path)
+    {
+        Configure("AI", submandant: "51696697501", path: path!);
+
+        var ex = await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
+            () => _sut.ProcessObjectAsync(_dataContext, _nodeContext));
+
+        Assert.Contains("'Path'", ex.Message);
+        A.CallTo(() => _next(_dataContext, _nodeContext)).MustNotHaveHappened();
+    }
+
+    // A blank TargetPath is the quieter half: the data context treats null and empty alike as "$",
+    // so the rendered content REPLACES the loop document root instead of landing beside it. Nothing
+    // fails - the delivery behind it simply finds nothing at the paths it reads.
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task ProcessObjectAsync_BlankTargetPath_FailsAsAConfigurationError(string? targetPath)
+    {
+        Configure("AI", submandant: "51696697501", targetPath: targetPath!);
+        A.CallTo(() => _dataContext.GetArray<WeClappSalesOrder>("$.items"))
+            .Returns(new List<WeClappSalesOrder?> { MinimalOrder() });
+
+        var ex = await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
+            () => _sut.ProcessObjectAsync(_dataContext, _nodeContext));
+
+        Assert.Contains("'TargetPath'", ex.Message);
+        A.CallTo(() => _dataContext.Set(A<string>._, A<string>._, A<DocumentModes>._,
+            A<ValueKinds>._, A<TargetValueWriteModes>._)).MustNotHaveHappened();
+        A.CallTo(() => _next(_dataContext, _nodeContext)).MustNotHaveHappened();
+    }
+
     [Fact]
     public async Task ProcessObjectAsync_NullFileNameTargetPath_RendersWithoutWritingAName()
     {

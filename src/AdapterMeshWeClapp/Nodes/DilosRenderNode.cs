@@ -43,6 +43,8 @@ public record DilosRenderNodeConfiguration : SourceTargetPathNodeConfiguration
 // ReSharper disable once ClassNeverInstantiated.Global
 public class DilosRenderNode(NodeDelegate next) : IPipelineNode
 {
+    private const string NodeName = "DilosRender";
+
     /// <inheritdoc />
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
@@ -54,6 +56,12 @@ public class DilosRenderNode(NodeDelegate next) : IPipelineNode
                 $"Unknown DilosRender mode '{config.Mode}' (expected 'AI'; the AS article master " +
                 "renders through RenderDelimitedText@1)");
         }
+
+        // Both paths are checked before anything is read or written, for the reason the shared
+        // guard spells out - and here inside a per-order ForEach@1 carrying continueOnError, where
+        // an unattributed failure is booked as a failed order rather than a configuration defect.
+        NodeConfigurationGuards.RequirePath(NodeName, config.Path, nameof(config.Path));
+        NodeConfigurationGuards.RequirePath(NodeName, config.TargetPath, nameof(config.TargetPath));
 
         var orders = ReadOneOrMany<WeClappSalesOrder>(dataContext, config.Path, "order");
         var content = RenderOrders(orders, config);
