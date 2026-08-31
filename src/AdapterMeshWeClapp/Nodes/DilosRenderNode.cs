@@ -1,5 +1,4 @@
 using Lkv.WeClapp.Core.Dilos;
-using Lkv.WeClapp.Core.Mapping;
 using Lkv.WeClapp.Core.Model;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
@@ -8,93 +7,83 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Nodes;
 
 /// <summary>
-/// Configuration for the DilosRender node. Reads an array of WeClapp objects from
-/// <c>Path</c> and writes the rendered DILOS file content (pipe-delimited, LF —
-/// all real Billbee-produced AS/AI files are pure LF, the DILOS-import-proven
-/// format; CRLF only occurs in files DILOS itself produces) to <c>TargetPath</c>.
+/// Configuration for the DilosRender node. Reads the WeClapp sales order from <c>Path</c> and
+/// writes the rendered DILOS AI file content (pipe-delimited, LF - all real Billbee-produced
+/// AS/AI files are pure LF, the DILOS-import-proven format; CRLF only occurs in files DILOS
+/// itself produces) to <c>TargetPath</c>.
 /// </summary>
 [NodeName("DilosRender", 1)]
 public record DilosRenderNodeConfiguration : SourceTargetPathNodeConfiguration
 {
-    /// <summary>Which DILOS file type to render: "AS" (article master, A* lines from
-    /// WeClapp articles) or "AI" (order import, K*/P* lines from WeClapp sales orders).</summary>
+    /// <summary>Which DILOS file type to render. "AI" (order import, K*/P* lines from WeClapp
+    /// sales orders) is the only one left: the AS article master is plain column rendering and
+    /// goes through the product's RenderDelimitedText@1 instead. The property stays so a pipeline
+    /// definition keeps saying out loud what it renders, and an "AS" left in a yaml fails loudly
+    /// here instead of delivering the wrong file.</summary>
     public required string Mode { get; set; }
 
-    /// <summary>WeClapp Mandanten-ID → DILOS "Submandant" (constant per tenant; LKV maps it).
-    /// Required for mode AI, unused for AS.</summary>
+    /// <summary>WeClapp Mandanten-ID mapped to the DILOS "Submandant" (constant per tenant; LKV
+    /// maps it).</summary>
     public string Submandant { get; set; } = "";
 
     /// <summary>Optional JSONPath to receive the golden DILOS file name (consumed by
-    /// SftpUpload@1's <c>fileNamePath</c>): AI → "AI{Auftragsnummer1}.txt" (= the WeClapp
-    /// id, matching the K* line; exactly one order required), AS → "AS{yyyyMMddHHmmss}.txt"
-    /// in Vienna local time. Empty = no name is written.</summary>
+    /// SftpUpload@1's <c>fileNamePath</c>): "AI{Auftragsnummer1}.txt" - the WeClapp id, matching
+    /// the K* line, which is why exactly one order per execution is required. Empty = no name is
+    /// written.</summary>
     public string FileNameTargetPath { get; set; } = "";
 }
 
 /// <summary>
-/// Renders WeClapp objects from the pipeline data context into DILOS file content
-/// (custom node #3 of the ingestion design). In AS mode this node drops system articles
-/// (loading equipment) itself — the dedicated AS delivery pipeline has no WeClappToCk
-/// stage; in AI mode it renders what it receives.
+/// Renders a WeClapp sales order from the pipeline data context into DILOS AI file content.
+/// What is left here now that the AS article master renders through the product's column node is
+/// the part that is genuinely custom: mixed K*/P* record types in one file, a synthesised
+/// shipping line and a position counter. None of that is column rendering.
 /// </summary>
 [NodeConfiguration(typeof(DilosRenderNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
-public class DilosRenderNode(NodeDelegate next, TimeProvider? timeProvider = null) : IPipelineNode
+public class DilosRenderNode(NodeDelegate next) : IPipelineNode
 {
-    private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
+    private const string NodeName = "DilosRender";
 
     /// <inheritdoc />
     public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
     {
         var config = nodeContext.GetNodeConfiguration<DilosRenderNodeConfiguration>();
 
-        string content;
-        var fileName = "";
-
-        switch (config.Mode)
+        if (config.Mode != "AI")
         {
-            case "AS":
-                content = RenderArticles(dataContext, config, nodeContext);
-                if (config.FileNameTargetPath.Length > 0)
-                {
-                    fileName = EnsurePlainFileName(DilosFile.AsFileName(_timeProvider.GetUtcNow()));
-                }
-
-                break;
-
-            case "AI":
-                {
-                    var orders = ReadOneOrMany<WeClappSalesOrder>(dataContext, config.Path, "order");
-                    content = RenderOrders(orders, config);
-                    if (config.FileNameTargetPath.Length > 0)
-                    {
-                        fileName = EnsurePlainFileName(BuildAiFileName(orders));
-                    }
-
-                    break;
-                }
-
-            default:
-                throw new WeClappPipelineExecutionException(
-                    $"Unknown DilosRender mode '{config.Mode}' (expected 'AS' or 'AI')");
+            throw new WeClappPipelineExecutionException(
+                $"Unknown DilosRender mode '{config.Mode}' (expected 'AI'; the AS article master " +
+                "renders through RenderDelimitedText@1)");
         }
 
-        // Empty content must never reach the delivery: SftpUpload@1 uploads "" as a 0-byte
-        // file rather than refusing it, and the export marker is written after the upload —
-        // so this is the ONLY guard against a false snapshot, for BOTH modes. An AS batch may
-        // legitimately hold no deliverable article (e.g. tenant bootstrap, or only system
-        // articles) and ends the pipeline; an AI execution always renders at least its K*
-        // header, so empty content there is an upstream defect and fails loudly.
+        // Both paths are checked before anything is read or written, for the reason the shared
+        // guard spells out - and here inside a per-order ForEach@1 carrying continueOnError, where
+        // an unattributed failure is booked as a failed order rather than a configuration defect.
+        NodeConfigurationGuards.RequirePath(NodeName, config.Path, nameof(config.Path));
+        NodeConfigurationGuards.RequirePath(NodeName, config.TargetPath, nameof(config.TargetPath));
+
+        var orders = ReadOneOrMany<WeClappSalesOrder>(dataContext, config.Path, "order");
+        var content = RenderOrders(orders, config);
+
+        // IsNullOrEmpty rather than .Length: the properties are non-nullable, but a yaml
+        // carrying an explicit null ("fileNameTargetPath:" with no value) assigns null OVER the
+        // initializer, and a bare dereference here fails as an unattributable
+        // NullReferenceException inside the per-order loop - which continueOnError then
+        // swallows as one failed order instead of the configuration defect it is.
+        var fileName = !string.IsNullOrEmpty(config.FileNameTargetPath)
+            ? EnsurePlainFileName(BuildAiFileName(orders))
+            : "";
+
+        // Empty content must never reach the delivery: SftpUpload@1 uploads "" as a 0-byte file
+        // rather than refusing it, and the export marker is written after the upload. An AI
+        // execution always renders at least its K* header, so empty content here is an upstream
+        // defect and fails loudly. The AS side reaches the same end by a different route - its
+        // renderer writes the empty string and the yaml gates the delivery on it.
         if (content.Length == 0)
         {
-            if (config.Mode == "AI")
-            {
-                throw new WeClappPipelineExecutionException(
-                    "DilosRender mode 'AI' rendered no content — refusing to deliver an empty DILOS file");
-            }
-
-            nodeContext.Info("DilosRender: batch contains no deliverable articles — skipping AS delivery");
-            return;
+            throw new WeClappPipelineExecutionException(
+                "DilosRender rendered no content - refusing to deliver an empty DILOS file");
         }
 
         dataContext.Set(config.TargetPath, content, config.DocumentMode,
@@ -106,36 +95,15 @@ public class DilosRenderNode(NodeDelegate next, TimeProvider? timeProvider = nul
                 ValueKinds.Simple, TargetValueWriteModes.Overwrite);
         }
 
-        nodeContext.Info("DilosRender: rendered {0} content ({1} chars){2}",
-            config.Mode, content.Length, fileName.Length > 0 ? $" as '{fileName}'" : "");
+        nodeContext.Info("DilosRender: rendered AI content ({0} chars){1}",
+            content.Length, fileName.Length > 0 ? $" as '{fileName}'" : "");
 
         await next(dataContext, nodeContext);
     }
 
-    private static string RenderArticles(IDataContext dataContext, DilosRenderNodeConfiguration config,
-        INodeContext nodeContext)
-    {
-        var articles = ReadOneOrMany<WeClappArticle>(dataContext, config.Path, "article");
-
-        // System articles (loading equipment such as pallets) never belong in the AS master
-        // data file. The combined pipeline used to drop them via the upstream WeClappToCk
-        // node; the dedicated AS delivery pipeline has no CK stage, so the render owns it.
-        var deliverable = articles.Where(a => !WeClappToDilos.IsSystemArticle(a)).ToList();
-        if (deliverable.Count < articles.Count)
-        {
-            nodeContext.Info("DilosRender: skipped {0} system article(s) (loading equipment)",
-                articles.Count - deliverable.Count);
-        }
-
-        var lines = deliverable
-            .Select(a => DilosArticleWriter.RenderLine(a, DilosArticleContext.Default));
-
-        return JoinLf(lines);
-    }
-
     private static string RenderOrders(List<WeClappSalesOrder> orders, DilosRenderNodeConfiguration config)
     {
-        if (config.Submandant.Length == 0)
+        if (string.IsNullOrEmpty(config.Submandant))
         {
             throw new WeClappPipelineExecutionException("DilosRender mode 'AI' requires Submandant");
         }
@@ -164,7 +132,7 @@ public class DilosRenderNode(NodeDelegate next, TimeProvider? timeProvider = nul
         if (string.IsNullOrEmpty(auftragsnummer1))
         {
             throw new WeClappPipelineExecutionException(
-                "Order has no id (Auftragsnummer1) — cannot build the AI file name");
+                "Order has no id (Auftragsnummer1) - cannot build the AI file name");
         }
 
         return DilosFile.AiFileName(auftragsnummer1);
@@ -172,20 +140,20 @@ public class DilosRenderNode(NodeDelegate next, TimeProvider? timeProvider = nul
 
     /// <summary>A DILOS file name is a bare name, never a path. The AI name carries the
     /// external WeClapp order number, so a poisoned value would otherwise travel into the
-    /// delivery node — which resolves such a name to its last segment and uploads under that
+    /// delivery node - which resolves such a name to its last segment and uploads under that
     /// name without complaining. Rejecting here is loud and retried on the next tick.</summary>
     private static string EnsurePlainFileName(string fileName)
     {
-        if (fileName.Contains('/') || fileName.Contains('\\') || fileName.Contains(".."))
+        if (!DilosFile.IsPlainFileName(fileName))
         {
             throw new WeClappPipelineExecutionException(
-                $"DILOS file name '{fileName}' contains a path separator or dot segment — refusing to deliver");
+                $"DILOS file name '{fileName}' contains a path separator or dot segment - refusing to deliver");
         }
 
         return fileName;
     }
 
-    /// <summary>Reads the source as an array OR a single object — per-document pipelines
+    /// <summary>Reads the source as an array OR a single object - per-document pipelines
     /// (one order per execution; golden AI files are one file per order) carry one object.</summary>
     private static List<T> ReadOneOrMany<T>(IDataContext dataContext, string path, string what)
         where T : class

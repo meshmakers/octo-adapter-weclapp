@@ -22,8 +22,9 @@
         <!-- Maps /health, /healthz/live, /healthz/ready — the chart's httpGet probes.
              WebAdapterBuilder alone maps no HTTP endpoints (eda/mesh-adapter pattern). -->
         <PackageReference Include="Meshmakers.Octo.Services.Observability" Version="$(OctoCoreLibVersion)" />
-        <!-- Already transitive via Sdk.MeshAdapter (SftpUploadNode) — explicit pin because the
-             DilosFileFetch trigger uses it directly. -->
+        <!-- Already transitive via Sdk.MeshAdapter (SftpUploadNode) — explicit pin because this
+             adapter uses it directly: SshNetSftpFileSystem backs the remote delete that
+             DilosFileGate@1 and DilosFileConfirm@1 perform. -->
         <PackageReference Include="SSH.NET" Version="2026.0.0" />
     </ItemGroup>
 

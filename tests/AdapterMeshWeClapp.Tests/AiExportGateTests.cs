@@ -10,10 +10,8 @@ using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration.DependencyInjection;
-using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration.Serializer;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Control;
-using Meshmakers.Octo.Sdk.Common.Services;
 using Microsoft.Extensions.DependencyInjection;
 using static Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Tests.PipelineYamlWalk;
 
@@ -68,12 +66,12 @@ public class AiExportGateTests
 
         var gateConfiguration = GateConfiguration(new List<NodeConfiguration>
         {
-            new AiGateProbeNodeConfiguration { TargetPath = "$.probe" },
+            new GateProbeNodeConfiguration { TargetPath = "$.probe" },
         });
 
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddDataPipeline().RegisterNode<AiGateProbeNode>();
+        services.AddDataPipeline().RegisterNode<GateProbeNode>();
         var rootContext = NodeContext.CreateRootNodeContext(services.BuildServiceProvider(),
             A.Fake<IPipelineLogger>(), dataContext);
         var nodeContext = rootContext.RegisterChildNode("If", 0, gateConfiguration, dataContext);
@@ -97,23 +95,10 @@ public class AiExportGateTests
     [Fact]
     public async Task OrdersToAiYaml_GatesDeliveryOnNewOrder_AndPersistsOnlyAfterUpload()
     {
-        var services = new ServiceCollection();
-        services.AddLogging();
-        services.AddDataPipeline()
-            .AddMeshDataPipelineNodes()          // GetOrCreate/CreateUpdateInfo/ApplyChanges/…
-            .RegisterNodeConfiguration<IfNodeConfiguration>()
-            .RegisterNodeConfiguration<WeClappFetchTriggerNodeConfiguration>()
-            .RegisterNodeConfiguration<WeClappToCkNodeConfiguration>()
-            .RegisterNodeConfiguration<DilosRenderNodeConfiguration>()
-            .RegisterNodeConfiguration<WeClappFetchStepNodeConfiguration>();
-        var lookup = services.BuildServiceProvider().GetRequiredService<INodeQualifiedNameLookupService>();
-
-        NodeDefinitionRoot root;
-        await using (var stream = File.OpenRead(FindRepoFile(Path.Combine("pipelines", "weclapp-orders-to-ai.yaml"))))
-        {
-            root = await new YamlPipelineConfigurationSerializer(lookup).DeserializeAsync(stream)
-                   ?? throw new InvalidOperationException("pipeline yaml deserialized to null");
-        }
+        // The shared deserializer, registering every node configuration the adapter declares: a
+        // local, narrower list reds this suite alone the day the ai pipeline gains an adapter node
+        // outside it, while the suites on the shared helper stay green on the same yaml.
+        var root = await PipelineDefinitions.DeserializeAsync("weclapp-orders-to-ai.yaml");
 
         var top = root.Transformations?.ToList() ?? new List<NodeConfiguration>();
 
@@ -185,35 +170,4 @@ public class AiExportGateTests
             or CreateUpdateInfoNodeConfiguration
             or CreateAssociationUpdateNodeConfiguration;
 
-    private static string FindRepoFile(string relativePath)
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir != null)
-        {
-            var candidate = Path.Combine(dir.FullName, relativePath);
-            if (File.Exists(candidate))
-            {
-                return candidate;
-            }
-
-            dir = dir.Parent;
-        }
-
-        throw new FileNotFoundException($"'{relativePath}' not found above {AppContext.BaseDirectory}");
-    }
-}
-
-// Minimal probe node so the gate tests can observe whether the If children actually ran.
-[NodeName("AiGateProbe", 1)]
-internal record AiGateProbeNodeConfiguration : TargetPathNodeConfiguration;
-
-[NodeConfiguration(typeof(AiGateProbeNodeConfiguration))]
-internal class AiGateProbeNode(NodeDelegate next) : IPipelineNode
-{
-    public async Task ProcessObjectAsync(IDataContext dataContext, INodeContext nodeContext)
-    {
-        var c = nodeContext.GetNodeConfiguration<AiGateProbeNodeConfiguration>();
-        dataContext.Set(c.TargetPath, 1, c.DocumentMode, c.TargetValueKind, c.TargetValueWriteMode);
-        await next(dataContext, nodeContext);
-    }
 }

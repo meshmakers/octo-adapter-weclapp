@@ -35,30 +35,6 @@ public class DilosRenderNodeTests
     }
 
     [Fact]
-    public async Task ProcessObjectAsync_AsMode_RendersArticleLinesLfTerminated()
-    {
-        var config = Configure("AS");
-        var articles = new List<WeClappArticle?>
-        {
-            new() { Id = "43222003744925", Name = "Ersatzglas VOLT", ArticleNumber = "VOLT-EG", UnitName = "pc." },
-            new() { Id = "43222003744999", Name = "Brille NOVA", ArticleNumber = "NOVA-01", UnitName = "pc." },
-        };
-        A.CallTo(() => _dataContext.GetArray<WeClappArticle>("$.items")).Returns(articles);
-
-        await _sut.ProcessObjectAsync(_dataContext, _nodeContext);
-
-        // The node orchestrates; line content is the writer's contract (already golden-tested).
-        // Line ending = LF: all real Billbee-produced AS/AI files are pure LF (CR count 0) —
-        // the DILOS-import-proven format; CRLF only exists in files DILOS itself produces.
-        var expected =
-            DilosArticleWriter.RenderLine(articles[0]!, DilosArticleContext.Default) + "\n" +
-            DilosArticleWriter.RenderLine(articles[1]!, DilosArticleContext.Default) + "\n";
-        A.CallTo(() => _dataContext.Set(config.TargetPath, expected, config.DocumentMode,
-            config.TargetValueKind, config.TargetValueWriteMode)).MustHaveHappenedOnceExactly();
-        A.CallTo(() => _next(_dataContext, _nodeContext)).MustHaveHappenedOnceExactly();
-    }
-
-    [Fact]
     public async Task ProcessObjectAsync_AiMode_RendersHeaderAndPositionsPerOrder()
     {
         var config = Configure("AI", submandant: "51696697501");
@@ -123,28 +99,33 @@ public class DilosRenderNodeTests
             config.TargetValueKind, config.TargetValueWriteMode)).MustHaveHappenedOnceExactly();
     }
 
-    // Defensive twin of the only-system-articles case below: the Batch trigger never emits
-    // an empty poll, but if an empty array ever reaches the render, emitting an empty AS
-    // file would be a false snapshot — and nothing downstream would stop it, the delivery
-    // node uploads empty content as a 0-byte file — so the render ends the pipeline.
+    // An AI execution always renders at least its K* header, so no content means an upstream
+    // defect. It must never continue: SftpUpload@1 would put an empty string on the LKV server
+    // as a 0-byte file and the export marker behind it would then record a delivery that never
+    // happened. (The AS side reaches the same end through the yaml's empty gate instead.)
     [Fact]
-    public async Task ProcessObjectAsync_EmptyArray_EndsPipelineWithoutOutput()
+    public async Task ProcessObjectAsync_EmptyArray_ThrowsAndDoesNotContinue()
     {
-        Configure("AS");
-        A.CallTo(() => _dataContext.GetArray<WeClappArticle>("$.items"))
-            .Returns(new List<WeClappArticle?>());
+        Configure("AI", submandant: "51696697501");
+        A.CallTo(() => _dataContext.GetArray<WeClappSalesOrder>("$.items"))
+            .Returns(new List<WeClappSalesOrder?>());
 
-        await _sut.ProcessObjectAsync(_dataContext, _nodeContext);
+        await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
+            () => _sut.ProcessObjectAsync(_dataContext, _nodeContext));
 
         A.CallTo(() => _dataContext.Set(A<string>._, A<string>._, A<DocumentModes>._,
             A<ValueKinds>._, A<TargetValueWriteModes>._)).MustNotHaveHappened();
         A.CallTo(() => _next(_dataContext, _nodeContext)).MustNotHaveHappened();
     }
 
-    [Fact]
-    public async Task ProcessObjectAsync_UnknownMode_ThrowsAndDoesNotContinue()
+    // "AS" is now an unknown mode too: the article master renders through the product node, and
+    // a yaml still asking this one for it must fail rather than deliver something else.
+    [Theory]
+    [InlineData("XX")]
+    [InlineData("AS")]
+    public async Task ProcessObjectAsync_UnknownMode_ThrowsAndDoesNotContinue(string mode)
     {
-        Configure("XX");
+        Configure(mode);
 
         await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
             () => _sut.ProcessObjectAsync(_dataContext, _nodeContext));
@@ -163,11 +144,99 @@ public class DilosRenderNodeTests
             () => _sut.ProcessObjectAsync(_dataContext, _nodeContext));
     }
 
+    // The properties are non-nullable, but a yaml carrying an explicit null ("submandant:" with no
+    // value) assigns null OVER the initializer, so null is a real state a definition produces. Both
+    // guards used to dereference it: measured as a bare NullReferenceException, raised INSIDE the
+    // per-order ForEach@1 - which continueOnError then swallows as one failed order rather than
+    // the configuration defect it is. Null now means what the empty string means at both sites.
+    [Fact]
+    public async Task ProcessObjectAsync_NullSubmandant_FailsAsAConfigurationError()
+    {
+        Configure("AI", submandant: null!);
+        A.CallTo(() => _dataContext.GetArray<WeClappSalesOrder>("$.items"))
+            .Returns(new List<WeClappSalesOrder?> { MinimalOrder() });
+
+        var ex = await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
+            () => _sut.ProcessObjectAsync(_dataContext, _nodeContext));
+
+        Assert.Contains("Submandant", ex.Message);
+    }
+
+    // The same class of defect as the null Submandant above, on the two paths this node reads and
+    // writes. A null Path reached CanonicalPath as a raw NullReferenceException, raised inside the
+    // per-order ForEach@1 - which continueOnError then books as one failed order instead of the
+    // configuration defect it is, so the AI delivery stops with nothing pointing at the yaml.
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task ProcessObjectAsync_BlankPath_FailsAsAConfigurationError(string? path)
+    {
+        Configure("AI", submandant: "51696697501", path: path!);
+
+        var ex = await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
+            () => _sut.ProcessObjectAsync(_dataContext, _nodeContext));
+
+        Assert.Contains("'Path'", ex.Message);
+        A.CallTo(() => _next(_dataContext, _nodeContext)).MustNotHaveHappened();
+    }
+
+    // A blank TargetPath is the quieter half: the data context treats null and empty alike as "$",
+    // so the rendered content REPLACES the loop document root instead of landing beside it. Nothing
+    // fails - the delivery behind it simply finds nothing at the paths it reads.
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task ProcessObjectAsync_BlankTargetPath_FailsAsAConfigurationError(string? targetPath)
+    {
+        Configure("AI", submandant: "51696697501", targetPath: targetPath!);
+        A.CallTo(() => _dataContext.GetArray<WeClappSalesOrder>("$.items"))
+            .Returns(new List<WeClappSalesOrder?> { MinimalOrder() });
+
+        var ex = await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
+            () => _sut.ProcessObjectAsync(_dataContext, _nodeContext));
+
+        Assert.Contains("'TargetPath'", ex.Message);
+        A.CallTo(() => _dataContext.Set(A<string>._, A<string>._, A<DocumentModes>._,
+            A<ValueKinds>._, A<TargetValueWriteModes>._)).MustNotHaveHappened();
+        A.CallTo(() => _next(_dataContext, _nodeContext)).MustNotHaveHappened();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_NullFileNameTargetPath_RendersWithoutWritingAName()
+    {
+        Configure("AI", submandant: "51696697501", fileNameTargetPath: null!);
+        A.CallTo(() => _dataContext.GetArray<WeClappSalesOrder>("$.items"))
+            .Returns(new List<WeClappSalesOrder?> { MinimalOrder() });
+
+        await _sut.ProcessObjectAsync(_dataContext, _nodeContext);
+
+        // Exactly one string write - the content. No name is written, and above all nothing is
+        // written to a null path.
+        A.CallTo(() => _dataContext.Set(A<string>._, A<string>._, A<DocumentModes>._,
+            A<ValueKinds>._, A<TargetValueWriteModes>._)).MustHaveHappenedOnceExactly();
+        A.CallTo(() => _next(_dataContext, _nodeContext)).MustHaveHappenedOnceExactly();
+    }
+
+    private static WeClappSalesOrder MinimalOrder() => new()
+    {
+        Id = "5910986621265",
+        CustomerNumber = "7067387625809",
+        OrderItems =
+        {
+            new WeClappOrderItem
+            {
+                PositionNumber = 1, ArticleId = "43222003744925", Quantity = "1", NetAmount = "29.99",
+            },
+        },
+    };
+
     [Fact]
     public async Task ProcessObjectAsync_MissingPath_Throws()
     {
-        Configure("AS");
-        A.CallTo(() => _dataContext.GetArray<WeClappArticle>("$.items"))
+        Configure("AI", submandant: "51696697501");
+        A.CallTo(() => _dataContext.GetArray<WeClappSalesOrder>("$.items"))
             .Returns(null);
 
         await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
@@ -239,92 +308,26 @@ public class DilosRenderNodeTests
             () => _sut.ProcessObjectAsync(_dataContext, _nodeContext));
     }
 
-    [Fact]
-    public async Task ProcessObjectAsync_AsModeWithFileNameTargetPath_WritesViennaTimestampName()
-    {
-        // 2026-02-05 13:31:34 UTC = 14:31:34 Vienna (CET, UTC+1).
-        var sut = new DilosRenderNode(_next, new FixedTimeProvider(
-            new DateTimeOffset(2026, 2, 5, 13, 31, 34, TimeSpan.Zero)));
-        var config = Configure("AS", fileNameTargetPath: "$.dilosAsFileName");
-        A.CallTo(() => _dataContext.GetArray<WeClappArticle>("$.items"))
-            .Returns(new List<WeClappArticle?> { new() { Id = "1", Name = "A", ArticleNumber = "A-1" } });
-
-        await sut.ProcessObjectAsync(_dataContext, _nodeContext);
-
-        A.CallTo(() => _dataContext.Set("$.dilosAsFileName", "AS20260205143134.txt", config.DocumentMode,
-            ValueKinds.Simple, TargetValueWriteModes.Overwrite)).MustHaveHappenedOnceExactly();
-    }
-
-    [Fact]
-    public async Task ProcessObjectAsync_AsModeFileName_LateEveningUtcRollsToNextViennaDay()
-    {
-        // 2026-07-11 22:30:00 UTC = 2026-07-12 00:30:00 Vienna (CEST, UTC+2) — the name
-        // must carry the NEXT Vienna calendar day, not the UTC day.
-        var sut = new DilosRenderNode(_next, new FixedTimeProvider(
-            new DateTimeOffset(2026, 7, 11, 22, 30, 0, TimeSpan.Zero)));
-        Configure("AS", fileNameTargetPath: "$.dilosAsFileName");
-        A.CallTo(() => _dataContext.GetArray<WeClappArticle>("$.items"))
-            .Returns(new List<WeClappArticle?> { new() { Id = "1", Name = "A", ArticleNumber = "A-1" } });
-
-        await sut.ProcessObjectAsync(_dataContext, _nodeContext);
-
-        A.CallTo(() => _dataContext.Set("$.dilosAsFileName", "AS20260712003000.txt", A<DocumentModes>._,
-            A<ValueKinds>._, A<TargetValueWriteModes>._)).MustHaveHappenedOnceExactly();
-    }
-
+    // fileNameTargetPath is optional: with it unset the node writes the content and nothing
+    // else, rather than writing a name to some default path the yaml never mentions.
     [Fact]
     public async Task ProcessObjectAsync_WithoutFileNameTargetPath_WritesOnlyContent()
     {
-        Configure("AS");
-        A.CallTo(() => _dataContext.GetArray<WeClappArticle>("$.items"))
-            .Returns(new List<WeClappArticle?> { new() { Id = "1", Name = "A", ArticleNumber = "A-1" } });
+        Configure("AI", submandant: "51696697501");
+        A.CallTo(() => _dataContext.GetArray<WeClappSalesOrder>("$.items"))
+            .Returns(new List<WeClappSalesOrder?>
+            {
+                new()
+                {
+                    Id = "5910986621265", CustomerNumber = "7067387625809",
+                    OrderItems = { new WeClappOrderItem { PositionNumber = 1, ArticleId = "1", Quantity = "1" } },
+                },
+            });
 
         await _sut.ProcessObjectAsync(_dataContext, _nodeContext);
 
         A.CallTo(() => _dataContext.Set(A<string>._, A<string>._, A<DocumentModes>._,
             A<ValueKinds>._, A<TargetValueWriteModes>._)).MustHaveHappenedOnceExactly();
-    }
-
-    // The dedicated AS delivery pipeline has no WeClappToCk stage (which used to end the
-    // pipeline for system articles) — the AS render must exclude them itself, or loading
-    // equipment (pallets) leaks into the DILOS article master file.
-    [Fact]
-    public async Task ProcessObjectAsync_AsMode_ExcludesSystemArticles()
-    {
-        var config = Configure("AS");
-        var articles = new List<WeClappArticle?>
-        {
-            new() { Id = "1", Name = "Ersatzglas VOLT", ArticleNumber = "VOLT-EG" },
-            new() { Id = "2", Name = "Europalette", ArticleNumber = "PAL-1", ArticleType = "LOADING_EQUIPMENT" },
-        };
-        A.CallTo(() => _dataContext.GetArray<WeClappArticle>("$.items")).Returns(articles);
-
-        await _sut.ProcessObjectAsync(_dataContext, _nodeContext);
-
-        var expected = DilosArticleWriter.RenderLine(articles[0]!, DilosArticleContext.Default) + "\n";
-        A.CallTo(() => _dataContext.Set(config.TargetPath, expected, config.DocumentMode,
-            config.TargetValueKind, config.TargetValueWriteMode)).MustHaveHappenedOnceExactly();
-    }
-
-    // A batch can consist entirely of loading equipment (e.g. tenant bootstrap before
-    // regular articles exist). Emitting empty content would deliver a 0-byte AS file to LKV
-    // as a false snapshot — the render must end the pipeline instead.
-    [Fact]
-    public async Task ProcessObjectAsync_AsMode_BatchWithOnlySystemArticles_EndsPipelineWithoutOutput()
-    {
-        Configure("AS", fileNameTargetPath: "$.dilosAsFileName");
-        var articles = new List<WeClappArticle?>
-        {
-            new() { Id = "1", Name = "Europalette", ArticleNumber = "PAL-1", ArticleType = "LOADING_EQUIPMENT" },
-            new() { Id = "2", Name = "Gitterbox", ArticleNumber = "GIT-1", ArticleType = "LOADING_EQUIPMENT" },
-        };
-        A.CallTo(() => _dataContext.GetArray<WeClappArticle>("$.items")).Returns(articles);
-
-        await _sut.ProcessObjectAsync(_dataContext, _nodeContext);
-
-        A.CallTo(() => _dataContext.Set(A<string>._, A<string>._, A<DocumentModes>._,
-            A<ValueKinds>._, A<TargetValueWriteModes>._)).MustNotHaveHappened();
-        A.CallTo(() => _next(_dataContext, _nodeContext)).MustNotHaveHappened();
     }
 
     [Fact]

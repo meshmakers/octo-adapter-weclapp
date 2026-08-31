@@ -20,7 +20,7 @@ public class DocumentationContractTests
     [Fact]
     public void ClaudeMd_NamesEveryPipelineContractTest()
     {
-        var claudeMd = File.ReadAllText(FindRepoFile("CLAUDE.md"));
+        var claudeMd = File.ReadAllText(RepoFiles.Find("CLAUDE.md"));
 
         var missing = ContractTestNames()
             .Where(name => !UndocumentedByDesign.Contains(name, StringComparer.Ordinal))
@@ -55,22 +55,5 @@ public class DocumentationContractTests
             .Where(m => m.GetCustomAttributes()
                 .Any(a => a.GetType().Name is "FactAttribute" or "TheoryAttribute"))
             .Select(m => m.Name);
-    }
-
-    private static string FindRepoFile(string relativePath)
-    {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir != null)
-        {
-            var candidate = Path.Combine(dir.FullName, relativePath);
-            if (File.Exists(candidate))
-            {
-                return candidate;
-            }
-
-            dir = dir.Parent;
-        }
-
-        throw new FileNotFoundException($"'{relativePath}' not found above {AppContext.BaseDirectory}");
     }
 }

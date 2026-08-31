@@ -1,5 +1,5 @@
 # Pipeline: WeClapp articles → ONE DILOS AS file per Vienna calendar day (article master
-# delivery). DilosExportRunKey@1 writes today's key { exportKind, exportDay } and the
+# delivery). DilosExportRunKey@1 writes today's key { exportKind, exportDay, fileName } and the
 # fetch, enrichment, render and delivery all run inside the dedup gate; CK persistence of
 # articles lives in weclapp-articles-to-ck.yaml. WeClapp access comes from the tenant
 # GlobalConfiguration entry "WeClappApi" (apiConfiguration below), SFTP from "LkvSftp".
@@ -13,13 +13,10 @@
 # Timing: with hourly cron ticks the delivery settles on the first tick after Vienna
 # midnight; across the day boundary two deliveries in short succession are possible
 # (yesterday's late run + today's early one) — deliberately accepted.
-# Same trade one clock tick further: the marker day is stamped here, BEFORE the two fetches
-# (the gate needs it, and the fetches deliberately sit inside the gate), while the file name is
-# built from a fresh clock at render time. A run that crosses Vienna midnight can therefore pair
-# a next-day file name with the previous day's marker, and the next tick delivers that day once
-# more - the same full-delivery-no-data-loss trade as above, and in practice only reachable by a
-# misfire catch-up run started just before midnight.
-# System articles (LOADING_EQUIPMENT) are excluded by the AS render itself.
+# The marker day AND the delivery file name are stamped together at DilosExportRunKey@1, from a
+# single clock read, so they cannot name different days even when a run crosses Vienna midnight.
+# System articles (LOADING_EQUIPMENT) are dropped by WeClappResolveSupplySources@1, which also
+# projects the EK-Preis as a finished scalar - both are WeClapp rules a column model cannot express.
 # Encoding: delivered as ISO-8859-1 (DILOS file format) — SftpUpload@1 defaults to UTF-8,
 # so the encoding property on the delivery node is what keeps umlauts single-byte.
 
@@ -31,7 +28,7 @@ transformations:
   - type: DilosExportRunKey@1
     description: Today's export-run key (Vienna calendar day)
     exportKind: AS                  # keys the per-day delivery marker (Industry.Logistics/ExportRun)
-    targetPath: $.meta              # { exportKind, exportDay }
+    targetPath: $.meta              # { exportKind, exportDay, fileName }
 
   # --- K1 delivery-dedup gate: at most ONE AS delivery per Vienna calendar day.
   # GetOrCreate only queries (fresh id + ModOperation=Insert on miss); multiple
@@ -101,42 +98,104 @@ transformations:
         supplySourcesPath: $.supplySources
         targetPath: $.items
 
-      - type: DilosRender@1
-        description: Render ALL article lines into one AS file per run
-        mode: AS
+      - type: RenderDelimitedText@1
+        description: Render the article master lines (DILOS AS layout, one column per field)
         path: $.items
         targetPath: $.dilosAs
-        fileNameTargetPath: $.dilosAsFileName   # AS<yyyyMMddHHmmss>.txt, Vienna local time
+        delimiter: "|"
+        # All three written out even though they match the node defaults: they ARE the delivered
+        # bytes. lineEnding is deliberately Lf - _specs/AS.md asks for CR+LF, but every AS file we
+        # have delivered and every LKV file we import is pure LF, and the byte comparison against
+        # the last delivery is what the change is measured on. Whether LKV wants CRLF is an open
+        # question with the partner. Changing this line is NOT the whole change: LF is pinned in
+        # three more places, and all four move together or the suite reds - the layout guard
+        # (AsYaml_RenderDelimitedText_SpellsOutTheThirtyFourColumnDilosLayout, effective Lf), the
+        # byte anchor (AsDeliveryParityTests, zero CR bytes) and the frozen fixture it compares
+        # against (Fixtures/as-parity-expected.txt, which then has to be re-frozen deliberately).
+        lineEnding: Lf
+        trailingNewLine: true               # the delivered file ends on 0x0A
+        onDelimiterInValue: Fail            # DILOS has no escaping - a '|' inside an article name
+                                            # would shift every following column and the LKV import
+                                            # would read the file without noticing
+        columns:
+          - value: "A*"                 #  1 Satzart
+          - {}                          #  2 Kennzeichen
+          - valuePath: $.id             #  3 Artikelnummer
+            required: true              #    the ONE mandatory field per _specs/AS.md; an
+                                        #    empty id would ship an unusable record
+          - valuePath: $.name           #  4 Bezeichnung1
+          - valuePath: $.articleNumber  #  5 Bezeichnung2
+          - {}                          #  6 Artikelgruppe1
+          - {}                          #  7 Artikelgruppe2
+          - {}                          #  8 ABC
+          - {}                          #  9 Merkmal1
+          - {}                          # 10 Merkmal2
+          - valuePath: $.ean            # 11 EAN
+          - valuePath: $.unitName       # 12 Lagereinheit
+          - {}                          # 13 Verpackungseinheit
+          - {}                          # 14 Kartonmenge
+          - {}                          # 15 Volumen
+          - {}                          # 16 Gewicht
+          - {}                          # 17 Laenge
+          - {}                          # 18 Breite
+          - {}                          # 19 Hoehe
+          - valuePath: $.ekPreis        # 20 EK-Preis
+          - {}                          # 21 Ursprungsland
+          - {}                          # 22 Zolltarifnummer
+          - value: "1"                  # 23 Artikelart
+          - {}                          # 24 MwSt
+          - {}                          # 25 Waehrung
+          - {}                          # 26 Auswert1
+          - {}                          # 27 Auswert2
+          - {}                          # 28 Auswert3
+          - {}                          # 29 Auswert4
+          - {}                          # 30 Auswert5
+          - {}                          # 31 Text1
+          - {}                          # 32 Text2
+          - {}                          # 33 Text3
+          - {}                          # 34 Text4
 
-      - type: SftpUpload@1
-        description: Deliver the AS file to the LKV SFTP root as ISO-8859-1
-        serverConfiguration: LkvSftp        # SAME tenant GlobalConfiguration as the return path
-        remoteDirectory: /
-        fileNamePath: $.dilosAsFileName
+      # The empty-batch brake. It has to live here rather than in the render: SftpUpload@1 uploads
+      # an empty string as a 0-byte file, and the marker below is written after the upload, so an
+      # empty delivery would burn the Vienna day. The comparison value is the empty STRING, and
+      # path must be exactly the render's targetPath - If@1 reads a missing path as null, and
+      # null != "" is TRUE, so a mistyped path here opens the gate instead of closing it.
+      - type: If@1
+        description: Deliver only when the render produced content (an empty batch must not burn the day)
         path: $.dilosAs
-        encoding: iso-8859-1                # NEVER omit: the default utf-8 corrupts umlauts
-        onEncodingError: Replace            # one '?' per unrepresentable scalar, logged with its code point
+        operator: NotEqual
+        value: ""
+        valueType: String
+        transformations:
+          - type: SftpUpload@1
+            description: Deliver the AS file to the LKV SFTP root as ISO-8859-1
+            serverConfiguration: LkvSftp        # SAME tenant GlobalConfiguration as the return path
+            remoteDirectory: /
+            fileNamePath: $.meta.fileName       # AS<yyyyMMddHHmmss>.txt, Vienna local time
+            path: $.dilosAs
+            encoding: iso-8859-1                # NEVER omit: the default utf-8 corrupts umlauts
+            onEncodingError: Replace            # one '?' per unrepresentable scalar, logged with its code point
 
-      # attributeValueType is REQUIRED per update - without it the update is silently
-      # dropped and the marker never persists.
-      - type: CreateUpdateInfo@1
-        description: Today's export marker - written ONLY after a successful upload
-        path: $.meta
-        rtIdPath: $.rt.asExportRunRtId
-        ckTypeId: Industry.Logistics/ExportRun
-        updateKindPath: $.rt.asExportRunModOperation
-        attributeUpdates:
-          - attributeName: ExportKind
-            attributeValueType: String
-            valuePath: $.meta.exportKind
-          - attributeName: ExportDay
-            attributeValueType: String
-            valuePath: $.meta.exportDay
-        targetPath: $.updates
-        targetValueWriteMode: Append
+          # attributeValueType is REQUIRED per update - without it the update is silently
+          # dropped and the marker never persists.
+          - type: CreateUpdateInfo@1
+            description: Today's export marker - written ONLY after a successful upload
+            path: $.meta
+            rtIdPath: $.rt.asExportRunRtId
+            ckTypeId: Industry.Logistics/ExportRun
+            updateKindPath: $.rt.asExportRunModOperation
+            attributeUpdates:
+              - attributeName: ExportKind
+                attributeValueType: String
+                valuePath: $.meta.exportKind
+              - attributeName: ExportDay
+                attributeValueType: String
+                valuePath: $.meta.exportDay
+            targetPath: $.updates
+            targetValueWriteMode: Append
 
-      # ApplyChanges@1 is deprecated - @2 is the current node; associationUpdatesPath
-      # is optional, this gate has no associations.
-      - type: ApplyChanges@2
-        description: Persist the marker (export dedup) - LAST step by contract
-        entityUpdatesPath: $.updates
+          # ApplyChanges@1 is deprecated - @2 is the current node; associationUpdatesPath
+          # is optional, this gate has no associations.
+          - type: ApplyChanges@2
+            description: Persist the marker (export dedup) - LAST step by contract
+            entityUpdatesPath: $.updates

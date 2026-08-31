@@ -7,3 +7,10 @@
 # fixtures are stored with LF and checked out with CRLF, so exempting them from normalisation would
 # make the next "git add" of one of them rewrite the stored blob.
 tests/Lkv.WeClapp.Core.Tests/Fixtures/BE_20260828071116067.txt -text
+
+# The frozen byte anchor of the AS delivery: what the renderer produced for the parity batch
+# before the delivery moved onto the product's column renderer. Its assertions are about BYTES -
+# 34 pipe fields per line, zero carriage returns, a final 0x0A - so line-ending normalisation
+# would hand a fresh clone a file with a CR on every line and turn the anchor into a test that
+# fails for a reason unrelated to any delivery, or worse, into one nobody trusts any more.
+tests/AdapterMeshWeClapp.Tests/Fixtures/as-parity-expected.txt -text

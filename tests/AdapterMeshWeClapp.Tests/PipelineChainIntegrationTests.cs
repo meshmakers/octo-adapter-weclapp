@@ -1,7 +1,6 @@
 using System.Reflection;
 using System.Text;
 using System.Text.Json;
-using System.Text.Json.Nodes;
 using FakeItEasy;
 using Lkv.WeClapp.Core.Model;
 using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Nodes;
@@ -9,78 +8,66 @@ using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Tests.Nodes;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
-using Meshmakers.Octo.Sdk.Common.Services;
 using Meshmakers.Octo.Sdk.MeshAdapter;
+using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Load;
-using Microsoft.Extensions.Logging;
+using Meshmakers.Octo.Sdk.MeshAdapter.Nodes.Transform;
+using Microsoft.Extensions.DependencyInjection;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration.DependencyInjection;
+using static Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Tests.PipelineYamlWalk;
 
 namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Tests;
 
 /// <summary>
-/// End-to-end chain over the three custom nodes with a REAL pipeline data context
-/// (DataContextImpl, as the platform's own full-chain tests use): WeClapp JSON →
-/// WeClappFetch (fake HTTP) → per-order document → WeClappToCk → DilosRender → AI lines.
-/// The platform built-ins (GetOrCreate/ApplyChanges) need a repository and are exercised
-/// in the tenant spike instead.
+/// End-to-end chain over the custom nodes with a REAL pipeline data context (DataContextImpl, as
+/// the platform's own full-chain tests use): the document the shipped pipelines seed →
+/// WeClappToCk → DilosRender → AI lines, and the article batch → DilosExportRunKey →
+/// WeClappResolveSupplySources → RenderDelimitedText → AS content → SftpUpload@1 bytes. The
+/// seeding itself is the product's MakeHttpRequest@1 and is not re-tested here; what the chain
+/// must agree on is the document SHAPE, so the fixtures below carry exactly the paths the yamls
+/// configure ($.current and $.customerResponse.result[0] for the order chain, $.rawArticles +
+/// $.supplySources for the article batch - $.items is the preparation step's OUTPUT, not a seeded
+/// path). The platform built-ins (GetOrCreate/ApplyChanges) need a repository and are exercised in
+/// the tenant spike instead.
 /// </summary>
 public class PipelineChainIntegrationTests
 {
     [Fact]
-    public async Task WeClappOrder_FlowsThroughFetchToCkAndDilosRenderToAiLines()
+    public async Task WeClappOrder_FlowsThroughCkAndDilosRenderToAiLines()
     {
-        // --- Phase 1: real fetch node against scripted HTTP ---
-        var triggerContext = A.Fake<ITriggerContext>();
-        var nodeContext = A.Fake<INodeContext>();
-        A.CallTo(() => triggerContext.NodeContext).Returns(nodeContext);
-        var fetchConfig = new WeClappFetchTriggerNodeConfiguration
-        {
-            BaseUrl = "https://demo.weclapp.com/webapp/api/v1",
-            ApiKey = "test-key",
-            Entity = "salesOrder",
-            RetryBackoffBaseSeconds = 0,
-        };
-        A.CallTo(() => nodeContext.GetNodeConfiguration<WeClappFetchTriggerNodeConfiguration>())
-            .Returns(fetchConfig);
-
-        var handler = new FakeHttpMessageHandler((req, _) =>
-            req.RequestUri!.ToString().Contains("salesOrder")
-                ? FakeHttpMessageHandler.Json("""
-                    {"result":[{
-                      "id":"5910986621265","orderNumber":"74299","customerNumber":"7067387625809",
-                      "customerId":"7","orderDate":1707177600000,
-                      "deliveryAddress":{"company":"TJ Lucas","countryCode":"DE","zipcode":"51503",
-                                         "street1":"Im Wielputzfeld 15a","city":"Rösrath"},
-                      "orderItems":[{"positionNumber":1,"articleId":"43222003744925",
-                                     "quantity":"1","netAmount":"29.99","title":"Ersatzglas VOLT"}],
-                      "shippingCostItems":[{"netAmount":"4.50","title":"DHL Standard (DE)"}]
-                    }]}
-                    """)
-                : FakeHttpMessageHandler.Json("""
-                    {"result":[{"id":"7","customerNumber":"7067387625809","company":"TJ Lucas GmbH",
-                                "email":"tj@example.com",
-                                "addresses":[{"street1":"Im Wielputzfeld 15a","zipcode":"51503",
-                                              "city":"Rösrath","countryCode":"DE"}]}]}
-                    """));
-        var httpClientFactory = A.Fake<IHttpClientFactory>();
-        A.CallTo(() => httpClientFactory.CreateClient(A<string>._)).Returns(new HttpClient(handler));
-
-        JsonNode? document = null;
-        A.CallTo(() => triggerContext.ExecuteAsync(A<ExecutePipelineOptions>._, A<object?>._))
-            .Invokes(call => document = (JsonNode?)call.Arguments[1])
-            .Returns(Task.FromResult<object?>(null));
-
-        var fetch = new WeClappFetchTriggerNode(A.Fake<ILogger<WeClappFetchTriggerNode>>(), httpClientFactory);
-        await fetch.FetchOnceAsync(triggerContext);
-        Assert.NotNull(document);
+        // --- Phase 1: the per-order document weclapp-orders-to-ai.yaml builds. The order is one
+        //     flat element of the fetched array (ForEach@1 keyPath $.current), the customer the
+        //     single match of the id-eq lookup, which lands as the raw response body. ---
+        const string document = """
+            {
+              "current":{
+                "id":"5910986621265","orderNumber":"74299","customerNumber":"7067387625809",
+                "customerId":"7","orderDate":1707177600000,
+                "deliveryAddress":{"company":"TJ Lucas","countryCode":"DE","zipcode":"51503",
+                                   "street1":"Im Wielputzfeld 15a","city":"Rösrath"},
+                "orderItems":[{"positionNumber":1,"articleId":"43222003744925",
+                               "quantity":"1","netAmount":"29.99","title":"Ersatzglas VOLT"}],
+                "shippingCostItems":[{"netAmount":"4.50","title":"DHL Standard (DE)"}]
+              },
+              "customerResponse":{"result":[
+                {"id":"7","customerNumber":"7067387625809","company":"TJ Lucas GmbH",
+                 "email":"tj@example.com",
+                 "addresses":[{"street1":"Im Wielputzfeld 15a","zipcode":"51503",
+                               "city":"Rösrath","countryCode":"DE"}]}
+              ]}
+            }
+            """;
 
         // --- Phase 2: real data context + real transform/render chain ---
-        using var dataContext = new DataContextImpl(JsonDocument.Parse(document.ToJsonString()));
+        var nodeContext = A.Fake<INodeContext>();
+        using var dataContext = new DataContextImpl(JsonDocument.Parse(document));
         A.CallTo(() => nodeContext.GetNodeConfiguration<WeClappToCkNodeConfiguration>())
             .Returns(new WeClappToCkNodeConfiguration
             {
                 Mode = "Order",
-                Path = "$.item",
-                CustomerPath = "$.customer",
+                Path = "$.current",
+                CustomerPath = "$.customerResponse.result[0]",
                 TargetPath = "$.ck",
             });
         A.CallTo(() => nodeContext.GetNodeConfiguration<DilosRenderNodeConfiguration>())
@@ -88,7 +75,7 @@ public class PipelineChainIntegrationTests
             {
                 Mode = "AI",
                 Submandant = "51696697501",
-                Path = "$.item",
+                Path = "$.current",
                 TargetPath = "$.dilos",
                 FileNameTargetPath = "$.dilosFileName",
             });
@@ -134,103 +121,90 @@ public class PipelineChainIntegrationTests
     }
 
     /// <summary>
-    /// AS collector chain: WeClappFetch in Batch mode emits ONE execution with ALL
-    /// articles; DilosRender renders them into ONE AS content and stamps the golden
-    /// Vienna-local file name (golden precedent: one AS file per run, AS20240206020204.txt).
+    /// AS delivery chain, driven by the SHIPPED yaml's own node configurations: the export-run key
+    /// stamps the day and the file name from one Vienna clock read, the preparation step drops the
+    /// system article and projects the EK-Preis, the product's column node renders the 34-column
+    /// document, and SftpUpload@1 encodes it. What this adds over the byte anchor in
+    /// AsDeliveryParityTests is the two ends the anchor does not reach: the NAME the delivery is
+    /// given, and the BYTES that leave the process.
     /// </summary>
     [Fact]
-    public async Task WeClappArticles_BatchFlowRendersOneAsFileWithViennaName()
+    public async Task WeClappArticles_BatchRendersOneAsFileWithViennaName()
     {
-        // --- Phase 1: real fetch node in Batch mode against scripted HTTP ---
-        var triggerContext = A.Fake<ITriggerContext>();
-        var nodeContext = A.Fake<INodeContext>();
-        A.CallTo(() => triggerContext.NodeContext).Returns(nodeContext);
-        A.CallTo(() => nodeContext.GetNodeConfiguration<WeClappFetchTriggerNodeConfiguration>())
-            .Returns(new WeClappFetchTriggerNodeConfiguration
+        // The shape the as pipeline holds after its two paged fetches. The loading equipment is
+        // part of it on purpose: the delivery must drop system articles.
+        const string document = """
             {
-                BaseUrl = "https://demo.weclapp.com/webapp/api/v1",
-                ApiKey = "test-key",
-                Entity = "article",
-                EmitMode = "Batch",
-                RetryBackoffBaseSeconds = 0,
-            });
+              "rawArticles":[
+                {"id":"43222003744925","name":"Ersatzglas VOLT","articleNumber":"VOLT-EG",
+                 "unitName":"pc.","articleType":"STORABLE","supplySources":[]},
+                {"id":"43222003744999","name":"Brille NOVA Größe L","articleNumber":"NOVA-01",
+                 "unitName":"pc.","articleType":"STORABLE","supplySources":[]},
+                {"id":"43222003745000","name":"Europalette","articleNumber":"PAL-1","unitName":"pc.",
+                 "articleType":"LOADING_EQUIPMENT","supplySources":[]}
+              ],
+              "supplySources":[]
+            }
+            """;
 
-        var handler = new FakeHttpMessageHandler((_, _) => FakeHttpMessageHandler.Json("""
-            {"result":[
-              {"id":"43222003744925","name":"Ersatzglas VOLT","articleNumber":"VOLT-EG","unitName":"pc."},
-              {"id":"43222003744999","name":"Brille NOVA Größe L","articleNumber":"NOVA-01","unitName":"pc."},
-              {"id":"43222003745000","name":"Europalette","articleNumber":"PAL-1","unitName":"pc.",
-               "articleType":"LOADING_EQUIPMENT"}
-            ]}
-            """));
-        var httpClientFactory = A.Fake<IHttpClientFactory>();
-        A.CallTo(() => httpClientFactory.CreateClient(A<string>._)).Returns(new HttpClient(handler));
+        var root = await PipelineDefinitions.DeserializeAsync("weclapp-articles-to-as.yaml");
+        var nodes = Walk(root.Transformations).ToList();
+        var exportRunKey = Assert.Single(nodes.OfType<DilosExportRunKeyNodeConfiguration>());
+        var resolve = Assert.Single(nodes.OfType<WeClappResolveSupplySourcesNodeConfiguration>());
+        var render = Assert.Single(nodes.OfType<RenderDelimitedTextNodeConfiguration>());
+        var upload = Assert.Single(nodes.OfType<SftpUploadNodeConfiguration>());
 
-        JsonNode? document = null;
-        A.CallTo(() => triggerContext.ExecuteAsync(A<ExecutePipelineOptions>._, A<object?>._))
-            .Invokes(call => document = (JsonNode?)call.Arguments[1])
-            .Returns(Task.FromResult<object?>(null));
+        using var dataContext = new DataContextImpl(JsonDocument.Parse(document));
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddDataPipeline();
+        var rootContext = NodeContext.CreateRootNodeContext(services.BuildServiceProvider(),
+            A.Fake<IPipelineLogger>(), dataContext);
 
-        var fetch = new WeClappFetchTriggerNode(A.Fake<ILogger<WeClappFetchTriggerNode>>(), httpClientFactory);
-        await fetch.FetchOnceAsync(triggerContext);
-        Assert.NotNull(document);
+        Task Step(IPipelineNode node, string name, uint index, NodeConfiguration configuration) =>
+            node.ProcessObjectAsync(dataContext,
+                rootContext.RegisterChildNode(name, index, configuration, dataContext));
 
-        // --- Phase 2: real data context + render (fixed clock: 2026-02-05 13:31:34 UTC
-        //     = 14:31:34 Vienna/CET) ---
-        using var dataContext = new DataContextImpl(JsonDocument.Parse(document.ToJsonString()));
-        A.CallTo(() => nodeContext.GetNodeConfiguration<DilosRenderNodeConfiguration>())
-            .Returns(new DilosRenderNodeConfiguration
-            {
-                Mode = "AS",
-                Path = "$.items",
-                TargetPath = "$.dilosAs",
-                FileNameTargetPath = "$.dilosAsFileName",
-            });
+        // Fixed clock: 2026-02-05 13:31:34 UTC = 14:31:34 Vienna (CET).
+        await Step(new DilosExportRunKeyNode((_, _) => Task.CompletedTask,
+                new FixedTimeProvider(new DateTimeOffset(2026, 2, 5, 13, 31, 34, TimeSpan.Zero))),
+            "DilosExportRunKey", 0, exportRunKey);
+        await Step(new WeClappResolveSupplySourcesNode((_, _) => Task.CompletedTask),
+            "WeClappResolveSupplySources", 1, resolve);
+        await Step(new RenderDelimitedTextNode((_, _) => Task.CompletedTask),
+            "RenderDelimitedText", 2, render);
 
-        var render = new DilosRenderNode((_, _) => Task.CompletedTask,
-            new FixedTimeProvider(new DateTimeOffset(2026, 2, 5, 13, 31, 34, TimeSpan.Zero)));
-        await render.ProcessObjectAsync(dataContext, nodeContext);
-
-        var dilos = dataContext.Get<string>("$.dilosAs");
+        var dilos = dataContext.Get<string>(render.TargetPath);
         Assert.NotNull(dilos);
         var lines = dilos.TrimEnd('\n').Split("\n");
-        Assert.Equal(2, lines.Length);            // ONE content with ALL articles
-        Assert.Equal("43222003744925", lines[0].Split('|')[2]); // f[3] Artikelnummer = WeClapp id
+        Assert.Equal(2, lines.Length);                          // ONE document, system article dropped
+        Assert.Equal("43222003744925", lines[0].Split('|')[2]); // DILOS field 3 = Artikelnummer
         Assert.Equal("43222003744999", lines[1].Split('|')[2]);
 
-        Assert.Equal("AS20260205143134.txt", dataContext.Get<string>("$.dilosAsFileName"));
+        // The name the delivery reads is the one the export-run node wrote, from the same clock
+        // read as the marker day - the yaml pins the two paths to each other, this pins the value
+        // behind them.
+        Assert.Equal("AS20260205143134.txt", dataContext.Get<string>(upload.FileNamePath!));
 
-        // --- Phase 3: Latin-1 delivery through the node the shipped pipelines use,
-        //     SftpUpload@1 configured exactly as the yamls configure it — the umlaut in
-        //     "Größe" must land as ONE ISO-8859-1 byte (0xF6), like the golden
-        //     Billbee-produced files. The encoding happens while the node builds its upload
-        //     stream; the product keeps that step internal (its own suite reaches it through
-        //     InternalsVisibleTo), so reflection is the only way to certify the delivered
-        //     BYTES from here. A rename turns this test red rather than leaving the byte
-        //     assertion quietly unexercised. ---
-        var uploadConfiguration = new SftpUploadNodeConfiguration
-        {
-            ServerConfiguration = "LkvSftp",
-            RemoteDirectory = "/",
-            FileNamePath = "$.dilosAsFileName",
-            Path = "$.dilosAs",
-            Encoding = "iso-8859-1",
-            OnEncodingError = EncodingErrorHandling.Replace,
-        };
+        // Latin-1 delivery through the node the shipped pipelines use, configured exactly as the
+        // yaml configures it - the umlaut in "Größe" must land as ONE ISO-8859-1 byte (0xF6), like
+        // the golden Billbee-produced files. The encoding happens while the node builds its upload
+        // stream; the product keeps that step internal (its own suite reaches it through
+        // InternalsVisibleTo), so reflection is the only way to certify the delivered BYTES from
+        // here. A rename turns this test red rather than leaving the byte assertion quietly
+        // unexercised.
         var uploadNode = CreateSftpUploadNode();
         var buildUploadStream = typeof(SftpUploadNode).GetMethod("GetUploadStreamAsync",
             BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(buildUploadStream);
 
+        var uploadContext = rootContext.RegisterChildNode("SftpUpload", 3, upload, dataContext);
         await using var uploadStream = await (Task<Stream>)buildUploadStream!
-            .Invoke(uploadNode, [uploadConfiguration, dataContext, nodeContext])!;
+            .Invoke(uploadNode, [upload, dataContext, uploadContext])!;
         using var uploaded = new MemoryStream();
         await uploadStream.CopyToAsync(uploaded);
         var uploadedBytes = uploaded.ToArray();
 
-        // The name the delivery reads is the one the render wrote — the yaml pins the two
-        // paths to each other, this pins the value behind them.
-        Assert.Equal("AS20260205143134.txt", dataContext.Get<string>(uploadConfiguration.FileNamePath));
         Assert.Equal(Encoding.Latin1.GetBytes(dilos), uploadedBytes);
         Assert.Contains((byte)0xF6, uploadedBytes); // ö as a single Latin-1 byte, not UTF-8 0xC3 0xB6
     }

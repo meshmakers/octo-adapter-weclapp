@@ -1,6 +1,8 @@
 using System.Net;
+using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Nodes;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Http;
+using Microsoft.Extensions.Options;
 
 namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Tests.Nodes;
 
@@ -12,13 +14,54 @@ public class DefaultHttpClientRegistrationTests
     [Fact]
     public void AddWeClappHttpClients_ConfiguresTheDefaultClientForAutomaticDecompression()
     {
+        Assert.Equal(DecompressionMethods.All,
+            PrimaryHandlerOf(Options.DefaultName).AutomaticDecompression);
+    }
+
+    // Each named client is named after the node type that resolves it, so a node type and its
+    // client entry have to disappear together. Pinning the exact SET rather than "the default one
+    // is configured" catches both halves of that: an entry left behind for a node that no longer
+    // exists, and a lost entry for a node that still sends WeClapp requests - the latter surfacing
+    // otherwise only as an unreadable gzip body in the cluster.
+    [Theory]
+    [InlineData("")]
+    [InlineData(nameof(WeClappArWriteNode))]
+    [InlineData(nameof(WeClappBeWriteNode))]
+    public void AddWeClappHttpClients_ConfiguresEveryWeClappClientForAutomaticDecompression(string clientName)
+    {
+        Assert.Equal(DecompressionMethods.All, PrimaryHandlerOf(clientName).AutomaticDecompression);
+    }
+
+    [Fact]
+    public void AddWeClappHttpClients_ConfiguresNoClientBeyondTheDefaultAndTheTwoWriteNodes()
+    {
         var services = new ServiceCollection();
         services.AddWeClappHttpClients();
 
-        var provider = services.BuildServiceProvider();
-        var options = provider
-            .GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<HttpClientFactoryOptions>>()
-            .Get(Microsoft.Extensions.Options.Options.DefaultName);
+        var configured = services
+            .Select(descriptor => descriptor.ImplementationInstance)
+            .OfType<ConfigureNamedOptions<HttpClientFactoryOptions>>()
+            .Where(options => options.Action is not null)
+            .Select(options => options.Name ?? "")
+            .ToHashSet(StringComparer.Ordinal);
+
+        Assert.Equal(
+            new HashSet<string>([string.Empty, nameof(WeClappArWriteNode), nameof(WeClappBeWriteNode)],
+                StringComparer.Ordinal),
+            configured);
+    }
+
+    /// <summary>Runs the registered builder actions of one named client over a stub builder and
+    /// returns the primary handler they produced - the only way to see the handler configuration
+    /// without actually creating a client.</summary>
+    private static HttpClientHandler PrimaryHandlerOf(string clientName)
+    {
+        var services = new ServiceCollection();
+        services.AddWeClappHttpClients();
+
+        var options = services.BuildServiceProvider()
+            .GetRequiredService<IOptionsMonitor<HttpClientFactoryOptions>>()
+            .Get(clientName);
 
         var builder = new HttpMessageHandlerBuilderStub();
         foreach (var action in options.HttpMessageHandlerBuilderActions)
@@ -26,8 +69,7 @@ public class DefaultHttpClientRegistrationTests
             action(builder);
         }
 
-        var handler = Assert.IsType<HttpClientHandler>(builder.PrimaryHandler);
-        Assert.Equal(DecompressionMethods.All, handler.AutomaticDecompression);
+        return Assert.IsType<HttpClientHandler>(builder.PrimaryHandler);
     }
 
     private sealed class HttpMessageHandlerBuilderStub : HttpMessageHandlerBuilder

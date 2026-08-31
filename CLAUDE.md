@@ -19,16 +19,17 @@ dotnet build Octo.WeClappAdapter.slnx -c DebugL
 ## Project Structure
 - `src/AdapterMeshWeClapp/` - Mesh adapter host (cloud, connects directly to OctoMesh
   repositories) + all custom pipeline nodes (outbound: `DilosExportRunKey@1`,
-  `WeClappResolveSupplySources@1`, `WeClappToCk@1`, `DilosRender@1` - the fetching itself is
+  `WeClappResolveSupplySources@1`, `WeClappToCk@1`, `DilosRender@1` (AI only; the AS article
+  master renders through the product's `RenderDelimitedText@1`) - the fetching itself is
   the product's `MakeHttpRequest@1` and the delivery its `SftpUpload@1`, see "AS/AI Delivery"
   below; return path: `DilosFileGate@1`, `DilosFileConfirm@1`, `WeClappArWrite@1`,
   `WeClappBeWrite@1` — the listing and the reading themselves are the product's `SftpList@1`
-  and `SftpDownload@1`, see "AR/BE Return Path" below; `WeClappFetchStep@1`,
-  `DilosFileFetchStep@1` and the legacy poll-trigger nodes `WeClappFetch@1`/`DilosFileFetch@1`
-  stay registered but are no longer used by any shipped yaml, see "Pipeline Trigger
-  Architecture" below)
+  and `SftpDownload@1`, see "AR/BE Return Path" below. That is the complete inventory: EIGHT
+  declared node types, and no trigger node of its own - every pipeline is driven by a passive
+  product trigger, see "Pipeline Trigger Architecture" below)
 - `src/Lkv.WeClapp.Core/` - plain core lib: WeClapp DTOs/JSON, WeClapp→DILOS value rules,
-  DILOS AS/AI writers, DILOS AR/BE parsers + write-back planners (fail-loud, golden-file verified)
+  DILOS AI writer (the AS article master is a column list in the yaml now), DILOS AR/BE parsers
+  + write-back planners (fail-loud, golden-file verified)
 - `src/charts/octo-weclapp-adapter/` - Helm chart (deployed by the Communication Operator;
   httpGet probes on `/healthz/live|ready`)
 - `pipelines/` - tenant pipeline YAMLs (orders→AI per order; articles split into per-item
@@ -69,10 +70,15 @@ former per-execution chain out over that array, one iteration per element
 is the exception on two counts: its FIRST child is a per-order `MakeHttpRequest@1` customer
 lookup, and it carries `continueOnError: true`, so a customer that fails permanently fails its
 own order instead of starving the tick. The as pipeline starts with `DilosExportRunKey@1`
-instead of a fetch - it writes `{ exportKind, exportDay }` from the Vienna calendar day, and
-BOTH its fetches sit inside the K1 gate, so an already-delivered day costs no WeClapp request
-at all. That node is a stand-in for a capability `DateTime@1` does not have (a time zone) and
-goes away once it does.
+instead of a fetch - it writes `{ exportKind, exportDay, fileName }` from the Vienna calendar
+day, and BOTH its fetches sit inside the K1 gate, so an already-delivered day costs no WeClapp
+request at all. The delivery file name comes from that node, out of the SAME clock read as the
+marker day (decision D3): two reads can straddle Vienna midnight, and the file would then carry
+day N+1 under the marker of day N - with no marker for N+1, the next tick delivers that day a
+second time. `DilosExportRunKeyNodeTests.AClockThatMovesBetweenReads_CannotSplitTheDayFromTheFileName`
+is the only test that a two-read implementation fails; a fixed clock answers both reads alike, so
+the other coupling tests would stay green. That node is a stand-in for a capability `DateTime@1`
+does not have (a time zone) and goes away once it does.
 
 **Canonical ForEach block** (use exactly this shape — the guard tests below pin
 `keyPath`/`targetPath`/`maxDegreeOfParallelism` against every shipped `ForEach@1`):
@@ -110,7 +116,11 @@ asserts every `ForEach@1` has a non-null, non-`"$"` `targetPath` and
 (`SftpList@1` -> `DilosFileGate@1` on the same path -> `SftpDownload@1` as the FIRST per-file
 child, reading `$.current.fullPath`; the write node's `contentPath` is the download's
 `targetPath` and its `fileNamePath` is `$.current.name`) — every one of those strings can be
-changed on ONE side and still ship green, doing the wrong amount of work;
+changed on ONE side and still ship green, doing the wrong amount of work — plus each yaml's
+`filePattern` EXACTLY (`AR*TXT` / `BE*txt`), which selects the files AND, through the `source`
+object the listing stamps on every element, the scope the gate keys its cross-tick memory on;
+nothing else pinned it, so a blanked or merely widened glob shipped green and surfaced at the
+tenant at the earliest;
 `ArBeYamls_ConfigureDeleteAfterSuccessExactlyOnce` allows the keep/delete mode in exactly one
 place per ar/be yaml, on `DilosFileGate@1`;
 `ArBeYamls_ReadDilosFilesAsIso88591` pins the effective `encoding` of every `SftpDownload@1` to
@@ -118,7 +128,11 @@ the code page the DILOS parsers expect (the node defaults to utf-8, which turns 
 into replacement characters without failing anything);
 `ArBeYamls_DilosFileConfirm_IsTheLastPerFileForEachChild` pins the confirm node as the LAST
 per-file `ForEach@1` child; `ArBeYamls_DryRunWriteNode_ForbidsDeleteAfterSuccess` forbids
-`deleteAfterSuccess: true` while the write node runs `dryRun: true`;
+`deleteAfterSuccess: true` while the write node runs `dryRun: true`, reading BOTH values through
+the same binding the tenant uses rather than off the raw text — YAML has several spellings of true
+(`yes`, `on`, `!!bool true`) and a text probe written for `true` passes them all as "not set",
+i.e. green for exactly the combination that consumes the only copy of an LKV file without writing
+it;
 `AllPipelineYamls_UseApiConfigurationOnly_NoInlineCredentialsOrPlaceholders` keeps WeClapp access
 on `apiConfiguration` (no inline `apiKey`/`baseUrl`, no substitution placeholder);
 `AllPipelineYamls_EveryAttributeUpdate_DeclaresValueType` requires every `ApplyChanges` attribute
@@ -137,10 +151,24 @@ mojibake to LKV without failing anything). The name pin exists because the retir
 had no static-name property at all: the swap widened that surface, and a static name would make
 every delivery overwrite the previous one;
 `AsAiYamls_SftpUpload_ReadsTheRenderOutputAndTargetsTheLkvRoot` pins what contract 13 leaves
-open: that `SftpUpload@1` reads exactly what `DilosRender@1` wrote (`path` == `targetPath`,
-`fileNamePath` == `fileNameTargetPath`), delivers to the SFTP root, and names the same tenant
-SFTP entry the AR/BE return path uses — every one of those strings can be renamed on ONE side,
-ship green and surface on staging at the earliest; `AllPipelineYamls_ApplyChanges_IsVersion2`
+open: that a delivery has exactly ONE content source (ai `DilosRender@1` OR as
+`RenderDelimitedText@1`, never both and never neither), that `SftpUpload@1` reads exactly what
+that source wrote (`path` == `targetPath`), that its `fileNamePath` matches whichever node names
+that delivery (the ai render's `fileNameTargetPath`, the as `DilosExportRunKey@1`'s `targetPath` +
+`.fileName`) and that only ONE node writes the name, that it delivers to the SFTP root, and that
+it names the same tenant SFTP entry the AR/BE return path uses - every one of those strings can be
+renamed on ONE side, ship green and surface on staging at the earliest;
+`AsYaml_RenderDelimitedText_SpellsOutTheThirtyFourColumnDilosLayout` pins the AS file format
+itself, which since the swap lives in the yaml and nowhere else: 34 columns in order, the eight
+populated positions on their exact DILOS field numbers, every other column empty, `required` on
+field 3 alone, and the effective `delimiter`/`lineEnding`/`trailingNewLine`/`onDelimiterInValue` -
+read as the node reads them, since those options are nullable and resolve their defaults at the
+read site, so an omitted property must be checked as its EFFECTIVE value;
+`AsYaml_EmptyRenderOutput_IsGatedBeforeTheDeliveryAndTheMarker` pins the empty-batch brake: an
+`If@1` whose `path` is EXACTLY the render's `targetPath`, `operator: NotEqual`, `valueType:
+String`, `value: ""`, with the upload, the marker and `ApplyChanges@2` all inside it. Both halves
+matter - `If@1` reads a missing path as null and null != "" is TRUE, so a mistyped path OPENS the
+gate, and a step left outside it would run on an empty batch; `AllPipelineYamls_ApplyChanges_IsVersion2`
 forbids the deprecated `ApplyChanges@1` — its configuration is a bare record with no association
 property at all, so adding an `associationUpdatesPath` there does NOT drop associations quietly:
 the strict deserializer rejects the unknown property and the pipeline registration fails at the
@@ -186,16 +214,50 @@ claims completeness invites re-pinning an invariant that already holds.
   name2 ("Nachname Vorname") stays empty unless a company fills name1.
 
 ## AS/AI Delivery (WeClapp → SFTP)
-- Render and transport are separate nodes: `DilosRender@1` builds the content AND the golden
-  file name, `SftpUpload@1` (`encoding: iso-8859-1`, `onEncodingError: Replace`) writes both to
-  the LKV SFTP root. The tenant entry (`LkvSftp`) MUST carry a `MaxConcurrentConnections` value
+- Render and transport are separate nodes, and the RENDER differs per delivery kind: AI content
+  comes from `DilosRender@1`, AS content from the product's `RenderDelimitedText@1` (see "The AS
+  file format lives in the yaml" below). The file name comes from `DilosRender@1` for AI (per
+  order) and from `DilosExportRunKey@1` for AS (per Vienna day,
+  same clock read as the marker), and `SftpUpload@1` (`encoding: iso-8859-1`,
+  `onEncodingError: Replace`) writes both to the LKV SFTP root. The tenant entry (`LkvSftp`) MUST carry a `MaxConcurrentConnections` value
   (3) — the CK attribute is optional but the node reads a non-nullable int, and an unset value
   kills every run while the entry is deserialized (staging, 2026-08-21).
-- `DilosRender@1` owns BOTH content guards because nothing downstream repeats them:
+- The two content guards have different homes now, because nothing downstream repeats them:
   `SftpUpload@1` uploads empty content as a 0-byte file, and resolves a file name carrying path
-  segments to its last segment instead of refusing it. So the render ends the pipeline on an
-  empty AS batch (legitimate: only system articles), throws on empty AI content, and throws on
-  any name containing `/`, `\` or `..` — the AI name carries the external WeClapp order number.
+  segments to its last segment instead of refusing it. AS: the empty-batch brake is the `If@1`
+  in the yaml (a batch of nothing but system articles is legitimate), and the name guard sits on
+  `DilosExportRunKey@1`. AI: `DilosRender@1` still throws on empty content, which is always an
+  upstream defect there, and on any name containing `/`, `\` or `..` - the AI name carries the
+  external WeClapp order number. The rule behind both name guards lives once, in
+  `DilosFile.IsPlainFileName`.
+- **The AS file format lives in the yaml.** `RenderDelimitedText@1` renders the 34 columns
+  spelled out there; the two things a column model cannot do stay adapter-side in
+  `WeClappResolveSupplySources@1`, which drops system articles (`LOADING_EQUIPMENT`) and projects
+  the EK-Preis as a finished scalar on `ekPreis` (first parseable
+  `supplySources[].articlePrices[].price`, absent means `0`, format `0.####` invariant).
+  **The drop runs BEFORE the join**, and the order is load-bearing: a system article appears in
+  no delivered file, so nothing about it can make one wrong, while joining first let one
+  unresolvable stub on a pallet (WeClapp leaves the stub behind when an `articleSupplySource` is
+  archived) block every hourly delivery — no file, no marker — over a record that is discarded
+  one step later.
+  **For the articles that remain, the join fails LOUD**: an `articleSupplySource` without an
+  `id`, a stub pointing at an entity that was not fetched, a `supplySources` value that is not
+  an array — each one throws naming the element, because all of them end in the same place,
+  `ekPreis` = `0`, which is
+  also the legitimate value for an article without a purchase price. Neither the delivered
+  file nor any downstream step can tell those apart, and the delivery burns the per-day
+  marker on its way out, so a silently mispriced article master would stand at LKV for the
+  whole Vienna day (recoverable only by deleting the CK marker). A throw costs the next tick
+  and no data — the same trade both fetches (`onHttpError: Throw`) and the render
+  (`onDelimiterInValue: Fail`) already make. Read-only census of the customer account
+  (2026-08-28): 48 articles, 16 `articleSupplySource` entities, 15 stubs, **0 dangling** — the
+  loud path is not reachable from today's live data. An explicit `"supplySources": null` is
+  NOT part of that: it means what an absent property means (no price) and is normalised. The byte
+  anchor is `AsDeliveryParityTests`: it drives the SHIPPED yaml's own node configurations over a
+  fixture batch and compares the result byte-for-byte, in ISO-8859-1, against
+  `tests/AdapterMeshWeClapp.Tests/Fixtures/as-parity-expected.txt` - the frozen output of the
+  pre-swap renderer. That fixture carries a `.gitattributes` `-text` entry; without it git hands
+  a fresh clone a CR on every line and the anchor stops meaning what it says.
 - **A dry run proves less than it used to**: `SftpUpload@1` returns at its dry-run gate BEFORE
   it resolves the content path and encodes it (the retired custom node deliberately did both
   first). A dry-run probe therefore proves only that the `LkvSftp` entry resolves and carries
@@ -240,8 +302,8 @@ claims completeness invites re-pinning an invariant that already holds.
   pipeline, which is why every key carries a scope prefix. A pod restart clears it (a kept file
   is let through once more — downstream idempotency covers that); a pipeline REdeploy does not.
   **Accepted residue:** the gate derives the scopes it prunes from the elements it is handed, so
-  an EMPTY listing prunes nothing, where the retired `DilosFileFetchStep@1` pruned its own
-  configured scope unconditionally. In keep mode a file that disappears from the server and later
+  an EMPTY listing prunes nothing, where a node configured with its own scope could prune it
+  unconditionally. In keep mode a file that disappears from the server and later
   returns byte-identical with its modification time preserved therefore keys the same and is
   dropped as already processed - until any non-empty listing of that scope runs without it, or
   at the latest until the pod restarts. Reading the scope off the elements is
@@ -262,6 +324,15 @@ claims completeness invites re-pinning an invariant that already holds.
   no longer accepts `deleteAfterSuccess`/`serverConfiguration` on `DilosFileConfirm@1`, so the
   stored definition and the running image disagree until the re-import — for those two pipelines
   only, and only until it runs.
+- **The AS swap is a THIRD case of the same rule, and it fails LATER than the other two.**
+  `RenderDelimitedText@1` ships in SDK **3.4.101 and in no earlier version** (verified across the
+  whole local package cache and the hand-maintained `999.0.0` DebugL feed), so importing the new
+  `weclapp-articles-to-as.yaml` against an older image fails registration outright. The reverse
+  order fails at RUN time instead: the stored definition still names `DilosRender@1` with
+  `mode: AS`, every property on `DilosRenderNodeConfiguration` still exists, registration
+  succeeds silently, and the next tick throws "Unknown DilosRender mode 'AS'" — no delivery, no
+  marker, hourly, until someone re-imports the as yaml. Both directions leave a window without an
+  AS delivery: deploy the image FIRST, then re-import **every** changed yaml including the as one.
 - `WeClappArWrite@1`: AR K* Auftragsnummer1 = WeClapp `salesOrder.id` (404 = dead-letter
   log, file still consumed). Idempotency: SHIPPED shipment with same tracking = skip;
   reuse non-CANCELLED; else `createShipment`. Quantities match by **articleId, never by
