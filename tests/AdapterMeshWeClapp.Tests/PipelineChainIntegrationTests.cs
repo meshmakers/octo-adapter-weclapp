@@ -22,12 +22,14 @@ namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Tests;
 /// <summary>
 /// End-to-end chain over the custom nodes with a REAL pipeline data context (DataContextImpl, as
 /// the platform's own full-chain tests use): the document the shipped pipelines seed →
-/// WeClappToCk → DilosRender → AI lines, and the article batch → DilosRender → AS content →
-/// SftpUpload@1 bytes. The seeding itself is the product's MakeHttpRequest@1 and is not re-tested
-/// here; what the chain must agree on is the document SHAPE, so the fixtures below carry exactly
-/// the paths the yamls configure ($.current and $.customerResponse.result[0] for the order chain,
-/// $.items for the article batch). The platform built-ins (GetOrCreate/ApplyChanges) need a
-/// repository and are exercised in the tenant spike instead.
+/// WeClappToCk → DilosRender → AI lines, and the article batch → DilosExportRunKey →
+/// WeClappResolveSupplySources → RenderDelimitedText → AS content → SftpUpload@1 bytes. The
+/// seeding itself is the product's MakeHttpRequest@1 and is not re-tested here; what the chain
+/// must agree on is the document SHAPE, so the fixtures below carry exactly the paths the yamls
+/// configure ($.current and $.customerResponse.result[0] for the order chain, $.rawArticles +
+/// $.supplySources for the article batch - $.items is the preparation step's OUTPUT, not a seeded
+/// path). The platform built-ins (GetOrCreate/ApplyChanges) need a repository and are exercised in
+/// the tenant spike instead.
 /// </summary>
 public class PipelineChainIntegrationTests
 {
