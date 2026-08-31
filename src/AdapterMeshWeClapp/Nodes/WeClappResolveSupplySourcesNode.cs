@@ -25,31 +25,35 @@ public record WeClappResolveSupplySourcesNodeConfiguration : SourceTargetPathNod
 
 /// <summary>
 /// Prepares the raw WeClapp articles for the DILOS article master delivery, doing the two things a
-/// generic column renderer cannot: it replaces each <c>article.supplySources</c> reference stub
-/// with the full <c>articleSupplySource</c> entity it points at (an article without stubs passes
-/// through untouched; a stub that does NOT resolve fails the run, see below); it drops system
-/// articles (loading equipment such as pallets), which never belong in the article master; and it
-/// projects the DILOS EK-Preis as a finished scalar on <c>ekPreis</c>, because that value is a
-/// SELECTION - the first parseable <c>supplySources[].articlePrices[].price</c>, absent meaning 0
-/// - and a renderer can only read a path. The selection and the number format itself stay in the
-/// core library next to the other DILOS value rules; only the call site is here.
+/// generic column renderer cannot: it drops system articles (loading equipment such as pallets),
+/// which never belong in the article master; it replaces each <c>article.supplySources</c>
+/// reference stub of the articles that remain with the full <c>articleSupplySource</c> entity it
+/// points at (an article without stubs passes through untouched; a stub that does NOT resolve
+/// fails the run, see below); and it projects the DILOS EK-Preis as a finished scalar on
+/// <c>ekPreis</c>, because that value is a SELECTION - the first parseable
+/// <c>supplySources[].articlePrices[].price</c>, absent meaning 0 - and a renderer can only read a
+/// path. The selection and the number format itself stay in the core library next to the other
+/// DILOS value rules; only the call site is here.
 /// </summary>
 /// <remarks>
-/// Every way the join can come apart fails the run rather than resolving to less: an entity
-/// without an id, a stub pointing at an entity that was not fetched, a supplySources value that is
-/// not an array. All of them share one consequence - the article's EK-Preis falls back to 0, which
-/// is itself a LEGITIMATE value (an article without a purchase price renders 0), so no downstream
-/// step and no delivered file can tell a lost price from an absent one. The delivery would look
-/// complete, and it burns the per-day marker on its way out, so the wrong file would stand at LKV
-/// for the whole Vienna day. A throw costs the next tick and no data, which is the same trade the
-/// yaml already makes at both fetches (onHttpError: Throw) and at the render (onDelimiterInValue:
-/// Fail). Live census of the customer account on 2026-08-28: 48 articles, 16 articleSupplySource
-/// entities, 15 stubs, zero of them dangling - the loud path is not a live-data risk today.
+/// For the articles that are actually delivered, every way the join can come apart fails the run
+/// rather than resolving to less: an entity without an id, a stub pointing at an entity that was
+/// not fetched, a supplySources value that is not an array. All of them share one consequence -
+/// the article's EK-Preis falls back to 0, which is itself a LEGITIMATE value (an article without
+/// a purchase price renders 0), so no downstream step and no delivered file can tell a lost price
+/// from an absent one. The delivery would look complete, and it burns the per-day marker on its
+/// way out, so the wrong file would stand at LKV for the whole Vienna day. A throw costs the next
+/// tick and no data, which is the same trade the yaml already makes at both fetches (onHttpError:
+/// Throw) and at the render (onDelimiterInValue: Fail). Live census of the customer account on
+/// 2026-08-28: 48 articles, 16 articleSupplySource entities, 15 stubs, zero of them dangling - the
+/// loud path is not a live-data risk today.
 /// </remarks>
 [NodeConfiguration(typeof(WeClappResolveSupplySourcesNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
 public class WeClappResolveSupplySourcesNode(NodeDelegate next) : IPipelineNode
 {
+    private const string NodeName = "WeClappResolveSupplySources";
+
     private static readonly JsonSerializerOptions CaseInsensitive = new() { PropertyNameCaseInsensitive = true };
 
     /// <inheritdoc />
@@ -59,9 +63,10 @@ public class WeClappResolveSupplySourcesNode(NodeDelegate next) : IPipelineNode
 
         // Configuration guards run before anything is read or written: a definition that names
         // no path must fail visibly rather than write an empty array a renderer then skips.
-        RequirePath(config.Path, nameof(config.Path));
-        RequirePath(config.SupplySourcesPath, nameof(config.SupplySourcesPath));
-        RequirePath(config.TargetPath, nameof(config.TargetPath));
+        NodeConfigurationGuards.RequirePath(NodeName, config.Path, nameof(config.Path));
+        NodeConfigurationGuards.RequirePath(NodeName, config.SupplySourcesPath,
+            nameof(config.SupplySourcesPath));
+        NodeConfigurationGuards.RequirePath(NodeName, config.TargetPath, nameof(config.TargetPath));
 
         var articles = ReadArray(dataContext, config.Path, "article");
         var sources = ReadArray(dataContext, config.SupplySourcesPath, "articleSupplySource");
@@ -104,6 +109,19 @@ public class WeClappResolveSupplySourcesNode(NodeDelegate next) : IPipelineNode
                     "article object");
             }
 
+            // The first of the two pieces of WeClapp knowledge a column renderer cannot express:
+            // loading equipment never belongs in the article master delivery. It is dropped BEFORE
+            // the join, because a system article reaches no file - so nothing about it can make a
+            // delivery wrong, while joining it first turns one unresolvable stub on a pallet into
+            // a blocked delivery for every tick until the WeClapp record is repaired. Reading the
+            // type off the raw object is as tolerant as the model binding below: the data context
+            // hands its documents out with PropertyNameCaseInsensitive.
+            if (WeClappToDilos.IsSystemArticle(article["articleType"]?.ToString()))
+            {
+                systemArticles++;
+                continue;
+            }
+
             var resolved = Resolve(article, sourcesById, index, config);
 
             // Everything below reads the element AS a WeClapp article, and every way that can fail
@@ -120,17 +138,8 @@ public class WeClappResolveSupplySourcesNode(NodeDelegate next) : IPipelineNode
                                  $"WeClappResolveSupplySources: element {index} at '{config.Path}' is " +
                                  "not a WeClapp article");
 
-                // The two pieces of WeClapp knowledge a column renderer cannot express, applied
-                // here because this step already holds the articles: loading equipment never
-                // belongs in the article master delivery, and the DILOS EK-Preis is a SELECTION
-                // over the resolved supply sources (first parseable price, absent means 0) which
-                // no path read performs.
-                if (WeClappToDilos.IsSystemArticle(parsed))
-                {
-                    systemArticles++;
-                    continue;
-                }
-
+                // The second rule: the DILOS EK-Preis is a SELECTION over the resolved supply
+                // sources (first parseable price, absent means 0), which no path read performs.
                 resolved["ekPreis"] = WeClappToDilos.Num(WeClappToDilos.EkPreis(parsed.PurchasePrice));
                 enriched.Add(resolved);
             }
@@ -216,14 +225,5 @@ public class WeClappResolveSupplySourcesNode(NodeDelegate next) : IPipelineNode
         }
 
         return dataContext.Get<JsonArray>(path) ?? new JsonArray();
-    }
-
-    private static void RequirePath(string? value, string propertyName)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            throw new WeClappPipelineExecutionException(
-                $"WeClappResolveSupplySources: '{propertyName}' must be a JSONPath");
-        }
     }
 }

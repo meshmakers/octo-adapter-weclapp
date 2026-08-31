@@ -122,6 +122,29 @@ public class WeClappResolveSupplySourcesNodeTests
         Assert.Contains("stub 0", ex.Message);
     }
 
+    // The join reads the property names off the raw document while the model binding right behind
+    // it reads them case-insensitively. If those two ever disagreed, a re-cased key would skip the
+    // join un-thrown and the binding would take the RAW stubs, which carry no articlePrices - the
+    // article would ship with EK-Preis 0, the same value a legitimately priceless one renders, and
+    // nothing downstream could tell them apart. They do not disagree: the data context hands its
+    // documents out with PropertyNameCaseInsensitive set (measured - an upstream node's own
+    // case-sensitive JsonNode comes back case-insensitive), so both readers answer alike. Pinned
+    // here because the day that stops being true, the delivery degrades in silence.
+    [Fact]
+    public async Task SupplySourcesUnderARecasedKey_StillResolveToTheRealPrice()
+    {
+        var config = Configure();
+        var (data, node) = Context("""
+            {"rawArticles":[{"id":"4262","articleType":"STORABLE",
+              "SupplySources":[{"articleSupplySourceId":"9001"}]}],
+             "supplySources":[{"id":"9001","articlePrices":[{"price":"987"}]}]}
+            """, config);
+
+        await new WeClappResolveSupplySourcesNode(_next).ProcessObjectAsync(data, node);
+
+        Assert.Equal("987", data.Get<string>("$.items[0].ekPreis"));
+    }
+
     [Fact]
     public async Task ArticleWithoutSupplySources_PassesThroughUntouched()
     {
@@ -343,6 +366,71 @@ public class WeClappResolveSupplySourcesNodeTests
         Assert.NotNull(items);
         Assert.Empty(items);
         A.CallTo(() => _next(data, node)).MustHaveHappenedOnceExactly();
+    }
+
+    // The drop runs BEFORE the join, and this is why: a system article is discarded one step later
+    // and appears in no delivered file, so an unresolvable stub on one cannot make a delivery
+    // wrong. Joining first turned it into a blocked delivery instead - no file and no marker,
+    // every hour, until the WeClapp record was repaired. WeClapp master data can reach this shape
+    // on its own: archiving an articleSupplySource leaves the stub on the article behind.
+    [Fact]
+    public async Task SystemArticleWithADanglingStub_IsDroppedInsteadOfBlockingTheDelivery()
+    {
+        var config = Configure();
+        var (data, node) = Context("""
+            {"rawArticles":[
+               {"id":"4250","articleType":"LOADING_EQUIPMENT",
+                "supplySources":[{"articleSupplySourceId":"archived"}]},
+               {"id":"4262","articleNumber":"000123","articleType":"STORABLE","supplySources":[]}],
+             "supplySources":[]}
+            """, config);
+
+        await new WeClappResolveSupplySourcesNode(_next).ProcessObjectAsync(data, node);
+
+        var items = data.Get<JsonArray>("$.items");
+        Assert.NotNull(items);
+        Assert.Equal("4262", Assert.Single(items)!["id"]!.ToString());
+        A.CallTo(() => _next(data, node)).MustHaveHappenedOnceExactly();
+    }
+
+    // The counter-probe to the test above: the SAME dangling stub on a deliverable article still
+    // fails the run. The reorder narrows the fail-loud contract to the articles that reach the
+    // file; it does not soften it for them.
+    [Fact]
+    public async Task DeliverableArticleWithTheSameDanglingStub_StillFailsTheRun()
+    {
+        var config = Configure();
+        var (data, node) = Context("""
+            {"rawArticles":[{"id":"4262","articleType":"STORABLE",
+              "supplySources":[{"articleSupplySourceId":"archived"}]}],
+             "supplySources":[]}
+            """, config);
+
+        var ex = await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
+            () => new WeClappResolveSupplySourcesNode(_next).ProcessObjectAsync(data, node));
+
+        Assert.Contains("archived", ex.Message);
+        Assert.False(data.Exists("$.items"));
+        A.CallTo(() => _next(A<IDataContext>._, A<INodeContext>._)).MustNotHaveHappened();
+    }
+
+    // The drop reads the article type off the raw object now, ahead of the model binding that used
+    // to answer this, and the two have to stay equally tolerant - a read narrower than the binding
+    // would let loading equipment into the article master. They are: the same case-insensitive
+    // documents the test above rests on. Pinned separately because this failure is silent in the
+    // other direction, as a delivered file with a pallet in it.
+    [Fact]
+    public async Task SystemArticleUnderARecasedTypeKey_IsStillDropped()
+    {
+        var config = Configure();
+        var (data, node) = Context("""
+            {"rawArticles":[{"id":"4250","ArticleType":"LOADING_EQUIPMENT","supplySources":[]}],
+             "supplySources":[]}
+            """, config);
+
+        await new WeClappResolveSupplySourcesNode(_next).ProcessObjectAsync(data, node);
+
+        Assert.Empty(data.Get<JsonArray>("$.items")!);
     }
 
     // WeClapp never returns a non-object element, but a mis-aimed path can: an array of ids is

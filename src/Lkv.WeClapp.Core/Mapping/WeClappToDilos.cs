@@ -22,7 +22,12 @@ public static class WeClappToDilos
     /// <summary>EK-Preis: WeClapp Einkaufspreis; null / not available → 0 (Jürgen 2026-06-29).</summary>
     public static decimal EkPreis(decimal? purchasePrice) => purchasePrice ?? 0m;
 
-    public static bool IsSystemArticle(WeClappArticle a) => a.ArticleType == "LOADING_EQUIPMENT";
+    public static bool IsSystemArticle(WeClappArticle a) => IsSystemArticle(a.ArticleType);
+
+    /// <summary>The same rule on the bare article type, for the AS pipeline: it has to decide
+    /// whether an article is loading equipment on the raw WeClapp payload, before the article is
+    /// bound to the model.</summary>
+    public static bool IsSystemArticle(string? articleType) => articleType == "LOADING_EQUIPMENT";
 
     public static bool IsSystemCustomer(string customerNumber) => customerNumber == "ANONYMOUS_DEBITOR";
 
