@@ -10,10 +10,8 @@ using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration.DependencyInjection;
-using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration.Serializer;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Control;
-using Meshmakers.Octo.Sdk.Common.Services;
 using Microsoft.Extensions.DependencyInjection;
 using static Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Tests.PipelineYamlWalk;
 
@@ -97,21 +95,10 @@ public class AiExportGateTests
     [Fact]
     public async Task OrdersToAiYaml_GatesDeliveryOnNewOrder_AndPersistsOnlyAfterUpload()
     {
-        var services = new ServiceCollection();
-        services.AddLogging();
-        services.AddDataPipeline()
-            .AddMeshDataPipelineNodes()          // GetOrCreate/CreateUpdateInfo/ApplyChanges/…
-            .RegisterNodeConfiguration<IfNodeConfiguration>()
-            .RegisterNodeConfiguration<WeClappToCkNodeConfiguration>()
-            .RegisterNodeConfiguration<DilosRenderNodeConfiguration>();
-        var lookup = services.BuildServiceProvider().GetRequiredService<INodeQualifiedNameLookupService>();
-
-        NodeDefinitionRoot root;
-        await using (var stream = File.OpenRead(RepoFiles.Find(Path.Combine("pipelines", "weclapp-orders-to-ai.yaml"))))
-        {
-            root = await new YamlPipelineConfigurationSerializer(lookup).DeserializeAsync(stream)
-                   ?? throw new InvalidOperationException("pipeline yaml deserialized to null");
-        }
+        // The shared deserializer, registering every node configuration the adapter declares: a
+        // local, narrower list reds this suite alone the day the ai pipeline gains an adapter node
+        // outside it, while the suites on the shared helper stay green on the same yaml.
+        var root = await PipelineDefinitions.DeserializeAsync("weclapp-orders-to-ai.yaml");
 
         var top = root.Transformations?.ToList() ?? new List<NodeConfiguration>();
 

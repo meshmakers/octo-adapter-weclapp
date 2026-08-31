@@ -107,7 +107,11 @@ transformations:
         # bytes. lineEnding is deliberately Lf - _specs/AS.md asks for CR+LF, but every AS file we
         # have delivered and every LKV file we import is pure LF, and the byte comparison against
         # the last delivery is what the change is measured on. Whether LKV wants CRLF is an open
-        # question with the partner; if it comes back CRLF this line is the whole change.
+        # question with the partner. Changing this line is NOT the whole change: LF is pinned in
+        # three more places, and all four move together or the suite reds - the layout guard
+        # (AsYaml_RenderDelimitedText_SpellsOutTheThirtyFourColumnDilosLayout, effective Lf), the
+        # byte anchor (AsDeliveryParityTests, zero CR bytes) and the frozen fixture it compares
+        # against (Fixtures/as-parity-expected.txt, which then has to be re-frozen deliberately).
         lineEnding: Lf
         trailingNewLine: true               # the delivered file ends on 0x0A
         onDelimiterInValue: Fail            # DILOS has no escaping - a '|' inside an article name

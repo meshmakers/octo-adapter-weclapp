@@ -139,9 +139,17 @@ public class DilosExportRunKeyNodeTests
     // move together. Two literals that happen to agree would not show that - this asserts the
     // name's date part against the day the marker is keyed on, which is the invariant a second
     // clock read breaks.
+    //
+    // The coupling rests on TWO independent conversions - the day is converted here, the name
+    // inside DilosFile.DeliveryFileName - so the rows have to cover both offsets Vienna has. All
+    // the summer rows agree with a fixed +02:00, which is why the winter row is here: it is the
+    // one a "simplification" of either conversion to a constant offset gets wrong, and it gets it
+    // wrong by naming the file for the NEXT day while the marker still keys this one - the exact
+    // split D3 closed.
     [Theory]
-    [InlineData("2026-08-28T21:59:59Z", "2026-08-28", "AS20260828235959.txt")] // 23:59:59 Vienna
-    [InlineData("2026-08-28T22:00:00Z", "2026-08-29", "AS20260829000000.txt")] // 00:00:00 Vienna
+    [InlineData("2026-08-28T21:59:59Z", "2026-08-28", "AS20260828235959.txt")] // 23:59:59 Vienna, CEST
+    [InlineData("2026-08-28T22:00:00Z", "2026-08-29", "AS20260829000000.txt")] // 00:00:00 Vienna, CEST
+    [InlineData("2026-01-15T22:30:00Z", "2026-01-15", "AS20260115233000.txt")] // 23:30:00 Vienna, CET
     public async Task AcrossViennaMidnight_TheDayAndTheFileNameMoveTogether(
         string utcNow, string expectedDay, string expectedFileName)
     {

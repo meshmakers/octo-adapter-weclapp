@@ -364,6 +364,13 @@ derive both values from it:
 stays in one place. Carry the path guard over from `DilosRenderNode.EnsurePlainFileName`: no `/`,
 no `\`, no `..`. The guard is cheap and the kind comes from configuration.
 
+> **Deviation (2026-08-31, as implemented):** `AsFileName` was DROPPED rather than kept. Once the
+> AS delivery took its name from `DilosExportRunKey@1`, the wrapper had no caller left, and a
+> named pass-through nobody calls is one more place the naming can drift from `DeliveryFileName`.
+> `DilosFile` therefore carries `DeliveryFileName` / `AiFileName` / `IsPlainFileName` and callers
+> use `DeliveryFileName` directly. Do not re-add the wrapper on the strength of the paragraph
+> above.
+
 - [ ] **Step 4: Run them and watch them pass**
 
 Same command. Expected: PASS.

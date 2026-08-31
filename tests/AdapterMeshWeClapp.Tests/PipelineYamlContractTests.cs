@@ -368,6 +368,32 @@ public class PipelineYamlContractTests
                                $"'{forEach.KeyPath}.fullPath' - the path of the file this iteration is for");
             }
 
+            // The pattern decides which files the return path picks up, and through the source
+            // object the listing stamps on every element it also decides the scope the gate keys
+            // its cross-tick memory on. Nothing else in the repo pinned it: an edit that blanks it
+            // or merely WIDENS it (AR* instead of AR*TXT) ships green from here and surfaces at
+            // the tenant at the earliest - as a stranded return path, or as a listing that hands
+            // DILOS parsers files that were never meant for them. Pinned exactly, per yaml:
+            // neither pattern is on the REPLACE/TBD list, so there is nothing to keep loose.
+            var expectedPattern = yaml switch
+            {
+                "dilos-ar-to-weclapp.yaml" => "AR*TXT",
+                "dilos-be-to-weclapp.yaml" => "BE*txt",
+                _ => null,
+            };
+
+            if (expectedPattern == null)
+            {
+                violations.Add($"{yaml}: a DILOS return path this guard has no filePattern pin " +
+                               "for - add its expected pattern here rather than leaving it unchecked");
+            }
+            else if (list.FilePattern != expectedPattern)
+            {
+                violations.Add($"{yaml}: SftpList@1 selects '{list.FilePattern}', expected " +
+                               $"'{expectedPattern}' - a different set of files, and a different " +
+                               "gate scope for the files it still lists");
+            }
+
             // The product node defaults minFileAgeSeconds to 0 and skips the guard entirely at
             // that value, so the yaml literal is the only thing keeping a file that is still
             // being written out of the listing - the same class of quiet failure the encoding
@@ -575,19 +601,24 @@ public class PipelineYamlContractTests
     // node's dryRun. A normal (non-dry-run) execution with dryRun: true and deleteAfterSuccess:
     // true therefore writes nothing, reports success and still DELETES the remote file: the LKV
     // copy is consumed although its content never reached WeClapp, and that copy is the only
-    // source. Until now the yaml comments were the sole guard against that combination. Raw text
-    // for the same reason as the apiConfiguration gate: the typed path needs an SDK feed
-    // >= r3.4.91 before the ar/be yamls deserialize again.
+    // source. Until now the yaml comments were the sole guard against that combination.
+    //
+    // Both values are read through the SAME binding the tenant uses rather than off the raw text,
+    // because YAML has more than one spelling of true: a text probe written for "true" passes a
+    // definition saying "yes", "on" or "!!bool true", and the guard then reports no violation for
+    // exactly the combination it exists to forbid. The binding has no spellings - it answers with
+    // a bool - so this covers the ones nobody has written yet as well.
     [Fact]
-    public void ArBeYamls_DryRunWriteNode_ForbidsDeleteAfterSuccess()
+    public async Task ArBeYamls_DryRunWriteNode_ForbidsDeleteAfterSuccess()
     {
         var violations = new List<string>();
         var checkedYamls = 0;
 
         foreach (var yaml in AllPipelineYamls)
         {
-            var raw = File.ReadAllText(RepoFiles.Find(Path.Combine("pipelines", yaml)));
-            if (!raw.Contains("DilosFileConfirm@1", StringComparison.Ordinal))
+            var root = await PipelineDefinitions.DeserializeAsync(yaml);
+            var nodes = Walk(root.Transformations).ToList();
+            if (!nodes.OfType<DilosFileConfirmNodeConfiguration>().Any())
             {
                 continue; // no confirm node - this yaml deletes no source file (as/ck/ai)
             }
@@ -595,22 +626,18 @@ public class PipelineYamlContractTests
             checkedYamls++;
 
             // Both sides are read for EVERY ar/be yaml and only the COMBINATION is a violation -
-            // the guard never skips itself. It used to return early when the dry-run probe missed,
-            // which made a spelling the probe did not know ("True", quoted) silently disable the
-            // whole check. YAML reads true/True/TRUE and their quoted forms all as true, so the
-            // probe matches them all; the go-live combination (dryRun false/absent + deleting) is
+            // the guard never skips itself. The go-live combination (dryRun false + deleting) is
             // legitimate and simply produces no violation.
-            var dryRun = Regex.IsMatch(raw, @"(?mi)^\s*dryRun\s*:\s*[""']?true[""']?\s*(#.*)?$");
-            var deleting = Regex.Matches(raw, @"(?m)^\s*deleteAfterSuccess\s*:\s*(\S+)")
-                .Where(m => !m.Groups[1].Value.Trim('"', '\'')
-                    .Equals("false", StringComparison.OrdinalIgnoreCase))
-                .ToList();
+            var deleting = nodes.OfType<DilosFileGateNodeConfiguration>()
+                .Count(gate => gate.DeleteAfterSuccess);
+            var dryRunning = nodes.OfType<WeClappWriteNodeConfiguration>()
+                .Count(write => write.DryRun);
 
-            if (dryRun && deleting.Count > 0)
+            if (dryRunning > 0 && deleting > 0)
             {
                 violations.Add(
-                    $"{yaml}: a write node runs with dryRun: true while {deleting.Count} " +
-                    "deleteAfterSuccess value(s) are not false - the write would be skipped and " +
+                    $"{yaml}: {dryRunning} write node(s) run with dryRun: true while {deleting} " +
+                    "gate(s) delete after success - the write would be skipped and " +
                     "DilosFileConfirm@1 (which never sees the write node's dryRun) would still " +
                     "delete the LKV file");
             }
@@ -984,6 +1011,8 @@ public class PipelineYamlContractTests
         Assert.Single(gated.OfType<ApplyChangesNodeConfiguration2>());
         Assert.Equal(nodes.OfType<SftpUploadNodeConfiguration>().Count(),
             gated.OfType<SftpUploadNodeConfiguration>().Count());
+        Assert.Equal(nodes.OfType<CreateUpdateInfoNodeConfiguration>().Count(),
+            gated.OfType<CreateUpdateInfoNodeConfiguration>().Count());
         Assert.Equal(nodes.OfType<ApplyChangesNodeConfiguration2>().Count(),
             gated.OfType<ApplyChangesNodeConfiguration2>().Count());
     }

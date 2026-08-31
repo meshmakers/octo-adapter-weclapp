@@ -116,7 +116,11 @@ asserts every `ForEach@1` has a non-null, non-`"$"` `targetPath` and
 (`SftpList@1` -> `DilosFileGate@1` on the same path -> `SftpDownload@1` as the FIRST per-file
 child, reading `$.current.fullPath`; the write node's `contentPath` is the download's
 `targetPath` and its `fileNamePath` is `$.current.name`) — every one of those strings can be
-changed on ONE side and still ship green, doing the wrong amount of work;
+changed on ONE side and still ship green, doing the wrong amount of work — plus each yaml's
+`filePattern` EXACTLY (`AR*TXT` / `BE*txt`), which selects the files AND, through the `source`
+object the listing stamps on every element, the scope the gate keys its cross-tick memory on;
+nothing else pinned it, so a blanked or merely widened glob shipped green and surfaced at the
+tenant at the earliest;
 `ArBeYamls_ConfigureDeleteAfterSuccessExactlyOnce` allows the keep/delete mode in exactly one
 place per ar/be yaml, on `DilosFileGate@1`;
 `ArBeYamls_ReadDilosFilesAsIso88591` pins the effective `encoding` of every `SftpDownload@1` to
@@ -124,7 +128,11 @@ the code page the DILOS parsers expect (the node defaults to utf-8, which turns 
 into replacement characters without failing anything);
 `ArBeYamls_DilosFileConfirm_IsTheLastPerFileForEachChild` pins the confirm node as the LAST
 per-file `ForEach@1` child; `ArBeYamls_DryRunWriteNode_ForbidsDeleteAfterSuccess` forbids
-`deleteAfterSuccess: true` while the write node runs `dryRun: true`;
+`deleteAfterSuccess: true` while the write node runs `dryRun: true`, reading BOTH values through
+the same binding the tenant uses rather than off the raw text — YAML has several spellings of true
+(`yes`, `on`, `!!bool true`) and a text probe written for `true` passes them all as "not set",
+i.e. green for exactly the combination that consumes the only copy of an LKV file without writing
+it;
 `AllPipelineYamls_UseApiConfigurationOnly_NoInlineCredentialsOrPlaceholders` keeps WeClapp access
 on `apiConfiguration` (no inline `apiKey`/`baseUrl`, no substitution placeholder);
 `AllPipelineYamls_EveryAttributeUpdate_DeclaresValueType` requires every `ApplyChanges` attribute
@@ -227,9 +235,15 @@ claims completeness invites re-pinning an invariant that already holds.
   `WeClappResolveSupplySources@1`, which drops system articles (`LOADING_EQUIPMENT`) and projects
   the EK-Preis as a finished scalar on `ekPreis` (first parseable
   `supplySources[].articlePrices[].price`, absent means `0`, format `0.####` invariant).
-  **The join fails LOUD**: an `articleSupplySource` without an `id`, a stub pointing at an
-  entity that was not fetched, a `supplySources` value that is not an array — each one throws
-  naming the element, because all of them end in the same place, `ekPreis` = `0`, which is
+  **The drop runs BEFORE the join**, and the order is load-bearing: a system article appears in
+  no delivered file, so nothing about it can make one wrong, while joining first let one
+  unresolvable stub on a pallet (WeClapp leaves the stub behind when an `articleSupplySource` is
+  archived) block every hourly delivery — no file, no marker — over a record that is discarded
+  one step later.
+  **For the articles that remain, the join fails LOUD**: an `articleSupplySource` without an
+  `id`, a stub pointing at an entity that was not fetched, a `supplySources` value that is not
+  an array — each one throws naming the element, because all of them end in the same place,
+  `ekPreis` = `0`, which is
   also the legitimate value for an article without a purchase price. Neither the delivered
   file nor any downstream step can tell those apart, and the delivery burns the per-day
   marker on its way out, so a silently mispriced article master would stand at LKV for the
