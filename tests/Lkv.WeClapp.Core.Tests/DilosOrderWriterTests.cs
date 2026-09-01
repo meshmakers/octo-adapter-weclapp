@@ -12,7 +12,7 @@ public class DilosOrderWriterTests
     private static readonly DilosOrderContext Ctx = new()
     {
         Submandant = "51696697501",
-        TaxRatePercentById = new Dictionary<string, int> { ["3681"] = 20, ["3682"] = 19 },
+        TaxRatePercentById = new Dictionary<string, int> { ["3681"] = 20, ["3682"] = 19, ["3683"] = 0 },
     };
 
     [Fact]
@@ -184,9 +184,14 @@ public class DilosOrderWriterTests
 
     // The VAT field is the rate in whole percent, NOT the DILOS tax key: the partner's key table
     // maps 20 % to key 6 AND to key 20, so a key would be ambiguous where the rate never is.
+    // A rate of ZERO is a stated rate and renders "0": the customer's tax-free intra-EU supplies
+    // are taxed under such an entity (live taxKey AT_ADD_TAX_FREE_EU, taxValue "0"), and folding
+    // them into an empty field would make them indistinguishable from a position that names no
+    // tax entity at all.
     [Theory]
     [InlineData("3681", "20")]
     [InlineData("3682", "19")]
+    [InlineData("3683", "0")]
     public void RenderPositions_VatField_IsTheRateInPercent(string taxId, string expected)
     {
         var o = new WeClappSalesOrder
