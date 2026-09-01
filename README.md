@@ -12,10 +12,13 @@ template.
     Vienna clock read - a stand-in until `DateTime@1` gains a time zone),
     `WeClappResolveSupplySources@1` (replaces the article supply-source stubs with the fetched
     entities that carry the EK prices, drops system articles and projects the DILOS EK-Preis),
-    `WeClappToCk@1`, `DilosRender@1` (AI content + golden file name; the AS article master
-    renders through the product's `RenderDelimitedText@1` with the 34 columns spelled out in the
-    yaml, the fetching is the product's `MakeHttpRequest@1` and the delivery its `SftpUpload@1`
-    with `encoding: iso-8859-1`)
+    `WeClappToCk@1`, `DilosRender@1` (AI content + golden file name, and the join that gives every
+    AI position its MwSt rate: a WeClapp position names a `taxId` but states no percentage, so the
+    node reads the separately fetched `tax` entities named by its `taxesPath` — the same
+    fetch-the-second-entity shape `WeClappResolveSupplySources@1` uses for the EK prices; the AS
+    article master renders through the product's `RenderDelimitedText@1` with the 34 columns
+    spelled out in the yaml, the fetching is the product's `MakeHttpRequest@1` and the delivery its
+    `SftpUpload@1` with `encoding: iso-8859-1`)
   - return path: `DilosFileGate@1` (per-file keep/delete state between ticks; the listing and
     the download themselves are the product's `SftpList@1` and `SftpDownload@1`),
     `DilosFileConfirm@1` (per-file keep/delete confirmation; last child of the
@@ -43,8 +46,12 @@ template.
     first and seeds the data context; in
     4 of the 5 pipelines a per-item `ForEach@1` (`keyPath: $.current`,
     `maxDegreeOfParallelism: 1`) then fans the former per-execution chain out over the
-    seeded array (the AS pipeline has no `ForEach@1` - it renders one batch per tick, and
-    both of its fetches sit inside the per-day K1 gate). Neither trigger polls or fires on
+    seeded array. TWO of the outbound pipelines make two fetches, for the same reason and in
+    the same shape: the AS pipeline fetches `/article` plus the `/articleSupplySource`
+    entities that carry the EK prices (both inside its per-day K1 gate), and the AI pipeline
+    fetches `/salesOrder` plus the `/tax` entities that carry the VAT rates — the second fetch
+    ahead of the per-order loop, so the rate set is read once per tick and not once per order.
+    The AS pipeline is the one with no `ForEach@1`: it renders one batch per tick. Neither trigger polls or fires on
     (re)deploy — importing a `PipelineTrigger` RT entity schedules nothing by itself; only
     `octo-cli -c DeployTriggers` activates the schedule (also required again after any
     `Enabled` flip)
@@ -65,6 +72,13 @@ template.
 `azure-pipelines.yml` builds the multi-arch Docker image `meshmakers/octo-weclapp-adapter`
 and publishes the Helm chart `octo-weclapp-adapter` to the dev channel on every `main`
 build (release channel on `r*` tags).
+
+**Deploy the image before importing changed YAMLs.** A pipeline definition is deserialized
+strictly, so a yaml naming a config key the running image does not know fails its registration at
+the tenant — and the reverse order fails later and quieter, at RUN time, once a node is asked for
+behaviour the stored definition no longer describes. `weclapp-orders-to-ai.yaml` carries the new
+`taxesPath` on `DilosRender@1`, so this release is incompatible in both directions: roll the image
+out first, then re-import the yaml.
 
 ## Build & test
 

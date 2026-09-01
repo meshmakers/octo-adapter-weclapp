@@ -183,13 +183,19 @@ silent no-delivery on alerting built around failed executions;
 `status-eq=ORDER_CONFIRMATION_PRINTED` in that pipeline's order url (selected by `/salesOrder`,
 since the pipeline pages a second WeClapp entity now) - the customer's historical order stock is
 CLOSED and the dedup gate stops only REPEAT deliveries, so a url edit that drops the filter would
-mass-deliver the whole backlog on the next tick with nothing failing;
+mass-deliver the whole backlog on the next tick with nothing failing. It also pins that the
+per-order customer lookup is NOT paged, which the retired "the single paged request" predicate used
+to say implicitly: paging replaces the response body at `targetPath` with the flattened item array,
+so `$.customerResponse.result[0]` would resolve to nothing and every AI file would ship without a
+recipient;
 `OrdersToAiYaml_TaxLookupFeedsTheAiRender` pins the join behind the position MwSt rate: exactly one
-`/tax` request, PAGED (235 tax entities against a page size of 100), at the TOP level so the set is
-read once per tick rather than once per order, and `DilosRender@1`'s `taxesPath` equal to that
-request's `targetPath`. Each of those can be edited alone and ship green, and the failure is the
-quiet kind - an empty MwSt field is the legitimate value for a position that states no tax, and the
-partner's own files carry it, so a file missing the promised rate looks exactly like a correct one;
+`/tax` request, PAGED (235 tax entities against a page size of 100), at the top level and BEFORE the
+per-order `ForEach@1` (an index comparison - placed AFTER the loop a fetch is still "outside" it and
+every order would fail on a rate that is not in the context yet), and `DilosRender@1`'s `taxesPath`
+equal to that request's `targetPath`. Each of those can be edited alone and ship green, and the
+failure is the quiet kind - an empty MwSt field is the legitimate value for a position that states
+no tax, and the partner's own files carry it, so a file missing the promised rate looks exactly like
+a correct one;
 `OrdersToAiYaml_CustomerLookupFeedsTheOrderTransform` pins the three strings that must agree for
 an AI file to carry a recipient (the lookup's `targetPath`, the transform's `customerPath`, and
 the lookup being the FIRST loop child), plus the lookup addressing THIS order's `customerId`;
@@ -234,14 +240,27 @@ claims completeness invites re-pinning an invariant that already holds.
   (10.00/3 → 3.33 × 3 = 9.99). The line total is the invoiced amount and stays authoritative; the
   alternative (deriving 19 from the rounded 18) would make the file self-consistent but disagree
   with WeClapp and with K* field 65.
-- **The rate needs a second entity.** A position names a `taxId`, never a percentage — the rate
-  lives on the WeClapp `tax` entity (`taxValue`, a STRING, e.g. "20"/"13.5"). The ai yaml therefore
-  fetches `/tax` once per tick into `$.taxes` and `DilosRender@1` joins it (`taxesPath`), the same
-  fetch-the-second-entity shape the AS delivery uses for `articleSupplySource`. A position naming a
-  tax entity that is not in the fetched set FAILS the order rather than rendering an empty rate:
-  empty is legitimate for a position that states no tax at all, so the two are indistinguishable in
-  the delivered file — and the AI delivery writes its export marker on the way out, which would make
-  the wrong file the final one for that order.
+- **The rate needs a second entity, and it is validated LATE.** A position names a `taxId`, never a
+  percentage — the rate lives on the WeClapp `tax` entity (`taxValue`, a STRING, e.g. "20"/"13.5").
+  The ai yaml fetches `/tax` once per tick into `$.taxes`, the same fetch-the-second-entity shape
+  the AS delivery uses for `articleSupplySource`. `DilosRender@1` only INDEXES that set (array
+  present, an id per entity, no id twice — the last doubling as the paging-overlap detector) and
+  carries every `taxValue` across unparsed; `DilosOrderWriter` parses and range-checks the rate at
+  the position that names it. That split is deliberate: parsing at index time would validate all
+  235 entities on every execution, so one broken record none of today's orders is taxed under would
+  fail every order until someone repaired it. A position naming a tax entity that was not fetched,
+  or one whose rate is unreadable or outside 0-100, fails THAT order rather than rendering an empty
+  rate: empty is legitimate for a position that states no tax at all, so the two are
+  indistinguishable in the delivered file — and the AI delivery writes its export marker on the way
+  out, which would make the wrong file the final one for that order.
+- **Amounts and rates parse with `AllowDecimalPoint | AllowLeadingSign`, never `NumberStyles.Any`.**
+  Under `Any` + InvariantCulture a comma is a GROUP separator and parentheses are an accounting
+  negative, so `"44,67"` reads as 4467 and `"(20)"` as -20 — silently, straight into a delivered
+  file. A missing or unreadable amount fails the order instead of rendering `0.00`: that fallback
+  predates the price agreement, and now that the prices are contract it is an actively wrong
+  statement nothing downstream can tell from a genuine zero. A real zero still renders `0.00`.
+  Quantity is the deliberate exception — it is only ever divided BY, field 11 carries its raw text,
+  and an unreadable value answers 0, which means "no quantity to divide by".
 
 ## AS/AI Delivery (WeClapp → SFTP)
 - Render and transport are separate nodes, and the RENDER differs per delivery kind: AI content
