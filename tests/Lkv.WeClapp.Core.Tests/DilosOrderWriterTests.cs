@@ -392,6 +392,66 @@ public class DilosOrderWriterTests
             () => DilosOrderWriter.RenderPositions(o, Ctx).ToList());
     }
 
+    // The quantity is an input to two contract fields, not the pass-through text that field 11
+    // makes it look like: 18 and 20 are the line amounts DIVIDED by it. A value that does not read
+    // as a number used to answer 0, and PerUnit then stated the LINE amount as the unit price - on
+    // a real quantity of 3 that is threefold, while 19 and 21 beside it stayed correct, so no sum
+    // in the file disagrees and nothing downstream can notice. WeClappOrderItem.Quantity defaults
+    // to "", which is what makes the empty case reachable rather than theoretical.
+    [Theory]
+    [InlineData("")]          // the model's own default
+    [InlineData(null)]
+    [InlineData("2,5")]       // comma decimal
+    [InlineData("drei")]
+    public void RenderPositions_QuantityMissingOrUnreadable_FailsLoudly(string? quantity)
+    {
+        var o = new WeClappSalesOrder
+        {
+            Id = "5910986621265",
+            OrderItems =
+            {
+                new WeClappOrderItem
+                {
+                    PositionNumber = 1, ArticleId = "A1", Quantity = quantity!,
+                    NetAmount = "30.00", GrossAmount = "36.00", TaxId = "3681",
+                },
+            },
+        };
+
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => DilosOrderWriter.RenderPositions(o, Ctx).ToList());
+
+        Assert.Contains("Mengeabg", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("position 1", ex.Message, StringComparison.Ordinal);
+    }
+
+    // A parseable "0" is a different statement from an unreadable one and keeps its documented
+    // meaning: there is nothing to divide by, so the unit price IS the line amount.
+    [Fact]
+    public void RenderPositions_QuantityZero_KeepsTheLineAmountAsTheUnitPrice()
+    {
+        var o = new WeClappSalesOrder
+        {
+            Id = "5910986621265",
+            OrderItems =
+            {
+                new WeClappOrderItem
+                {
+                    PositionNumber = 1, ArticleId = "A1", Quantity = "0",
+                    NetAmount = "30.00", GrossAmount = "36.00", TaxId = "3681",
+                },
+            },
+        };
+
+        var p = DilosOrderWriter.RenderPositions(o, Ctx).Single();
+
+        Assert.Equal("0", Field(p, 11));      // the raw quantity still travels in field 11
+        Assert.Equal("30.00", Field(p, 18));  // = the line amount, not a division by zero
+        Assert.Equal("30.00", Field(p, 19));
+        Assert.Equal("36.00", Field(p, 20));
+        Assert.Equal("36.00", Field(p, 21));
+    }
+
     // A price of genuinely zero is a legitimate statement and must keep rendering 0.00 - the
     // fail-loud above is about a MISSING amount, never about a cheap one.
     [Fact]

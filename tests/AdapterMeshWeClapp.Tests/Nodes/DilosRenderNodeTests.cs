@@ -220,22 +220,28 @@ public class DilosRenderNodeTests
     // The id is the only thing a position can point at, and the rate is the only thing the entity
     // is fetched for - an entity missing either is unusable, and both defects end in the same
     // indistinguishable place (a position whose rate silently stays empty).
+    // The two halves fail in DIFFERENT places now, and the expected message says which: a
+    // missing id makes the entity unreachable and is caught while the set is indexed, an
+    // unreadable rate is caught at the position that names it. Asserting only the exception
+    // type would let one guard silently cover for the other.
     [Theory]
-    [InlineData(null, "20")]
-    [InlineData("", "20")]
-    [InlineData("3681", null)]
-    [InlineData("3681", "")]
-    [InlineData("3681", "not a number")]
-    public async Task ProcessObjectAsync_UnusableTaxEntity_Throws(string? id, string? taxValue)
+    [InlineData(null, "20", "carries no 'id'")]
+    [InlineData("", "20", "carries no 'id'")]
+    [InlineData("3681", null, "is not a plain decimal percentage")]
+    [InlineData("3681", "", "is not a plain decimal percentage")]
+    [InlineData("3681", "not a number", "is not a plain decimal percentage")]
+    public async Task ProcessObjectAsync_UnusableTaxEntity_Throws(string? id, string? taxValue,
+        string expected)
     {
         Configure("AI", submandant: "51696697501");
         Taxes(new WeClappTax { Id = id!, TaxValue = taxValue });
         A.CallTo(() => _dataContext.GetArray<WeClappSalesOrder>("$.items"))
             .Returns(new List<WeClappSalesOrder?> { OrderTaxed("3681") });
 
-        await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
+        var ex = await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
             () => _sut.ProcessObjectAsync(_dataContext, _nodeContext));
 
+        Assert.Contains(expected, ex.Message, StringComparison.Ordinal);
         A.CallTo(() => _next(_dataContext, _nodeContext)).MustNotHaveHappened();
     }
 
@@ -251,7 +257,7 @@ public class DilosRenderNodeTests
         var ex = await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
             () => _sut.ProcessObjectAsync(_dataContext, _nodeContext));
 
-        Assert.Contains("3681", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("appears more than once", ex.Message, StringComparison.Ordinal);
 
         // The same anchor the other refusals carry: a rejected tax set leaves nothing behind for
         // the delivery to pick up, and does not let the chain continue.
@@ -275,6 +281,7 @@ public class DilosRenderNodeTests
             () => _sut.ProcessObjectAsync(_dataContext, _nodeContext));
 
         Assert.Contains("DilosRender", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("not among the", ex.Message, StringComparison.Ordinal);
         Assert.Contains("9999", ex.Message, StringComparison.Ordinal);
         A.CallTo(() => _dataContext.Set(A<string>._, A<string>._, A<DocumentModes>._,
             A<ValueKinds>._, A<TargetValueWriteModes>._)).MustNotHaveHappened();
@@ -322,9 +329,10 @@ public class DilosRenderNodeTests
         A.CallTo(() => _dataContext.GetArray<WeClappSalesOrder>("$.items"))
             .Returns(new List<WeClappSalesOrder?>());
 
-        await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
+        var ex = await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
             () => _sut.ProcessObjectAsync(_dataContext, _nodeContext));
 
+        Assert.Contains("rendered no content", ex.Message, StringComparison.Ordinal);
         A.CallTo(() => _dataContext.Set(A<string>._, A<string>._, A<DocumentModes>._,
             A<ValueKinds>._, A<TargetValueWriteModes>._)).MustNotHaveHappened();
         A.CallTo(() => _next(_dataContext, _nodeContext)).MustNotHaveHappened();
@@ -352,8 +360,10 @@ public class DilosRenderNodeTests
         A.CallTo(() => _dataContext.GetArray<WeClappSalesOrder>("$.items"))
             .Returns(new List<WeClappSalesOrder?>());
 
-        await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
+        var ex = await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
             () => _sut.ProcessObjectAsync(_dataContext, _nodeContext));
+
+        Assert.Contains("Submandant", ex.Message, StringComparison.Ordinal);
     }
 
     // The properties are non-nullable, but a yaml carrying an explicit null ("submandant:" with no
@@ -431,6 +441,29 @@ public class DilosRenderNodeTests
         A.CallTo(() => _next(_dataContext, _nodeContext)).MustHaveHappenedOnceExactly();
     }
 
+    /// <summary>
+    /// An order that RENDERS - every amount the writer needs, stated. The file-name guards run
+    /// after the content, so a fixture that cannot render never reaches them: the render refuses
+    /// first, with a different message, and a test asserting only the exception TYPE would pass
+    /// while proving nothing about the guard it is named for. Hence this helper, and hence the
+    /// message assertions at those four tests.
+    /// </summary>
+    private static WeClappSalesOrder RenderableOrder(string id) => new()
+    {
+        Id = id,
+        OrderNumber = "74299",
+        CustomerNumber = "7067387625809",
+        GrossAmount = "35.99",
+        OrderItems =
+        {
+            new WeClappOrderItem
+            {
+                PositionNumber = 1, ArticleId = "43222003744925", Quantity = "1",
+                NetAmount = "29.99", GrossAmount = "35.99",
+            },
+        },
+    };
+
     private static WeClappSalesOrder MinimalOrder() => new()
     {
         Id = "5910986621265",
@@ -453,8 +486,10 @@ public class DilosRenderNodeTests
         A.CallTo(() => _dataContext.GetArray<WeClappSalesOrder>("$.items"))
             .Returns(null);
 
-        await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
+        var ex = await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
             () => _sut.ProcessObjectAsync(_dataContext, _nodeContext));
+
+        Assert.Contains("No order array found", ex.Message, StringComparison.Ordinal);
     }
 
     // --- fileNameTargetPath: golden DILOS file naming ------------------------------------
@@ -500,16 +535,13 @@ public class DilosRenderNodeTests
     public async Task ProcessObjectAsync_AiModeFileNameWithMultipleOrders_ThrowsAmbiguousName()
     {
         Configure("AI", submandant: "51696697501", fileNameTargetPath: "$.dilosAiFileName");
-        var orders = new List<WeClappSalesOrder?>
-        {
-            new() { Id = "1", OrderNumber = "622075", CustomerNumber = "1" },
-            new() { Id = "2", OrderNumber = "622076", CustomerNumber = "1" },
-        };
-        A.CallTo(() => _dataContext.GetArray<WeClappSalesOrder>("$.items")).Returns(orders);
+        A.CallTo(() => _dataContext.GetArray<WeClappSalesOrder>("$.items"))
+            .Returns(new List<WeClappSalesOrder?> { RenderableOrder("1"), RenderableOrder("2") });
 
-        await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
+        var ex = await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
             () => _sut.ProcessObjectAsync(_dataContext, _nodeContext));
 
+        Assert.Contains("exactly one order per execution", ex.Message, StringComparison.Ordinal);
         A.CallTo(() => _next(_dataContext, _nodeContext)).MustNotHaveHappened();
     }
 
@@ -518,10 +550,12 @@ public class DilosRenderNodeTests
     {
         Configure("AI", submandant: "51696697501", fileNameTargetPath: "$.dilosAiFileName");
         A.CallTo(() => _dataContext.GetArray<WeClappSalesOrder>("$.items"))
-            .Returns(new List<WeClappSalesOrder?> { new() { Id = "", OrderNumber = "74299", CustomerNumber = "1" } });
+            .Returns(new List<WeClappSalesOrder?> { RenderableOrder("") });
 
-        await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
+        var ex = await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
             () => _sut.ProcessObjectAsync(_dataContext, _nodeContext));
+
+        Assert.Contains("no id (Auftragsnummer1)", ex.Message, StringComparison.Ordinal);
     }
 
     // fileNameTargetPath is optional: with it unset the node writes the content and nothing
@@ -560,10 +594,12 @@ public class DilosRenderNodeTests
         // the guard must answer with the domain exception, not a NullReferenceException.
         Configure("AI", submandant: "51696697501", fileNameTargetPath: "$.dilosAiFileName");
         A.CallTo(() => _dataContext.GetArray<WeClappSalesOrder>("$.items"))
-            .Returns(new List<WeClappSalesOrder?> { new() { Id = null!, OrderNumber = "74299", CustomerNumber = "1" } });
+            .Returns(new List<WeClappSalesOrder?> { RenderableOrder(null!) });
 
-        await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
+        var ex = await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
             () => _sut.ProcessObjectAsync(_dataContext, _nodeContext));
+
+        Assert.Contains("no id (Auftragsnummer1)", ex.Message, StringComparison.Ordinal);
     }
 
     // The AI name embeds the external WeClapp order number. A name carrying path segments
@@ -578,14 +614,12 @@ public class DilosRenderNodeTests
     {
         Configure("AI", submandant: "51696697501", fileNameTargetPath: "$.dilosAiFileName");
         A.CallTo(() => _dataContext.GetArray<WeClappSalesOrder>("$.items"))
-            .Returns(new List<WeClappSalesOrder?>
-            {
-                new() { Id = id, OrderNumber = "74299", CustomerNumber = "7067387625809" },
-            });
+            .Returns(new List<WeClappSalesOrder?> { RenderableOrder(id) });
 
-        await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
+        var ex = await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
             () => _sut.ProcessObjectAsync(_dataContext, _nodeContext));
 
+        Assert.Contains("path separator or dot segment", ex.Message, StringComparison.Ordinal);
         A.CallTo(() => _dataContext.Set(A<string>._, A<string>._, A<DocumentModes>._,
             A<ValueKinds>._, A<TargetValueWriteModes>._)).MustNotHaveHappened();
         A.CallTo(() => _next(_dataContext, _nodeContext)).MustNotHaveHappened();
@@ -602,9 +636,33 @@ public class DilosRenderNodeTests
         A.CallTo(() => _dataContext.GetArray<WeClappSalesOrder>("$.items"))
             .Returns(new List<WeClappSalesOrder?>());
 
-        await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
+        var ex = await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
             () => _sut.ProcessObjectAsync(_dataContext, _nodeContext));
 
+        Assert.Contains("rendered no content", ex.Message, StringComparison.Ordinal);
+        A.CallTo(() => _dataContext.Set(A<string>._, A<string>._, A<DocumentModes>._,
+            A<ValueKinds>._, A<TargetValueWriteModes>._)).MustNotHaveHappened();
+        A.CallTo(() => _next(_dataContext, _nodeContext)).MustNotHaveHappened();
+    }
+
+    // A quantity that does not read as a number fails the order here rather than quietly inside the
+    // arithmetic: fields 18 and 20 are DIVIDED by it, so the former 0 fallback made the record state
+    // the LINE amount as the unit price - too high by exactly the quantity, with the line prices
+    // beside it still correct and nothing downstream able to tell.
+    [Fact]
+    public async Task ProcessObjectAsync_PositionWithAnUnreadableQuantity_FailsAttributedToTheNode()
+    {
+        Configure("AI", submandant: "51696697501");
+        var order = RenderableOrder("5910986621265");
+        order.OrderItems[0] = order.OrderItems[0] with { Quantity = "drei" };
+        A.CallTo(() => _dataContext.GetArray<WeClappSalesOrder>("$.items"))
+            .Returns(new List<WeClappSalesOrder?> { order });
+
+        var ex = await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
+            () => _sut.ProcessObjectAsync(_dataContext, _nodeContext));
+
+        Assert.Contains("DilosRender", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("Mengeabg", ex.Message, StringComparison.Ordinal);
         A.CallTo(() => _dataContext.Set(A<string>._, A<string>._, A<DocumentModes>._,
             A<ValueKinds>._, A<TargetValueWriteModes>._)).MustNotHaveHappened();
         A.CallTo(() => _next(_dataContext, _nodeContext)).MustNotHaveHappened();

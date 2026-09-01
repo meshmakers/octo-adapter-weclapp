@@ -134,7 +134,15 @@ public static class DilosOrderWriter
         var where = $"Order '{orderId}' position {pos}";
         var net = Amount(netAmount, "Positionspreis netto", where);
         var gross = Amount(grossAmount, "Positionspreis brutto", where);
-        var qty = ParseDec(quantity);
+
+        // The quantity is read the same loud way as the amounts, and for the same reason: fields 18
+        // and 20 are DIVIDED by it, so it is an input to two contract values rather than the piece
+        // of pass-through text field 11 makes it look like. A value that does not read as a number
+        // used to answer 0, which PerUnit then treats as "nothing to divide by" - the record would
+        // state the LINE amount as the unit price, too high by exactly the quantity (threefold on a
+        // quantity of 3) while the line prices beside it stayed correct. Nothing downstream can see
+        // that, and the model's own "" default makes the path reachable.
+        var qty = Amount(quantity, "Mengeabg", where);
 
         var f = NewFields(PositionFieldCount);
         f[1] = "P*";
@@ -209,26 +217,27 @@ public static class DilosOrderWriter
     }
 
     /// <summary>
-    /// An amount the delivered file must state. Absent or unreadable fails the order: now that the
-    /// price fields are contract, a 0.00 stand-in is an actively wrong statement which neither the
-    /// file nor any downstream step can tell from a genuine zero - and the AI delivery writes its
-    /// export marker on the way out. A real zero parses and renders 0.00 as it always did.
+    /// A number the delivered record is built from - a price, or the quantity the unit prices are
+    /// divided by. Absent, empty or unreadable fails the order: every one of those used to answer
+    /// 0, and a 0 stand-in is an actively wrong statement which neither the file nor any downstream
+    /// step can tell from a genuine zero, in a delivery that writes its export marker on the way
+    /// out. A real zero parses and keeps its meaning.
     /// </summary>
-    /// <exception cref="InvalidOperationException">The amount is null or not a plain decimal.
-    /// </exception>
+    /// <exception cref="InvalidOperationException">The value is missing, empty, or not a plain
+    /// decimal.</exception>
     private static decimal Amount(string? raw, string what, string where)
     {
-        if (raw is null)
+        if (string.IsNullOrEmpty(raw))
         {
             throw new InvalidOperationException(
-                $"{where} states no {what} - the price fields are part of the delivery contract, so " +
-                "a missing amount fails the order instead of rendering 0.00");
+                $"{where} states no {what} - it is part of the delivered record, so a missing value " +
+                "fails the order instead of being stood in for by 0");
         }
 
         if (!decimal.TryParse(raw, AmountStyles, CultureInfo.InvariantCulture, out var value))
         {
             throw new InvalidOperationException(
-                $"{where} states the {what} as '{raw}', which is not a plain decimal amount");
+                $"{where} states the {what} as '{raw}', which is not a plain decimal number");
         }
 
         return value;
@@ -246,15 +255,10 @@ public static class DilosOrderWriter
     private static string Date(long epochMs) =>
         ViennaTime.ToViennaDate(epochMs).ToString("dd.MM.yyyy", CultureInfo.InvariantCulture);
 
-    /// <summary>The quantity, which is not an amount the file computes with: it is only ever
-    /// divided BY, and field 11 carries the raw text either way. A value that does not read as a
-    /// number answers 0, which <see cref="PerUnit" /> treats as "nothing to divide by".</summary>
-    private static decimal ParseDec(string? s) =>
-        decimal.TryParse(s, AmountStyles, CultureInfo.InvariantCulture, out var d) ? d : 0m;
-
     /// <summary>Unit price from a LINE total: WeClapp states netAmount/grossAmount per position and
-    /// its own unitPrice is the pre-discount list price, which matches neither. A zero quantity
-    /// keeps the line total rather than dividing by it.</summary>
+    /// its own unitPrice is the pre-discount list price, which matches neither. A quantity of zero
+    /// keeps the line total rather than dividing by it - that is the one quantity this may happen
+    /// for, because an unreadable one no longer reaches here.</summary>
     private static decimal PerUnit(decimal lineAmount, decimal quantity) =>
         quantity == 0m ? lineAmount : lineAmount / quantity;
 }

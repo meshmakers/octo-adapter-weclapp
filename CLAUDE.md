@@ -256,11 +256,22 @@ claims completeness invites re-pinning an invariant that already holds.
 - **Amounts and rates parse with `AllowDecimalPoint | AllowLeadingSign`, never `NumberStyles.Any`.**
   Under `Any` + InvariantCulture a comma is a GROUP separator and parentheses are an accounting
   negative, so `"44,67"` reads as 4467 and `"(20)"` as -20 — silently, straight into a delivered
-  file. A missing or unreadable amount fails the order instead of rendering `0.00`: that fallback
-  predates the price agreement, and now that the prices are contract it is an actively wrong
-  statement nothing downstream can tell from a genuine zero. A real zero still renders `0.00`.
-  Quantity is the deliberate exception — it is only ever divided BY, field 11 carries its raw text,
-  and an unreadable value answers 0, which means "no quantity to divide by".
+  file. A missing, empty or unreadable value fails the order instead of standing in as `0`: that
+  fallback predates the price agreement, and now that the prices are contract it is an actively
+  wrong statement nothing downstream can tell from a genuine zero. A real zero still renders `0.00`.
+  **The quantity obeys the same rule — it is not the exception it looks like.** Field 11 carries it
+  as text, but 18 and 20 are the line amounts DIVIDED by it, so an unreadable quantity used to make
+  `PerUnit` state the LINE amount as the unit price: threefold on a real quantity of 3, while 19 and
+  21 beside it stayed correct, so no sum inside the file disagrees and nothing downstream can see
+  it. `WeClappOrderItem.Quantity` defaults to `""`, which makes that path reachable rather than
+  theoretical. A parseable `0` keeps its documented meaning: nothing to divide by, so the unit price
+  is the line amount.
+- **A guard that runs later than another cannot be tested with a fixture the earlier one rejects.**
+  `DilosRenderNode` renders the CONTENT before it builds the file name, so the four file-name guard
+  tests went vacuous the moment amounts became fail-loud: their orders carried no `GrossAmount`, the
+  render refused first, and asserting only the exception TYPE kept them green while proving nothing
+  (verified — with BOTH name guards deleted, all 39 tests of the class still passed). Fixtures for a
+  late guard must render, and every one of those tests asserts the guard's own MESSAGE now.
 
 ## AS/AI Delivery (WeClapp → SFTP)
 - Render and transport are separate nodes, and the RENDER differs per delivery kind: AI content
