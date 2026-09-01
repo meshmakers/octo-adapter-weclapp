@@ -8,9 +8,13 @@ namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Nodes;
 
 /// <summary>
 /// Configuration for the DilosRender node. Reads the WeClapp sales order from <c>Path</c> and
-/// writes the rendered DILOS AI file content (pipe-delimited, LF - all real Billbee-produced
-/// AS/AI files are pure LF, the DILOS-import-proven format; CRLF only occurs in files DILOS
-/// itself produces) to <c>TargetPath</c>.
+/// writes the rendered DILOS AI file content (pipe-delimited, LF) to <c>TargetPath</c>.
+///
+/// The two deliveries separate their records differently, and only the AI one is rendered here.
+/// AI is LF, which the partner's own files show, and <c>JoinLf</c> below is where that lives.
+/// The AS article master is contracted as CR+LF and is rendered by RenderDelimitedText@1 out of
+/// weclapp-articles-to-as.yaml, not by this class - so the difference is a contract, not a
+/// leftover, and neither delivery should be moved onto the other's separator.
 /// </summary>
 [NodeName("DilosRender", 1)]
 public record DilosRenderNodeConfiguration : SourceTargetPathNodeConfiguration

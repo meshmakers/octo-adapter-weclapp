@@ -256,16 +256,17 @@ claims completeness invites re-pinning an invariant that already holds.
   anchor is `AsDeliveryParityTests`: it drives the SHIPPED yaml's own node configurations over a
   fixture batch and compares the result byte-for-byte, in ISO-8859-1, against
   `tests/AdapterMeshWeClapp.Tests/Fixtures/as-parity-expected.txt` - the frozen output of the
-  pre-swap renderer, re-frozen on the record separator below. That fixture carries a
-  `.gitattributes` `-text` entry; without it git normalises its CRs away and the anchor stops
-  meaning what it says.
+  pre-swap renderer, re-frozen on the record separator below (one CR per LF, payload untouched).
+  That fixture carries a `.gitattributes` `-text` entry: a checkout never strips its CRs and nor
+  does a plain re-add, but `git add --renormalize` does, and that is the sweep a repo-wide `text`
+  rule arrives with.
 - **The two deliveries separate their records differently, on purpose.** AS is CR+LF
   (`lineEnding: CrLf` on the render node - the node's own default is LF, so this is one of the
   properties the yaml must not leave out): that is what `_specs/AS.md` asks for and what the
   partner fixed for the article master. AI stays LF, which the partner's own files show. The AS
-  separator is pinned in five places that move together - the yaml, the layout guard, the byte
-  anchor, its fixture and the AS chain test - because every one of them reads green against the
-  wrong separator on its own.
+  separator is pinned in six places that move together, because every one of them reads green
+  against the wrong separator on its own; the yaml lists them next to `lineEnding`, and that
+  comment is the single copy of the list.
 - **A dry run proves less than it used to**: `SftpUpload@1` returns at its dry-run gate BEFORE
   it resolves the content path and encodes it (the retired custom node deliberately did both
   first). A dry-run probe therefore proves only that the `LkvSftp` entry resolves and carries

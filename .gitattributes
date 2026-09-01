@@ -11,7 +11,9 @@ tests/Lkv.WeClapp.Core.Tests/Fixtures/BE_20260828071116067.txt -text
 # The frozen byte anchor of the AS delivery: what the renderer produced for the parity batch
 # before the delivery moved onto the product's column renderer, re-frozen on the CR+LF the article
 # master is contracted with. Its assertions are about BYTES - 34 pipe fields per line, a CR+LF
-# closing every record, a final 0x0D 0x0A - and normalisation cuts exactly those CRs out of the
-# stored blob and hands every clone back whatever its own checkout rule produces, which turns the
-# anchor into a test that passes or fails for reasons that have nothing to do with any delivery.
+# closing every record, a final 0x0D 0x0A - so those CRs have to survive every round trip through
+# git. Checking out never strips them, and neither does a plain re-add of a re-frozen file: a blob
+# that already holds CRLF is left alone. What does strip them is "git add --renormalize", which is
+# the sweep a repo-wide "text" rule is normally introduced with. This entry takes the fixture out
+# of both, so the anchor keeps failing for delivery reasons only.
 tests/AdapterMeshWeClapp.Tests/Fixtures/as-parity-expected.txt -text

@@ -96,6 +96,8 @@ public class PipelineChainIntegrationTests
         // --- DILOS branch: one AI file content for this order (K* + item P* + shipping P*) ---
         var dilos = dataContext.Get<string>("$.dilos");
         Assert.NotNull(dilos);
+        // AI stays LF on purpose - the AS/AI separator split is contractual, not an oversight.
+        Assert.DoesNotContain('\r', dilos);
         var lines = dilos.TrimEnd('\n').Split("\n"); // golden AI files are pure LF
         Assert.Equal(3, lines.Length);
 
@@ -179,7 +181,10 @@ public class PipelineChainIntegrationTests
         // Split on the CR+LF the AS article master is contracted with, not on the bare LF: on a
         // document whose records are separated the wrong way this splits into one line instead of
         // two and says so, where splitting on "\n" would count the same two lines either way and
-        // only leave a stray CR on the last field of each.
+        // only leave a stray CR on the last field of each. The trailing separator is asserted
+        // before it is sliced off, so a document that lost it (or rendered nothing at all) fails
+        // saying exactly that instead of dying inside the slice.
+        Assert.EndsWith("\r\n", dilos, StringComparison.Ordinal);
         var lines = dilos[..^2].Split("\r\n");
         Assert.Equal(2, lines.Length);                          // ONE document, system article dropped
         Assert.Equal("43222003744925", lines[0].Split('|')[2]); // DILOS field 3 = Artikelnummer
