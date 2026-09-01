@@ -68,6 +68,52 @@ public class WeClappParseTests
         Assert.Equal("12.34", Assert.Single(s.ArticlePrices).Price);
     }
 
+    // The AI price fields read three properties WeClapp puts on every order position (95/95 on
+    // the customer account, read-only census 2026-09-01) and that the model ignored until now:
+    // the line gross beside the line net, and the tax entity the rate is resolved from. Pinned
+    // against the captured response rather than a hand-written literal.
+    [Fact]
+    public void ParseOrders_ReadsThePositionAmountsAndTaxReference()
+    {
+        var orders = WeClappJson.ParseOrders(Fx("salesOrder.json"));
+
+        var item = Assert.Single(orders.SelectMany(o => o.OrderItems));
+        Assert.Equal("37.23", item.NetAmount);
+        Assert.Equal("44.67", item.GrossAmount);
+        Assert.Equal("1", item.Quantity);
+        Assert.Equal("3681", item.TaxId);
+    }
+
+    // Shipping cost items carry the same three properties (union of the live shapes) - the
+    // shipping pseudo line needs them for exactly the same fields.
+    [Fact]
+    public void ParseOrders_ReadsTheShippingCostAmountsAndTaxReference()
+    {
+        var orders = WeClappJson.ParseOrders(
+            """
+            {"result":[{"id":"1","shippingCostItems":[
+              {"netAmount":"4.50","grossAmount":"5.40","taxId":"3681"}]}]}
+            """);
+
+        var shipping = Assert.Single(Assert.Single(orders).ShippingCostItems);
+        Assert.Equal("4.50", shipping.NetAmount);
+        Assert.Equal("5.40", shipping.GrossAmount);
+        Assert.Equal("3681", shipping.TaxId);
+    }
+
+    // GET /tax states the rate as a STRING, and it is the only property besides the id the AI
+    // export reads off that entity.
+    [Fact]
+    public void ParseTaxes_ReadsIdAndRate()
+    {
+        var taxes = WeClappJson.ParseTaxes(
+            """{"result":[{"id":"3681","name":"AT Umsatzsteuer","taxValue":"20"}]}""");
+
+        var tax = Assert.Single(taxes);
+        Assert.Equal("3681", tax.Id);
+        Assert.Equal("20", tax.TaxValue);
+    }
+
     [Fact]
     public void ParseOrders_ReadsShipmentMethodId()
     {
