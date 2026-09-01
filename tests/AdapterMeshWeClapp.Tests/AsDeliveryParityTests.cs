@@ -17,9 +17,12 @@ namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Tests;
 /// <summary>
 /// The byte anchor of the DILOS AS article-master delivery. The expected file is the frozen
 /// output of the renderer as it stood before the delivery moved onto the product's column
-/// renderer, produced from the batch below; it is compared as BYTES in the encoding the delivery
-/// actually writes, so a column that moves, a delimiter that changes, a lost trailing newline or
-/// a character that stops being Latin-1 all fail here rather than on the customer's import.
+/// renderer, produced from the batch below, and since re-frozen onto the CR+LF record separator
+/// the article master is contracted with: one CR inserted ahead of each LF and nothing else
+/// touched, so the payload between the separators is still byte-for-byte what the pre-swap
+/// renderer wrote. It is compared as BYTES in the encoding the delivery actually writes, so a
+/// column that moves, a delimiter that changes, a lost trailing separator or a character that
+/// stops being Latin-1 all fail here rather than on the customer's import.
 ///
 /// The batch is deliberately not a happy path: it carries a system article that must be dropped,
 /// an article whose purchase price has to be selected out of a separate supply-source entity and
@@ -66,17 +69,41 @@ public class AsDeliveryParityTests
 
     /// <summary>Certifies the anchor itself against the invariants every delivered AS file
     /// satisfies, so it cannot silently degrade into a file that merely agrees with the current
-    /// code: 34 pipe-separated fields on every line, no carriage return anywhere, and a final
-    /// 0x0A. Measured on the BYTES that were read, which is why the fixture carries a
-    /// .gitattributes entry - without it git would hand a fresh clone CRLF and this assertion
-    /// would be the only thing standing between that and a silently wrong delivery.</summary>
+    /// code: 34 pipe-separated fields on every line, a CR+LF closing every record and nothing else
+    /// carrying a CR or an LF, and a final 0x0D 0x0A. Both halves of the separator are measured
+    /// because either half alone is a file LKV's import reads differently from the one intended -
+    /// a bare LF leaves a record short of its separator, a bare CR leaks into the first field of
+    /// the next one. Measured on the BYTES that were read, which is why the fixture carries a
+    /// .gitattributes `-text` entry: a checkout never strips CRs and a plain re-add keeps them,
+    /// but `git add --renormalize` does strip them, and that is how a repo-wide `text` rule is
+    /// normally rolled out - the exemption is what makes this assertion something other than the
+    /// last line of defence.</summary>
     private static void AssertIsADeliverableAsFile(byte[] content)
     {
         Assert.NotEmpty(content);
-        Assert.DoesNotContain((byte)'\r', content);
-        Assert.Equal((byte)'\n', content[^1]);
 
-        var lines = DilosFile.Encoding.GetString(content).TrimEnd('\n').Split('\n');
+        // Pairing every CR with the LF that follows it (and vice versa) is the whole separator
+        // check: it subsumes a count comparison and names the offending byte instead of a total.
+        for (var i = 0; i < content.Length; i++)
+        {
+            if (content[i] == (byte)'\n')
+            {
+                Assert.True(i > 0 && content[i - 1] == (byte)'\r', $"byte {i}: an LF without its CR");
+            }
+
+            if (content[i] == (byte)'\r')
+            {
+                Assert.True(i + 1 < content.Length && content[i + 1] == (byte)'\n',
+                    $"byte {i}: a CR without its LF");
+            }
+        }
+
+        Assert.True(content.Length >= 2 && content[^2] == (byte)'\r' && content[^1] == (byte)'\n',
+            "the delivered file ends on 0x0D 0x0A");
+
+        var lines = DilosFile.Encoding.GetString(content)[..^2].Split("\r\n");
+        // The trailing separator is dropped rather than split away, so an empty record reaches
+        // this assertion as a 1-field line instead of silently disappearing from the array.
         Assert.All(lines, line => Assert.Equal(34, line.Split('|').Length));
         Assert.All(lines, line => Assert.StartsWith("A*|", line, StringComparison.Ordinal));
     }
@@ -88,8 +115,9 @@ public class AsDeliveryParityTests
     /// LKV's server and the marker behind it would burn the Vienna day - recoverable only by
     /// deleting the CK entity. Both halves are load-bearing and neither is provable from the yaml
     /// shape: that the renderer writes exactly the empty string for an empty batch (it also has a
-    /// trailing-separator option, and "\n" != "" would OPEN the gate), and that If@1 with the
-    /// shipped literals then closes. Driven with the real nodes and the shipped configurations.
+    /// trailing-separator option, and a lone separator - "\r\n" here - != "" would OPEN the gate),
+    /// and that If@1 with the shipped literals then closes. Driven with the real nodes and the
+    /// shipped configurations.
     /// </summary>
     [Theory]
     [InlineData("""{"rawArticles":[],"supplySources":[]}""", false)]

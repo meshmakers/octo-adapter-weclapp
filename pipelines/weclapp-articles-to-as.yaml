@@ -103,17 +103,25 @@ transformations:
         path: $.items
         targetPath: $.dilosAs
         delimiter: "|"
-        # All three written out even though they match the node defaults: they ARE the delivered
-        # bytes. lineEnding is deliberately Lf - _specs/AS.md asks for CR+LF, but every AS file we
-        # have delivered and every LKV file we import is pure LF, and the byte comparison against
-        # the last delivery is what the change is measured on. Whether LKV wants CRLF is an open
-        # question with the partner. Changing this line is NOT the whole change: LF is pinned in
-        # three more places, and all four move together or the suite reds - the layout guard
-        # (AsYaml_RenderDelimitedText_SpellsOutTheThirtyFourColumnDilosLayout, effective Lf), the
-        # byte anchor (AsDeliveryParityTests, zero CR bytes) and the frozen fixture it compares
-        # against (Fixtures/as-parity-expected.txt, which then has to be re-frozen deliberately).
-        lineEnding: Lf
-        trailingNewLine: true               # the delivered file ends on 0x0A
+        # All three written out because they ARE the delivered bytes. Two of them match the node
+        # defaults; lineEnding does not, and that is the one that must never be left out: the node
+        # separates records with LF unless it is told otherwise, and the AS article master is
+        # contracted as CR+LF - what _specs/AS.md asks for and what the partner fixed for this
+        # delivery. The AI delivery stays LF, which the partner's own files show, so the two are
+        # deliberately NOT the same and neither should be "harmonised" onto the other.
+        # Changing this line is NOT the whole change, and THIS is the one place the coupled sites
+        # are listed - everything else points here rather than repeating them. The separator is
+        # pinned in five more places and all six move together or the suite reds:
+        #   1. the layout guard AsYaml_RenderDelimitedText_SpellsOutTheThirtyFourColumnDilosLayout,
+        #      which pins the PROPERTY, not its effective value - the yaml has to say CrLf out loud;
+        #   2. the byte anchor AsDeliveryParityTests - a CR+LF closing every record and no stray CR
+        #      or LF anywhere else;
+        #   3. the frozen fixture it compares against, Fixtures/as-parity-expected.txt, which then
+        #      has to be re-frozen deliberately;
+        #   4. the AS chain test in PipelineChainIntegrationTests;
+        #   5. the DilosRenderNodeConfiguration class doc, which carries the AS/AI split in prose.
+        lineEnding: CrLf
+        trailingNewLine: true               # the delivered file ends on 0x0D 0x0A
         onDelimiterInValue: Fail            # DILOS has no escaping - a '|' inside an article name
                                             # would shift every following column and the LKV import
                                             # would read the file without noticing

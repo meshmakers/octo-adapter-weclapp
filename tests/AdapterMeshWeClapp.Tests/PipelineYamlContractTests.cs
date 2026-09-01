@@ -1034,10 +1034,14 @@ public class PipelineYamlContractTests
         Assert.Equal("|", render.Delimiter);
         // Read as the node reads them: the options are nullable and their defaults are resolved
         // where they are used, so an omitted property must be checked as its EFFECTIVE value.
-        Assert.Equal(DelimitedLineEnding.Lf,
-            render.LineEnding ?? RenderDelimitedTextNodeConfiguration.DefaultLineEnding);
+        // The record separator is the deliberate exception and is pinned as the PROPERTY, because
+        // the yaml has to say CR+LF out loud: an effective check would stay green if a future
+        // package flipped its default to CrLf and the property were then dropped from the yaml,
+        // while a pinned older runtime carried on rendering LF.
+        Assert.NotNull(render.LineEnding);
+        Assert.Equal(DelimitedLineEnding.CrLf, render.LineEnding.Value);
         Assert.True(render.TrailingNewLine ?? RenderDelimitedTextNodeConfiguration.DefaultTrailingNewLine,
-            "the delivered file ends on 0x0A");
+            "the delivered file ends on 0x0D 0x0A");
         Assert.Equal(DelimiterInValueHandling.Fail,
             render.OnDelimiterInValue ?? RenderDelimitedTextNodeConfiguration.DefaultOnDelimiterInValue);
 
