@@ -1,4 +1,6 @@
+using System.Globalization;
 using Lkv.WeClapp.Core.Dilos;
+using Lkv.WeClapp.Core.Mapping;
 using Lkv.WeClapp.Core.Model;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
@@ -35,6 +37,14 @@ public record DilosRenderNodeConfiguration : SourceTargetPathNodeConfiguration
     /// the K* line, which is why exactly one order per execution is required. Empty = no name is
     /// written.</summary>
     public string FileNameTargetPath { get; set; } = "";
+
+    /// <summary>JSONPath to the array of WeClapp <c>tax</c> entities the pipeline fetched. A sales
+    /// order position states its net, its gross and a <c>taxId</c> but no percentage - the rate
+    /// lives on that separate entity, the way the AS delivery's purchase prices live on
+    /// <c>articleSupplySource</c>. Required: without the set every position would render an empty
+    /// MwSt field, and empty is the legitimate value for a position that states no tax, so the
+    /// defect would be invisible in the delivered file.</summary>
+    public string TaxesPath { get; set; } = "";
 }
 
 /// <summary>
@@ -42,6 +52,12 @@ public record DilosRenderNodeConfiguration : SourceTargetPathNodeConfiguration
 /// What is left here now that the AS article master renders through the product's column node is
 /// the part that is genuinely custom: mixed K*/P* record types in one file, a synthesised
 /// shipping line and a position counter. None of that is column rendering.
+///
+/// It also joins the fetched WeClapp <c>tax</c> entities, because the positions state a VAT rate
+/// that no order payload carries - the position names a tax entity and the percentage lives there.
+/// That join sits here rather than in a node of its own (as the AS side's EK-Preis does, in
+/// WeClappResolveSupplySources@1) because this chain HAS an adapter-owned render step to put it in,
+/// while the AS chain renders through the product's generic column node, which can only read a path.
 /// </summary>
 [NodeConfiguration(typeof(DilosRenderNodeConfiguration))]
 // ReSharper disable once ClassNeverInstantiated.Global
@@ -66,9 +82,10 @@ public class DilosRenderNode(NodeDelegate next) : IPipelineNode
         // an unattributed failure is booked as a failed order rather than a configuration defect.
         NodeConfigurationGuards.RequirePath(NodeName, config.Path, nameof(config.Path));
         NodeConfigurationGuards.RequirePath(NodeName, config.TargetPath, nameof(config.TargetPath));
+        NodeConfigurationGuards.RequirePath(NodeName, config.TaxesPath, nameof(config.TaxesPath));
 
         var orders = ReadOneOrMany<WeClappSalesOrder>(dataContext, config.Path, "order");
-        var content = RenderOrders(orders, config);
+        var content = RenderOrders(orders, config, ReadTaxRates(dataContext, config.TaxesPath));
 
         // IsNullOrEmpty rather than .Length: the properties are non-nullable, but a yaml
         // carrying an explicit null ("fileNameTargetPath:" with no value) assigns null OVER the
@@ -105,19 +122,81 @@ public class DilosRenderNode(NodeDelegate next) : IPipelineNode
         await next(dataContext, nodeContext);
     }
 
-    private static string RenderOrders(List<WeClappSalesOrder> orders, DilosRenderNodeConfiguration config)
+    private static string RenderOrders(List<WeClappSalesOrder> orders, DilosRenderNodeConfiguration config,
+        IReadOnlyDictionary<string, int> taxRatePercentById)
     {
         if (string.IsNullOrEmpty(config.Submandant))
         {
             throw new WeClappPipelineExecutionException("DilosRender mode 'AI' requires Submandant");
         }
 
-        var ctx = new DilosOrderContext { Submandant = config.Submandant };
+        var ctx = new DilosOrderContext
+        {
+            Submandant = config.Submandant,
+            TaxRatePercentById = taxRatePercentById,
+        };
         var lines = orders
             .SelectMany(o => new[] { DilosOrderWriter.RenderHeader(o, ctx) }
                 .Concat(DilosOrderWriter.RenderPositions(o, ctx)));
 
-        return JoinLf(lines);
+        // The writer refuses a position whose tax entity is not in the fetched set, and the render
+        // itself is lazy, so that refusal surfaces here, from inside the join. One attribution
+        // point, for the same reason WeClappResolveSupplySources has one: this runs inside a
+        // per-order ForEach@1 carrying continueOnError, which books an unattributed exception as
+        // "one order failed" with nothing naming the node or the cause.
+        try
+        {
+            return JoinLf(lines);
+        }
+        catch (Exception ex) when (ex is not WeClappPipelineExecutionException)
+        {
+            throw new WeClappPipelineExecutionException(
+                $"DilosRender: cannot render the AI content ({ex.GetType().Name}: {ex.Message})", ex);
+        }
+    }
+
+    /// <summary>
+    /// Builds the DILOS MwSt rate per WeClapp tax id from the entities the pipeline fetched. Every
+    /// way this can come apart ends in the same indistinguishable place - a position rendering an
+    /// empty rate, which is the legitimate value for a position that states no tax - so each one
+    /// fails the execution instead: no array at the path, an entity without an id, two entities
+    /// under one id, an absent or unparseable rate.
+    /// </summary>
+    private static IReadOnlyDictionary<string, int> ReadTaxRates(IDataContext dataContext, string path)
+    {
+        var taxes = dataContext.GetArray<WeClappTax>(path)?.ToList()
+                    ?? throw new WeClappPipelineExecutionException(
+                        $"DilosRender: no WeClapp tax array found at path '{path}' - every position " +
+                        "would render an empty MwSt rate, which is a legitimate value and therefore " +
+                        "invisible in the delivered file");
+
+        var rates = new Dictionary<string, int>(StringComparer.Ordinal);
+        for (var index = 0; index < taxes.Count; index++)
+        {
+            if (taxes[index] is not { } tax || string.IsNullOrEmpty(tax.Id))
+            {
+                throw new WeClappPipelineExecutionException(
+                    $"DilosRender: tax entity {index} at '{path}' carries no 'id' - the order " +
+                    "positions taxed under it resolve against exactly that value");
+            }
+
+            if (!decimal.TryParse(tax.TaxValue, NumberStyles.Any, CultureInfo.InvariantCulture,
+                    out var taxValue))
+            {
+                throw new WeClappPipelineExecutionException(
+                    $"DilosRender: tax entity '{tax.Id}' at '{path}' carries no readable 'taxValue' " +
+                    $"(got '{tax.TaxValue ?? "<none>"}') - the MwSt rate cannot be stated from it");
+            }
+
+            if (!rates.TryAdd(tax.Id, WeClappToDilos.MwStPercent(taxValue)))
+            {
+                throw new WeClappPipelineExecutionException(
+                    $"DilosRender: tax id '{tax.Id}' appears more than once at '{path}' - which rate " +
+                    "a position is taxed under would be ambiguous");
+            }
+        }
+
+        return rates;
     }
 
     /// <summary>The AI name is defined per single order (golden: one file per order), so a

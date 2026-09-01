@@ -17,10 +17,14 @@ public class DilosRenderNodeTests
     public DilosRenderNodeTests()
     {
         _sut = new DilosRenderNode(_next);
+
+        // The tax entities the yaml fetches once per tick. Empty unless a test states otherwise:
+        // a position without a taxId asks the set for nothing.
+        Taxes();
     }
 
     private DilosRenderNodeConfiguration Configure(string mode, string submandant = "", string path = "$.items",
-        string targetPath = "$.dilos", string fileNameTargetPath = "")
+        string targetPath = "$.dilos", string fileNameTargetPath = "", string taxesPath = "$.taxes")
     {
         var config = new DilosRenderNodeConfiguration
         {
@@ -29,10 +33,21 @@ public class DilosRenderNodeTests
             Path = path,
             TargetPath = targetPath,
             FileNameTargetPath = fileNameTargetPath,
+            TaxesPath = taxesPath,
         };
         A.CallTo(() => _nodeContext.GetNodeConfiguration<DilosRenderNodeConfiguration>()).Returns(config);
         return config;
     }
+
+    private void Taxes(params WeClappTax[] taxes) =>
+        A.CallTo(() => _dataContext.GetArray<WeClappTax>("$.taxes"))
+            .Returns(taxes.Select(t => (WeClappTax?)t).ToList());
+
+    private static DilosOrderContext RenderContext(params (string Id, int Percent)[] rates) => new()
+    {
+        Submandant = "51696697501",
+        TaxRatePercentById = rates.ToDictionary(r => r.Id, r => r.Percent),
+    };
 
     [Fact]
     public async Task ProcessObjectAsync_AiMode_RendersHeaderAndPositionsPerOrder()
@@ -61,7 +76,7 @@ public class DilosRenderNodeTests
 
         await _sut.ProcessObjectAsync(_dataContext, _nodeContext);
 
-        var ctx = new DilosOrderContext { Submandant = "51696697501" };
+        var ctx = RenderContext();
         var expected = DilosOrderWriter.RenderHeader(order, ctx) + "\n" +
                        string.Join("\n", DilosOrderWriter.RenderPositions(order, ctx)) + "\n";
         A.CallTo(() => _dataContext.Set(config.TargetPath, expected, config.DocumentMode,
@@ -92,11 +107,190 @@ public class DilosRenderNodeTests
 
         await _sut.ProcessObjectAsync(_dataContext, _nodeContext);
 
-        var ctx = new DilosOrderContext { Submandant = "51696697501" };
+        var ctx = RenderContext();
         var expected = DilosOrderWriter.RenderHeader(order, ctx) + "\n" +
                        string.Join("\n", DilosOrderWriter.RenderPositions(order, ctx)) + "\n";
         A.CallTo(() => _dataContext.Set(config.TargetPath, expected, config.DocumentMode,
             config.TargetValueKind, config.TargetValueWriteMode)).MustHaveHappenedOnceExactly();
+    }
+
+    // --- the VAT rate the positions state --------------------------------------------------
+    // WeClapp states a position's net and gross but no rate: the position names a tax ENTITY and
+    // the rate lives there, so the AI render joins the fetched /tax set the way the AS delivery
+    // joins the fetched articleSupplySource entities.
+
+    [Fact]
+    public async Task ProcessObjectAsync_AiMode_TakesThePositionRateFromTheFetchedTaxEntities()
+    {
+        var config = Configure("AI", submandant: "51696697501");
+        Taxes(new WeClappTax { Id = "3681", TaxValue = "20" });
+        var order = new WeClappSalesOrder
+        {
+            Id = "5910986621265",
+            CustomerNumber = "7067387625809",
+            OrderItems =
+            {
+                new WeClappOrderItem
+                {
+                    PositionNumber = 1, ArticleId = "43222003744925", Quantity = "1",
+                    NetAmount = "37.23", GrossAmount = "44.67", TaxId = "3681",
+                },
+            },
+        };
+        A.CallTo(() => _dataContext.GetArray<WeClappSalesOrder>("$.items"))
+            .Returns(new List<WeClappSalesOrder?> { order });
+
+        await _sut.ProcessObjectAsync(_dataContext, _nodeContext);
+
+        var ctx = RenderContext(("3681", 20));
+        var expected = DilosOrderWriter.RenderHeader(order, ctx) + "\n" +
+                       string.Join("\n", DilosOrderWriter.RenderPositions(order, ctx)) + "\n";
+        A.CallTo(() => _dataContext.Set(config.TargetPath, expected, config.DocumentMode,
+            config.TargetValueKind, config.TargetValueWriteMode)).MustHaveHappenedOnceExactly();
+    }
+
+    // The rate is stated in whole percent and NOT as a DILOS tax key, because the partner's key
+    // table maps 20 % to key 6 AND to key 20. A rate WeClapp carries with decimals still has to
+    // reach the file as an integer - the field is declared "Zahl Integer ... ohne Kommastelle".
+    [Theory]
+    [InlineData("20", "20")]
+    [InlineData("10", "10")]
+    [InlineData("13.5", "14")]
+    public async Task ProcessObjectAsync_AiMode_StatesTheRateAsWholePercent(string taxValue, string expected)
+    {
+        Configure("AI", submandant: "51696697501");
+        Taxes(new WeClappTax { Id = "T", TaxValue = taxValue });
+        A.CallTo(() => _dataContext.GetArray<WeClappSalesOrder>("$.items"))
+            .Returns(new List<WeClappSalesOrder?> { OrderTaxed("T") });
+
+        await _sut.ProcessObjectAsync(_dataContext, _nodeContext);
+
+        Assert.Equal(expected, RenderedPositionField(16));
+    }
+
+    // The fetch is what makes the rate reachable at all, and a missing rate does NOT look wrong in
+    // the delivered file: an empty VAT field is the legitimate value for a position that states no
+    // tax, and the partner's own files carry it. A definition that lost the path would therefore
+    // ship AI files without the promised rate, hourly, with nothing failing.
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task ProcessObjectAsync_BlankTaxesPath_FailsAsAConfigurationError(string? taxesPath)
+    {
+        Configure("AI", submandant: "51696697501", taxesPath: taxesPath!);
+
+        var ex = await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
+            () => _sut.ProcessObjectAsync(_dataContext, _nodeContext));
+
+        Assert.Contains("'TaxesPath'", ex.Message, StringComparison.Ordinal);
+        A.CallTo(() => _dataContext.Set(A<string>._, A<string>._, A<DocumentModes>._,
+            A<ValueKinds>._, A<TargetValueWriteModes>._)).MustNotHaveHappened();
+        A.CallTo(() => _next(_dataContext, _nodeContext)).MustNotHaveHappened();
+    }
+
+    // A path that names nothing is the same defect one step later: the join would find no rate for
+    // any position and every AI file would go out with the field empty.
+    [Fact]
+    public async Task ProcessObjectAsync_NoTaxArrayAtTheTaxesPath_Throws()
+    {
+        Configure("AI", submandant: "51696697501");
+        A.CallTo(() => _dataContext.GetArray<WeClappTax>("$.taxes")).Returns(null);
+        A.CallTo(() => _dataContext.GetArray<WeClappSalesOrder>("$.items"))
+            .Returns(new List<WeClappSalesOrder?> { OrderTaxed("T") });
+
+        var ex = await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
+            () => _sut.ProcessObjectAsync(_dataContext, _nodeContext));
+
+        Assert.Contains("$.taxes", ex.Message, StringComparison.Ordinal);
+        A.CallTo(() => _next(_dataContext, _nodeContext)).MustNotHaveHappened();
+    }
+
+    // The id is the only thing a position can point at, and the rate is the only thing the entity
+    // is fetched for - an entity missing either is unusable, and both defects end in the same
+    // indistinguishable place (a position whose rate silently stays empty).
+    [Theory]
+    [InlineData(null, "20")]
+    [InlineData("", "20")]
+    [InlineData("3681", null)]
+    [InlineData("3681", "")]
+    [InlineData("3681", "not a number")]
+    public async Task ProcessObjectAsync_UnusableTaxEntity_Throws(string? id, string? taxValue)
+    {
+        Configure("AI", submandant: "51696697501");
+        Taxes(new WeClappTax { Id = id!, TaxValue = taxValue });
+        A.CallTo(() => _dataContext.GetArray<WeClappSalesOrder>("$.items"))
+            .Returns(new List<WeClappSalesOrder?> { OrderTaxed("3681") });
+
+        await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
+            () => _sut.ProcessObjectAsync(_dataContext, _nodeContext));
+
+        A.CallTo(() => _next(_dataContext, _nodeContext)).MustNotHaveHappened();
+    }
+
+    [Fact]
+    public async Task ProcessObjectAsync_DuplicateTaxId_Throws()
+    {
+        Configure("AI", submandant: "51696697501");
+        Taxes(new WeClappTax { Id = "3681", TaxValue = "20" },
+            new WeClappTax { Id = "3681", TaxValue = "10" });
+        A.CallTo(() => _dataContext.GetArray<WeClappSalesOrder>("$.items"))
+            .Returns(new List<WeClappSalesOrder?> { OrderTaxed("3681") });
+
+        var ex = await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
+            () => _sut.ProcessObjectAsync(_dataContext, _nodeContext));
+
+        Assert.Contains("3681", ex.Message, StringComparison.Ordinal);
+    }
+
+    // The writer refuses a position whose tax entity was not fetched. That refusal is raised
+    // inside a per-order ForEach@1 carrying continueOnError, where an unattributed exception is
+    // booked as one failed order with nothing pointing at the cause.
+    [Fact]
+    public async Task ProcessObjectAsync_PositionNamingAnUnfetchedTaxEntity_FailsAttributedToTheNode()
+    {
+        Configure("AI", submandant: "51696697501");
+        Taxes(new WeClappTax { Id = "3681", TaxValue = "20" });
+        A.CallTo(() => _dataContext.GetArray<WeClappSalesOrder>("$.items"))
+            .Returns(new List<WeClappSalesOrder?> { OrderTaxed("9999") });
+
+        var ex = await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
+            () => _sut.ProcessObjectAsync(_dataContext, _nodeContext));
+
+        Assert.Contains("DilosRender", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("9999", ex.Message, StringComparison.Ordinal);
+        A.CallTo(() => _dataContext.Set(A<string>._, A<string>._, A<DocumentModes>._,
+            A<ValueKinds>._, A<TargetValueWriteModes>._)).MustNotHaveHappened();
+        A.CallTo(() => _next(_dataContext, _nodeContext)).MustNotHaveHappened();
+    }
+
+    private static WeClappSalesOrder OrderTaxed(string taxId) => new()
+    {
+        Id = "5910986621265",
+        CustomerNumber = "7067387625809",
+        OrderItems =
+        {
+            new WeClappOrderItem
+            {
+                PositionNumber = 1, ArticleId = "43222003744925", Quantity = "1",
+                NetAmount = "10.00", GrossAmount = "12.00", TaxId = taxId,
+            },
+        },
+    };
+
+    /// <summary>The single P* line of an <see cref="OrderTaxed"/> render, field by DILOS number,
+    /// read back off the content write the node performed.</summary>
+    private string RenderedPositionField(int dilosFieldNo)
+    {
+        var content = Fake.GetCalls(_dataContext)
+            .Where(call => call.Method.Name == nameof(IDataContext.Set))
+            .Select(call => call.Arguments)
+            .Where(arguments => (string?)arguments[0] == "$.dilos")
+            .Select(arguments => arguments[1] as string)
+            .Single();
+
+        Assert.NotNull(content);
+        return content.TrimEnd('\n').Split('\n')[1].Split('|')[dilosFieldNo - 1];
     }
 
     // An AI execution always renders at least its K* header, so no content means an upstream

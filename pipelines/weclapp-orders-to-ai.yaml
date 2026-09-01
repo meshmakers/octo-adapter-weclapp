@@ -1,6 +1,7 @@
 # Pipeline: WeClapp sales orders → CK entities + DILOS AI file content (one file per
-# order, file name = Auftragsnummer1). MakeHttpRequest@1 seeds $.orders (cron-driven);
-# a ForEach@1 processes one order per iteration and looks up that order's customer itself.
+# order, file name = Auftragsnummer1). MakeHttpRequest@1 seeds $.orders (cron-driven) and a
+# second one seeds $.taxes with the VAT rates the positions state; a ForEach@1 then processes
+# one order per iteration and looks up that order's customer itself.
 #
 # WeClapp access comes from the tenant GlobalConfiguration entry "WeClappApi"
 # (apiConfiguration below), SFTP access from the entry "LkvSftp".
@@ -30,6 +31,30 @@ transformations:
       backoffBaseSeconds: 1
     timeoutSeconds: 60
     onHttpError: Throw              # NEVER omit: the default logs and finishes the run GREEN
+
+  # The VAT rates the AI positions state. A WeClapp order position carries its net, its gross and a
+  # taxId - but no percentage: the rate lives on the separate tax entity, the same shape as the AS
+  # delivery's purchase prices on articleSupplySource. Fetched ONCE per tick, OUTSIDE the loop: the
+  # set is order-independent, and inside the loop every order would re-read all of it.
+  - type: MakeHttpRequest@1
+    description: Fetch the tax entities that carry the VAT rates
+    method: GET
+    apiConfiguration: WeClappApi
+    authHeaderName: AuthenticationToken
+    url: /tax
+    targetPath: $.taxes             # flat array of tax entities, joined by the render below
+    paging:
+      itemsPath: $.result
+      pageSize: 100                 # 235 entities on the customer account - never fetch unpaged
+    retry:
+      maxAttempts: 4
+      backoffBaseSeconds: 1
+    timeoutSeconds: 60
+    # Throw matters as much as it does on the AS purchase prices: continuing without the rates
+    # would deliver AI files whose MwSt field is empty everywhere - the legitimate value for a
+    # position that states no tax - and every delivery writes its export marker on the way out, so
+    # the wrong file would stay the final one for that order.
+    onHttpError: Throw
 
   - type: ForEach@1
     description: Process one order per iteration
@@ -155,6 +180,10 @@ transformations:
             mode: AI
             submandant: "51696697501"   # REPLACE per tenant: WeClapp-Mandanten-Kennung (LKV maps it)
             path: $.current
+            taxesPath: $.taxes          # the tax entities fetched above - the ONLY route to the
+                                        # position MwSt rate; a position naming an entity that is
+                                        # not in this set fails the order rather than rendering an
+                                        # empty rate, which would look like "no tax stated"
             targetPath: $.dilosAi
             fileNameTargetPath: $.dilosAiFileName   # AI<Auftragsnummer1>.txt — the WeClapp id,
                                                     # NOT the shop orderNumber

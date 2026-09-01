@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using Lkv.WeClapp.Core.Mapping;
 using Lkv.WeClapp.Core.Model;
 
@@ -9,6 +9,13 @@ public sealed record DilosOrderContext
 {
     /// <summary>WeClapp Mandanten-ID (constant per tenant) → DILOS Submandant; LKV maps it.</summary>
     public required string Submandant { get; init; }
+
+    /// <summary>VAT rate in whole percent per WeClapp <c>tax</c> id — the rates the positions
+    /// state in P* field 16. Required rather than defaulted to empty: an empty map renders every
+    /// rate as an empty field, which is the LEGITIMATE value for a position that states no tax,
+    /// so a forgotten map would produce files nothing downstream can tell from correct ones.
+    /// </summary>
+    public required IReadOnlyDictionary<string, int> TaxRatePercentById { get; init; }
 }
 
 /// <summary>
@@ -16,8 +23,11 @@ public sealed record DilosOrderContext
 /// field order per _specs/AI.md. Decided fields (Jürgen): ClientIdnummer=customerNumber (Warenempfänger),
 /// Submandant=Mandanten-ID, Währung=5, Druck=L, kein Rechnungsdruck (Text4=0), Warenwerte gefüllt,
 /// Frächter (field 33) = shipmentMethod id (empty when the order carries none — golden files are empty too).
-/// Deferred (runtime-gated): MwSt% (field 16, needs tax-rate resolution; empty in all golden files),
-/// Einzelpreis brutto (field 20, needs MwSt rate).
+///
+/// A position states its VAT rate and all four price fields (16, 18-21). The partner's own files are
+/// NOT the reference for which of them carry a value: they fill 18 and 20 and leave 16, 19 and 21
+/// empty, which is what the previous shop connector happened to produce. The contract is that each
+/// position states its rate in whole percent and both its unit and its line price, net and gross.
 /// </summary>
 public static class DilosOrderWriter
 {
@@ -91,12 +101,19 @@ public static class DilosOrderWriter
             f[11] = item.Quantity;                          // Mengeabg
             f[14] = item.Title;                             // Text
             f[15] = "5";                                    // Währungsschlüssel = EUR
+            f[16] = MwSt(item.TaxId, ctx, o.Id, pos);       // MwSt (Ganzzahl-Prozent)
             f[17] = "L";                                    // KennzeichenDruck = Lieferschein
-            f[18] = UnitNet(item.NetAmount, item.Quantity); // Einzelpreis netto
+            f[18] = UnitPrice(item.NetAmount, item.Quantity);  // Einzelpreis netto
+            f[19] = Money(item.NetAmount);                     // Positionspreis netto
+            f[20] = UnitPrice(item.GrossAmount, item.Quantity); // Einzelpreis brutto
+            f[21] = Money(item.GrossAmount);                   // Positionspreis brutto
             yield return Join(f, PositionFieldCount);
         }
 
-        // Versandkosten: eigene P*-Zeile mit Artikelnummer = -1 (← WeClapp shippingCostItems)
+        // Versandkosten: eigene P*-Zeile mit Artikelnummer = -1 (← WeClapp shippingCostItems).
+        // WeClapp states net, gross and taxId on these items exactly as on an article position,
+        // and the line is printed on the same documents, so it carries the same price fields.
+        // Quantity is 1 by construction, which makes unit and line price the same number.
         foreach (var ship in o.ShippingCostItems)
         {
             pos++;
@@ -109,10 +126,41 @@ public static class DilosOrderWriter
             f[11] = "1";
             f[14] = ship.Title;
             f[15] = "5";
+            f[16] = MwSt(ship.TaxId, ctx, o.Id, pos);
             f[17] = "L";
             f[18] = Money(ship.NetAmount);
+            f[19] = Money(ship.NetAmount);
+            f[20] = Money(ship.GrossAmount);
+            f[21] = Money(ship.GrossAmount);
             yield return Join(f, PositionFieldCount);
         }
+    }
+
+    /// <summary>
+    /// DILOS P* field 16: the position's VAT rate in whole percent, resolved through the fetched
+    /// WeClapp tax entities. A position that names no tax entity states no rate and leaves the
+    /// field empty (spec: not mandatory; the partner's own files carry it empty throughout).
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The position names a tax entity that is not in
+    /// the fetched set. Falling back to an empty field instead would be indistinguishable from the
+    /// legitimate "no tax stated" above, in a file that is delivered once and then marked as
+    /// exported — so the order fails and the next tick retries it.</exception>
+    private static string MwSt(string? taxId, DilosOrderContext ctx, string orderId, int position)
+    {
+        if (string.IsNullOrEmpty(taxId))
+        {
+            return "";
+        }
+
+        if (!ctx.TaxRatePercentById.TryGetValue(taxId, out var percent))
+        {
+            throw new InvalidOperationException(
+                $"Order '{orderId}' position {position} is taxed under WeClapp tax '{taxId}', which is " +
+                $"not among the {ctx.TaxRatePercentById.Count} fetched tax entities - its MwSt would " +
+                "silently render as an empty field, the value of a position that states no tax at all");
+        }
+
+        return percent.ToString(CultureInfo.InvariantCulture);
     }
 
     private static string[] NewFields(int count)
@@ -132,10 +180,13 @@ public static class DilosOrderWriter
     private static decimal ParseDec(string? s) =>
         decimal.TryParse(s, NumberStyles.Any, CultureInfo.InvariantCulture, out var d) ? d : 0m;
 
-    private static string UnitNet(string? netAmount, string quantity)
+    /// <summary>Unit price from a LINE total: WeClapp states netAmount/grossAmount per position and
+    /// its own unitPrice is the pre-discount list price, which matches neither. A zero quantity
+    /// keeps the line total rather than dividing by it.</summary>
+    private static string UnitPrice(string? lineAmount, string quantity)
     {
-        var net = ParseDec(netAmount);
+        var amount = ParseDec(lineAmount);
         var qty = ParseDec(quantity);
-        return WeClappToDilos.Money(qty == 0m ? net : net / qty);
+        return WeClappToDilos.Money(qty == 0m ? amount : amount / qty);
     }
 }

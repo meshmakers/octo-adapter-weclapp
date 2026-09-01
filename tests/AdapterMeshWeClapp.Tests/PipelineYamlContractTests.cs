@@ -914,12 +914,47 @@ public class PipelineYamlContractTests
     public async Task OrdersToAiYaml_PagedOrderRequest_FiltersOnConfirmedOrders()
     {
         var root = await PipelineDefinitions.DeserializeAsync("weclapp-orders-to-ai.yaml");
-        var paged = Assert.Single(
+        // Selected by the entity it fetches rather than by "the paged one": the pipeline pages a
+        // second WeClapp entity now, and a predicate that no longer identifies exactly one request
+        // would fail this guard for a reason that has nothing to do with the filter it protects.
+        var orders = Assert.Single(
             Walk(root.Transformations).OfType<MakeHttpRequestNodeConfiguration>(),
-            request => request.Paging is not null);
+            request => request.Url?.Contains("/salesOrder", StringComparison.Ordinal) == true);
 
-        Assert.Contains("/salesOrder", paged.Url, StringComparison.Ordinal);
-        Assert.Contains("status-eq=ORDER_CONFIRMATION_PRINTED", paged.Url, StringComparison.Ordinal);
+        Assert.NotNull(orders.Paging);
+        Assert.Contains("status-eq=ORDER_CONFIRMATION_PRINTED", orders.Url, StringComparison.Ordinal);
+    }
+
+    // ---------- contract: the ai render reaches the VAT rates it states ----------
+
+    // A WeClapp order position states its net and its gross but no rate - it names a tax ENTITY,
+    // and the rate lives there. So the AI delivery fetches /tax and joins it, the way the AS
+    // delivery joins articleSupplySource for the EK-Preis. Three strings have to agree, and each
+    // can be edited alone and still ship green: the fetch's targetPath, the render's taxesPath,
+    // and the fetch staying OUTSIDE the per-order loop - inside it, the whole tax set would be
+    // re-fetched once per order, every tick. The failure mode of a broken join is the quiet one:
+    // an empty VAT field is the legitimate value for a position that states no tax, and the
+    // partner's own files carry it, so a file missing the promised rate looks exactly like a
+    // correct one.
+    [Fact]
+    public async Task OrdersToAiYaml_TaxLookupFeedsTheAiRender()
+    {
+        var root = await PipelineDefinitions.DeserializeAsync("weclapp-orders-to-ai.yaml");
+        var top = root.Transformations?.ToList() ?? [];
+
+        var taxes = Assert.Single(
+            Walk(root.Transformations).OfType<MakeHttpRequestNodeConfiguration>(),
+            request => request.Url?.Contains("/tax", StringComparison.Ordinal) == true);
+
+        Assert.Contains(top, node => ReferenceEquals(node, taxes));
+
+        // 235 tax entities on the customer account against a page size of 100: an unpaged fetch
+        // would read the first page and the join would then refuse every position whose entity sat
+        // on a later one.
+        Assert.NotNull(taxes.Paging);
+
+        var render = Assert.Single(Walk(root.Transformations).OfType<DilosRenderNodeConfiguration>());
+        Assert.Equal(taxes.TargetPath, render.TaxesPath);
     }
 
     // ---------- contract: the ai customer lookup feeds the order transform ----------

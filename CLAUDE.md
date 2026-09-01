@@ -180,9 +180,16 @@ silent no-delivery on alerting built around failed executions;
 `SourceYamls_PagedMakeHttpRequest_ReadsTheWeclappResultArray` pins every paged request's
 `itemsPath` to `$.result`, the envelope every WeClapp entity response wraps its elements in;
 `OrdersToAiYaml_PagedOrderRequest_FiltersOnConfirmedOrders` pins
-`status-eq=ORDER_CONFIRMATION_PRINTED` in that pipeline's order url - the customer's historical
-order stock is CLOSED and the dedup gate stops only REPEAT deliveries, so a url edit that drops
-the filter would mass-deliver the whole backlog on the next tick with nothing failing;
+`status-eq=ORDER_CONFIRMATION_PRINTED` in that pipeline's order url (selected by `/salesOrder`,
+since the pipeline pages a second WeClapp entity now) - the customer's historical order stock is
+CLOSED and the dedup gate stops only REPEAT deliveries, so a url edit that drops the filter would
+mass-deliver the whole backlog on the next tick with nothing failing;
+`OrdersToAiYaml_TaxLookupFeedsTheAiRender` pins the join behind the position MwSt rate: exactly one
+`/tax` request, PAGED (235 tax entities against a page size of 100), at the TOP level so the set is
+read once per tick rather than once per order, and `DilosRender@1`'s `taxesPath` equal to that
+request's `targetPath`. Each of those can be edited alone and ship green, and the failure is the
+quiet kind - an empty MwSt field is the legitimate value for a position that states no tax, and the
+partner's own files carry it, so a file missing the promised rate looks exactly like a correct one;
 `OrdersToAiYaml_CustomerLookupFeedsTheOrderTransform` pins the three strings that must agree for
 an AI file to carry a recipient (the lookup's `targetPath`, the transform's `customerPath`, and
 the lookup being the FIRST loop child), plus the lookup addressing THIS order's `customerId`;
@@ -212,6 +219,29 @@ claims completeness invites re-pinning an invariant that already holds.
   field leaves the CK name empty for B2C (live finding 2026-07-16). `DilosOrderWriter`
   (`RecipientName1`/`RecipientName2`) builds the DILOS FILE name fields from the ADDRESS instead;
   name2 ("Nachname Vorname") stays empty unless a company fills name1.
+- **The AI position prices are not read off the golden files.** Those carry fields 18 and 20 and
+  leave 16, 19 and 21 empty, which is what the previous shop connector happened to produce (and it
+  wrote the same number into 18 and 20). The contract is that a position states its rate and all
+  four prices: 16 MwSt in WHOLE PERCENT, 18/20 the unit price net/gross, 19/21 the line price
+  net/gross. Field 16 is deliberately NOT the DILOS tax key — the partner's key table maps 20 % to
+  key 6 AND to key 20, so a key is ambiguous where the rate never is (spec: "Zahl Integer … MwSt.
+  in Prozent, ohne Kommastelle"; a rate WeClapp carries with decimals is rounded to whole percent).
+- **WeClapp states LINE totals, not unit prices.** A position's `netAmount`/`grossAmount` are the
+  line amounts; its `unitPrice` is the pre-discount LIST price and matches neither (live sample:
+  unitPrice 48.03, 7 % discount, gross 44.67, net 37.23). So 19/21 carry the API values verbatim
+  and 18/20 divide them by the quantity — the rule field 18 always followed. Consequence to keep in
+  mind: at a quantity that does not divide evenly, `18 × Menge` differs from 19 in the last cent
+  (10.00/3 → 3.33 × 3 = 9.99). The line total is the invoiced amount and stays authoritative; the
+  alternative (deriving 19 from the rounded 18) would make the file self-consistent but disagree
+  with WeClapp and with K* field 65.
+- **The rate needs a second entity.** A position names a `taxId`, never a percentage — the rate
+  lives on the WeClapp `tax` entity (`taxValue`, a STRING, e.g. "20"/"13.5"). The ai yaml therefore
+  fetches `/tax` once per tick into `$.taxes` and `DilosRender@1` joins it (`taxesPath`), the same
+  fetch-the-second-entity shape the AS delivery uses for `articleSupplySource`. A position naming a
+  tax entity that is not in the fetched set FAILS the order rather than rendering an empty rate:
+  empty is legitimate for a position that states no tax at all, so the two are indistinguishable in
+  the delivered file — and the AI delivery writes its export marker on the way out, which would make
+  the wrong file the final one for that order.
 
 ## AS/AI Delivery (WeClapp → SFTP)
 - Render and transport are separate nodes, and the RENDER differs per delivery kind: AI content
