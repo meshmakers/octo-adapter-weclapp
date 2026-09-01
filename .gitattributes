@@ -9,8 +9,9 @@
 tests/Lkv.WeClapp.Core.Tests/Fixtures/BE_20260828071116067.txt -text
 
 # The frozen byte anchor of the AS delivery: what the renderer produced for the parity batch
-# before the delivery moved onto the product's column renderer. Its assertions are about BYTES -
-# 34 pipe fields per line, zero carriage returns, a final 0x0A - so line-ending normalisation
-# would hand a fresh clone a file with a CR on every line and turn the anchor into a test that
-# fails for a reason unrelated to any delivery, or worse, into one nobody trusts any more.
+# before the delivery moved onto the product's column renderer, re-frozen on the CR+LF the article
+# master is contracted with. Its assertions are about BYTES - 34 pipe fields per line, a CR+LF
+# closing every record, a final 0x0D 0x0A - and normalisation cuts exactly those CRs out of the
+# stored blob and hands every clone back whatever its own checkout rule produces, which turns the
+# anchor into a test that passes or fails for reasons that have nothing to do with any delivery.
 tests/AdapterMeshWeClapp.Tests/Fixtures/as-parity-expected.txt -text

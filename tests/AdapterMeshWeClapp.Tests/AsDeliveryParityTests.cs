@@ -66,17 +66,42 @@ public class AsDeliveryParityTests
 
     /// <summary>Certifies the anchor itself against the invariants every delivered AS file
     /// satisfies, so it cannot silently degrade into a file that merely agrees with the current
-    /// code: 34 pipe-separated fields on every line, no carriage return anywhere, and a final
-    /// 0x0A. Measured on the BYTES that were read, which is why the fixture carries a
-    /// .gitattributes entry - without it git would hand a fresh clone CRLF and this assertion
-    /// would be the only thing standing between that and a silently wrong delivery.</summary>
+    /// code: 34 pipe-separated fields on every line, a CR+LF closing every record and nothing else
+    /// carrying a CR or an LF, and a final 0x0D 0x0A. Both halves of the separator are measured
+    /// because either half alone is a file LKV's import reads differently from the one intended -
+    /// a bare LF leaves a record short of its separator, a bare CR leaks into the first field of
+    /// the next one. Measured on the BYTES that were read, which is why the fixture carries a
+    /// .gitattributes `-text` entry - without it git normalises the CRs out of the stored blob and
+    /// hands every clone whatever its own checkout rule produces, and this assertion would be the
+    /// only thing standing between that and a silently wrong delivery.</summary>
     private static void AssertIsADeliverableAsFile(byte[] content)
     {
         Assert.NotEmpty(content);
-        Assert.DoesNotContain((byte)'\r', content);
-        Assert.Equal((byte)'\n', content[^1]);
 
-        var lines = DilosFile.Encoding.GetString(content).TrimEnd('\n').Split('\n');
+        var carriageReturns = content.Count(b => b == (byte)'\r');
+        var lineFeeds = content.Count(b => b == (byte)'\n');
+        Assert.Equal(lineFeeds, carriageReturns);
+        for (var i = 0; i < content.Length; i++)
+        {
+            if (content[i] == (byte)'\n')
+            {
+                Assert.True(i > 0 && content[i - 1] == (byte)'\r', $"byte {i}: an LF without its CR");
+            }
+
+            if (content[i] == (byte)'\r')
+            {
+                Assert.True(i + 1 < content.Length && content[i + 1] == (byte)'\n',
+                    $"byte {i}: a CR without its LF");
+            }
+        }
+
+        Assert.True(content.Length >= 2 && content[^2] == (byte)'\r' && content[^1] == (byte)'\n',
+            "the delivered file ends on 0x0D 0x0A");
+
+        // The trailing separator is dropped rather than split away, so an empty record would be
+        // counted instead of silently disappearing.
+        var lines = DilosFile.Encoding.GetString(content)[..^2].Split("\r\n");
+        Assert.Equal(carriageReturns, lines.Length);
         Assert.All(lines, line => Assert.Equal(34, line.Split('|').Length));
         Assert.All(lines, line => Assert.StartsWith("A*|", line, StringComparison.Ordinal));
     }

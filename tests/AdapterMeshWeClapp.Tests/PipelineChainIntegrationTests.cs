@@ -176,7 +176,11 @@ public class PipelineChainIntegrationTests
 
         var dilos = dataContext.Get<string>(render.TargetPath);
         Assert.NotNull(dilos);
-        var lines = dilos.TrimEnd('\n').Split("\n");
+        // Split on the CR+LF the AS article master is contracted with, not on the bare LF: on a
+        // document whose records are separated the wrong way this splits into one line instead of
+        // two and says so, where splitting on "\n" would count the same two lines either way and
+        // only leave a stray CR on the last field of each.
+        var lines = dilos[..^2].Split("\r\n");
         Assert.Equal(2, lines.Length);                          // ONE document, system article dropped
         Assert.Equal("43222003744925", lines[0].Split('|')[2]); // DILOS field 3 = Artikelnummer
         Assert.Equal("43222003744999", lines[1].Split('|')[2]);

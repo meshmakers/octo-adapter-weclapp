@@ -1033,11 +1033,14 @@ public class PipelineYamlContractTests
 
         Assert.Equal("|", render.Delimiter);
         // Read as the node reads them: the options are nullable and their defaults are resolved
-        // where they are used, so an omitted property must be checked as its EFFECTIVE value.
-        Assert.Equal(DelimitedLineEnding.Lf,
+        // where they are used, so an omitted property must be checked as its EFFECTIVE value. The
+        // record separator is the one of the four that must NOT be left to its default: the node
+        // separates records with LF unless told otherwise, and the AS article master is contracted
+        // as CR+LF.
+        Assert.Equal(DelimitedLineEnding.CrLf,
             render.LineEnding ?? RenderDelimitedTextNodeConfiguration.DefaultLineEnding);
         Assert.True(render.TrailingNewLine ?? RenderDelimitedTextNodeConfiguration.DefaultTrailingNewLine,
-            "the delivered file ends on 0x0A");
+            "the delivered file ends on 0x0D 0x0A");
         Assert.Equal(DelimiterInValueHandling.Fail,
             render.OnDelimiterInValue ?? RenderDelimitedTextNodeConfiguration.DefaultOnDelimiterInValue);
 
