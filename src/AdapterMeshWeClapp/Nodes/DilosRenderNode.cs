@@ -1,6 +1,4 @@
-using System.Globalization;
 using Lkv.WeClapp.Core.Dilos;
-using Lkv.WeClapp.Core.Mapping;
 using Lkv.WeClapp.Core.Model;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
@@ -85,7 +83,7 @@ public class DilosRenderNode(NodeDelegate next) : IPipelineNode
         NodeConfigurationGuards.RequirePath(NodeName, config.TaxesPath, nameof(config.TaxesPath));
 
         var orders = ReadOneOrMany<WeClappSalesOrder>(dataContext, config.Path, "order");
-        var content = RenderOrders(orders, config, ReadTaxRates(dataContext, config.TaxesPath));
+        var content = RenderOrders(orders, config, ReadTaxValues(dataContext, config.TaxesPath));
 
         // IsNullOrEmpty rather than .Length: the properties are non-nullable, but a yaml
         // carrying an explicit null ("fileNameTargetPath:" with no value) assigns null OVER the
@@ -123,7 +121,7 @@ public class DilosRenderNode(NodeDelegate next) : IPipelineNode
     }
 
     private static string RenderOrders(List<WeClappSalesOrder> orders, DilosRenderNodeConfiguration config,
-        IReadOnlyDictionary<string, int> taxRatePercentById)
+        IReadOnlyDictionary<string, string?> taxValueById)
     {
         if (string.IsNullOrEmpty(config.Submandant))
         {
@@ -133,36 +131,40 @@ public class DilosRenderNode(NodeDelegate next) : IPipelineNode
         var ctx = new DilosOrderContext
         {
             Submandant = config.Submandant,
-            TaxRatePercentById = taxRatePercentById,
+            TaxValueById = taxValueById,
         };
         var lines = orders
             .SelectMany(o => new[] { DilosOrderWriter.RenderHeader(o, ctx) }
                 .Concat(DilosOrderWriter.RenderPositions(o, ctx)));
 
-        // The writer refuses a position whose tax entity is not in the fetched set, and the render
-        // itself is lazy, so that refusal surfaces here, from inside the join. One attribution
-        // point, for the same reason WeClappResolveSupplySources has one: this runs inside a
-        // per-order ForEach@1 carrying continueOnError, which books an unattributed exception as
-        // "one order failed" with nothing naming the node or the cause.
+        // The writer refuses an unreachable or unreadable tax rate and a missing or unreadable
+        // amount, and the render is lazy, so those refusals surface here, from inside the join.
+        // Caught by TYPE rather than as "anything that escaped": this runs inside a per-order
+        // ForEach@1 carrying continueOnError, which books whatever arrives as "one order failed",
+        // and a catch-all would let a future NullReferenceException turn up wearing the message of
+        // a designed data rejection. An InvalidOperationException from the writer IS that
+        // rejection; everything else propagates as itself.
         try
         {
             return JoinLf(lines);
         }
-        catch (Exception ex) when (ex is not WeClappPipelineExecutionException)
+        catch (InvalidOperationException ex)
         {
-            throw new WeClappPipelineExecutionException(
-                $"DilosRender: cannot render the AI content ({ex.GetType().Name}: {ex.Message})", ex);
+            throw new WeClappPipelineExecutionException($"DilosRender: {ex.Message}", ex);
         }
     }
 
     /// <summary>
-    /// Builds the DILOS MwSt rate per WeClapp tax id from the entities the pipeline fetched. Every
-    /// way this can come apart ends in the same indistinguishable place - a position rendering an
-    /// empty rate, which is the legitimate value for a position that states no tax - so each one
-    /// fails the execution instead: no array at the path, an entity without an id, two entities
-    /// under one id, an absent or unparseable rate.
+    /// Indexes the fetched WeClapp tax entities by id, carrying the <c>taxValue</c> across
+    /// UNPARSED. Reading a rate here would validate the whole account's tax list on every
+    /// execution, so one unusable entity - in a set of 235, of which a typical order references
+    /// three - would fail every order until someone repaired a record none of them are taxed
+    /// under. The rate is therefore parsed and range-checked at the position that names it, in
+    /// DilosOrderWriter. What DOES belong here is what makes the set usable at all: an array at
+    /// the path, an id per entity, and no id twice - the last of which is also the paging
+    /// cross-check, since overlapping pages deliver the same entity again.
     /// </summary>
-    private static IReadOnlyDictionary<string, int> ReadTaxRates(IDataContext dataContext, string path)
+    private static IReadOnlyDictionary<string, string?> ReadTaxValues(IDataContext dataContext, string path)
     {
         var taxes = dataContext.GetArray<WeClappTax>(path)?.ToList()
                     ?? throw new WeClappPipelineExecutionException(
@@ -170,33 +172,10 @@ public class DilosRenderNode(NodeDelegate next) : IPipelineNode
                         "would render an empty MwSt rate, which is a legitimate value and therefore " +
                         "invisible in the delivered file");
 
-        var rates = new Dictionary<string, int>(StringComparer.Ordinal);
-        for (var index = 0; index < taxes.Count; index++)
-        {
-            if (taxes[index] is not { } tax || string.IsNullOrEmpty(tax.Id))
-            {
-                throw new WeClappPipelineExecutionException(
-                    $"DilosRender: tax entity {index} at '{path}' carries no 'id' - the order " +
-                    "positions taxed under it resolve against exactly that value");
-            }
-
-            if (!decimal.TryParse(tax.TaxValue, NumberStyles.Any, CultureInfo.InvariantCulture,
-                    out var taxValue))
-            {
-                throw new WeClappPipelineExecutionException(
-                    $"DilosRender: tax entity '{tax.Id}' at '{path}' carries no readable 'taxValue' " +
-                    $"(got '{tax.TaxValue ?? "<none>"}') - the MwSt rate cannot be stated from it");
-            }
-
-            if (!rates.TryAdd(tax.Id, WeClappToDilos.MwStPercent(taxValue)))
-            {
-                throw new WeClappPipelineExecutionException(
-                    $"DilosRender: tax id '{tax.Id}' appears more than once at '{path}' - which rate " +
-                    "a position is taxed under would be ambiguous");
-            }
-        }
-
-        return rates;
+        return NodeElementIndex
+            .ById(taxes, tax => tax.Id, NodeName, path, "tax",
+                "the order positions taxed under it resolve against exactly that value")
+            .ToDictionary(entry => entry.Key, entry => entry.Value.TaxValue, StringComparer.Ordinal);
     }
 
     /// <summary>The AI name is defined per single order (golden: one file per order), so a

@@ -43,7 +43,7 @@ public class PipelineChainIntegrationTests
             {
               "current":{
                 "id":"5910986621265","orderNumber":"74299","customerNumber":"7067387625809",
-                "customerId":"7","orderDate":1707177600000,
+                "customerId":"7","orderDate":1707177600000,"grossAmount":"41.39",
                 "deliveryAddress":{"company":"TJ Lucas","countryCode":"DE","zipcode":"51503",
                                    "street1":"Im Wielputzfeld 15a","city":"Rösrath"},
                 "orderItems":[{"positionNumber":1,"articleId":"43222003744925",
@@ -131,6 +131,9 @@ public class PipelineChainIntegrationTests
 
         // --- File name: AI + Auftragsnummer1 (= WeClapp id, the SAME number as K* field
         //     29 above) — golden precedent AI5910748889425.txt. NOT the shop orderNumber.
+        // The name matches a golden file, and only the NAME does: that file is the previous shop
+        // connector's output (18 and 20 duplicated, 16/19/21 empty) and is never the reference for
+        // what the price fields carry - the assertions above are.
         Assert.Equal("AI5910986621265.txt", dataContext.Get<string>("$.dilosFileName"));
     }
 

@@ -40,15 +40,13 @@ public sealed record WeClappOrderItem
     public string? GrossAmount { get; init; }
 
     public string Title { get; init; } = "";
-    public string UnitName { get; init; } = "";
 
     /// <summary>The WeClapp <c>tax</c> entity this position is taxed under, and the only route to
     /// its rate: the position states no percentage of its own, so DILOS P* field 16 is resolved
     /// against the separately fetched tax set (live customer account: 95/95 positions carry it).
-    /// </summary>
+    /// The payload's <c>taxName</c> and <c>unitName</c> are deliberately not modelled - a label and
+    /// a unit of measure, neither of which the AI position record states.</summary>
     public string? TaxId { get; init; }
-
-    public string? TaxName { get; init; }
 }
 
 public sealed record WeClappShippingCostItem

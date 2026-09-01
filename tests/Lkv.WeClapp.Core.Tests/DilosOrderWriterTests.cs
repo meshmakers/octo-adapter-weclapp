@@ -3,16 +3,38 @@ using Lkv.WeClapp.Core.Model;
 
 namespace Lkv.WeClapp.Core.Tests;
 
+/// <summary>
+/// The AI writer contract. NOTE on the golden files (Fixtures/AI5910986621265.txt and its
+/// siblings): they are real LKV artefacts and are never edited - but they are a PROTOCOL OF THE
+/// PREVIOUS SHOP CONNECTOR, not a statement of today's contract. They duplicate the same number
+/// into fields 18 and 20 and leave 16, 19 and 21 empty; the agreement is that a position states
+/// its rate in whole percent and both its unit and its line price, net and gross. The golden files
+/// stay authoritative for LAYOUT (66/22 fields, dot decimals, LF) and for what the LKV import
+/// demonstrably accepts. What the price fields must CONTAIN is pinned here and in
+/// PipelineChainIntegrationTests, never by reading those files.
+/// </summary>
 public class DilosOrderWriterTests
 {
     private static string Field(string line, int dilosFieldNo) => line.Split('|')[dilosFieldNo - 1];
 
     // The rate a position states comes from the WeClapp /tax entity its taxId points at; 3681 is
-    // the id the committed salesOrder fixture references.
+    // the id the committed salesOrder fixture references. The map carries the RAW taxValue, the way
+    // the API states it - the writer parses only the entities a rendered position actually names.
     private static readonly DilosOrderContext Ctx = new()
     {
         Submandant = "51696697501",
-        TaxRatePercentById = new Dictionary<string, int> { ["3681"] = 20, ["3682"] = 19, ["3683"] = 0 },
+        TaxValueById = new Dictionary<string, string?>
+        {
+            ["3681"] = "20",
+            ["3682"] = "19",
+            ["3683"] = "0",
+        },
+    };
+
+    private static DilosOrderContext CtxWithTax(string taxId, string? taxValue) => new()
+    {
+        Submandant = "51696697501",
+        TaxValueById = new Dictionary<string, string?> { [taxId] = taxValue },
     };
 
     [Fact]
@@ -71,6 +93,7 @@ public class DilosOrderWriterTests
             Id = "622075",
             OrderNumber = "SO-1001",
             CustomerNumber = "K-77",
+            GrossAmount = "0.00",
             DeliveryAddress = new WeClappAddress
             {
                 FirstName = "Erika",
@@ -104,6 +127,7 @@ public class DilosOrderWriterTests
             Id = "5910986621265",
             OrderNumber = "74299",
             CustomerNumber = "7067387625809",
+            GrossAmount = "104.97",
             OrderDate = 1707174000000L
         };
 
@@ -123,10 +147,17 @@ public class DilosOrderWriterTests
                 new WeClappOrderItem
                 {
                     PositionNumber = 1, ArticleId = "43222003744925",
-                    Quantity = "1", NetAmount = "29.99", Title = "Ersatzglas VOLT"
+                    Quantity = "1", NetAmount = "29.99", GrossAmount = "35.99",
+                    Title = "Ersatzglas VOLT"
                 }
             },
-            ShippingCostItems = { new WeClappShippingCostItem { NetAmount = "4.50", Title = "DHL Standard (DE)" } }
+            ShippingCostItems =
+            {
+                new WeClappShippingCostItem
+                {
+                    NetAmount = "4.50", GrossAmount = "5.40", Title = "DHL Standard (DE)",
+                },
+            }
         };
 
         var lines = DilosOrderWriter.RenderPositions(o, Ctx).ToList();
@@ -267,6 +298,159 @@ public class DilosOrderWriterTests
         Assert.Contains("9999", ex.Message, StringComparison.Ordinal);
     }
 
+    // The rate is read with dot-decimal styles ONLY. Under NumberStyles.Any and InvariantCulture a
+    // comma is a GROUP separator, so a rate of "13,5" would parse as 135 and, after the range
+    // check, be delivered as a 135 percent VAT rate; "(20)" would parse as -20. Both are shapes a
+    // number that came from the wrong place really has, and neither is a rate.
+    [Theory]
+    [InlineData("13,5")]     // comma decimal - would be 135 under NumberStyles.Any
+    [InlineData("(20)")]     // accounting negative - would be -20 under NumberStyles.Any
+    [InlineData("20%")]
+    [InlineData("zwanzig")]
+    [InlineData("")]
+    [InlineData(null)]
+    public void RenderPositions_TaxRateThatIsNotAPlainDecimal_FailsLoudly(string? taxValue)
+    {
+        var o = OrderTaxedUnder("T");
+
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => DilosOrderWriter.RenderPositions(o, CtxWithTax("T", taxValue)).ToList());
+
+        Assert.Contains("'T'", ex.Message, StringComparison.Ordinal);
+    }
+
+    // A percentage outside 0-100 did not come from a rate. Rounding it and shipping it would put a
+    // number in field 16 that no DILOS import can mean anything by; zero and one hundred are both
+    // real rates and stay legal.
+    [Theory]
+    [InlineData("-1", false)]
+    [InlineData("101", false)]
+    [InlineData("0", true)]
+    [InlineData("100", true)]
+    public void RenderPositions_TaxRateOutsideZeroToHundred_FailsLoudly(string taxValue, bool legal)
+    {
+        var o = OrderTaxedUnder("T");
+        var ctx = CtxWithTax("T", taxValue);
+
+        if (legal)
+        {
+            Assert.Equal(taxValue, Field(DilosOrderWriter.RenderPositions(o, ctx).Single(), 16));
+            return;
+        }
+
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => DilosOrderWriter.RenderPositions(o, ctx).ToList());
+        Assert.Contains("0 to 100", ex.Message, StringComparison.Ordinal);
+    }
+
+    // The price fields are contract now, so an amount that is absent or unreadable fails the order.
+    // The 0.00 stand-in predates that agreement: it cannot be told apart from a genuine zero, and
+    // the AI delivery writes its export marker on the way out, so the wrong number would stand.
+    // Both position kinds and both amounts go through the same builder and are covered here.
+    [Theory]
+    [InlineData(null, "12.00", "Positionspreis netto")]
+    [InlineData("10.00", null, "Positionspreis brutto")]
+    [InlineData("10,00", "12.00", "Positionspreis netto")]   // comma decimal: 1000 under Any
+    [InlineData("10.00", "1 200", "Positionspreis brutto")]  // group separator: 1200 under Any
+    public void RenderPositions_AmountMissingOrUnreadable_FailsLoudly(string? net, string? gross, string what)
+    {
+        var o = new WeClappSalesOrder
+        {
+            Id = "5910986621265",
+            OrderItems =
+            {
+                new WeClappOrderItem
+                {
+                    PositionNumber = 1, ArticleId = "A1", Quantity = "1",
+                    NetAmount = net, GrossAmount = gross, TaxId = "3681",
+                },
+            },
+        };
+
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => DilosOrderWriter.RenderPositions(o, Ctx).ToList());
+
+        Assert.Contains(what, ex.Message, StringComparison.Ordinal);
+        Assert.Contains("position 1", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("4,50")]
+    public void RenderPositions_ShippingAmountMissingOrUnreadable_FailsLoudly(string? net)
+    {
+        var o = new WeClappSalesOrder
+        {
+            Id = "5910986621265",
+            ShippingCostItems =
+            {
+                new WeClappShippingCostItem { NetAmount = net, GrossAmount = "5.40", TaxId = "3681" },
+            },
+        };
+
+        Assert.Throws<InvalidOperationException>(
+            () => DilosOrderWriter.RenderPositions(o, Ctx).ToList());
+    }
+
+    // A price of genuinely zero is a legitimate statement and must keep rendering 0.00 - the
+    // fail-loud above is about a MISSING amount, never about a cheap one.
+    [Fact]
+    public void RenderPositions_GenuineZeroPrice_StillRendersZero()
+    {
+        var o = new WeClappSalesOrder
+        {
+            Id = "5910986621265",
+            OrderItems =
+            {
+                new WeClappOrderItem
+                {
+                    PositionNumber = 1, ArticleId = "A1", Quantity = "2",
+                    NetAmount = "0.00", GrossAmount = "0", TaxId = "3681",
+                },
+            },
+        };
+
+        var p = DilosOrderWriter.RenderPositions(o, Ctx).Single();
+
+        Assert.Equal("20", Field(p, 16));
+        Assert.Equal("0.00", Field(p, 18));
+        Assert.Equal("0.00", Field(p, 19));
+        Assert.Equal("0.00", Field(p, 20));
+        Assert.Equal("0.00", Field(p, 21));
+    }
+
+    // The header total is an amount the file states as well, and it is read the same way.
+    [Theory]
+    [InlineData(null)]
+    [InlineData("104,97")]
+    public void RenderHeader_InvoiceTotalMissingOrUnreadable_FailsLoudly(string? grossAmount)
+    {
+        var o = new WeClappSalesOrder
+        {
+            Id = "5910986621265",
+            OrderNumber = "74299",
+            CustomerNumber = "7067387625809",
+            GrossAmount = grossAmount,
+        };
+
+        var ex = Assert.Throws<InvalidOperationException>(() => DilosOrderWriter.RenderHeader(o, Ctx));
+
+        Assert.Contains("Rechnungssumme brutto", ex.Message, StringComparison.Ordinal);
+    }
+
+    private static WeClappSalesOrder OrderTaxedUnder(string taxId) => new()
+    {
+        Id = "5910986621265",
+        OrderItems =
+        {
+            new WeClappOrderItem
+            {
+                PositionNumber = 1, ArticleId = "A1", Quantity = "1",
+                NetAmount = "10.00", GrossAmount = "12.00", TaxId = taxId,
+            },
+        },
+    };
+
     // A position that names no tax entity states no rate - the field stays empty, which the
     // partner's own files show is importable. The prices do not depend on the rate (WeClapp
     // states the gross itself), so they are still filled.
@@ -311,15 +495,21 @@ public class DilosOrderWriterTests
                 new WeClappOrderItem
                 {
                     PositionNumber = 1, ArticleId = "A1",
-                    Quantity = "1", NetAmount = "10.00", Title = "Item eins"
+                    Quantity = "1", NetAmount = "10.00", GrossAmount = "12.00", Title = "Item eins"
                 },
                 new WeClappOrderItem
                 {
                     PositionNumber = 3, ArticleId = "A2",
-                    Quantity = "2", NetAmount = "20.00", Title = "Item zwei"
+                    Quantity = "2", NetAmount = "20.00", GrossAmount = "24.00", Title = "Item zwei"
                 }
             },
-            ShippingCostItems = { new WeClappShippingCostItem { NetAmount = "4.50", Title = "DHL Standard (DE)" } }
+            ShippingCostItems =
+            {
+                new WeClappShippingCostItem
+                {
+                    NetAmount = "4.50", GrossAmount = "5.40", Title = "DHL Standard (DE)",
+                },
+            }
         };
 
         var lines = DilosOrderWriter.RenderPositions(o, Ctx).ToList();

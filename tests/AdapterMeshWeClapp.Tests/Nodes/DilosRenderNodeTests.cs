@@ -43,10 +43,11 @@ public class DilosRenderNodeTests
         A.CallTo(() => _dataContext.GetArray<WeClappTax>("$.taxes"))
             .Returns(taxes.Select(t => (WeClappTax?)t).ToList());
 
-    private static DilosOrderContext RenderContext(params (string Id, int Percent)[] rates) => new()
+    // The context the node builds: RAW taxValue per id, exactly as the API states it.
+    private static DilosOrderContext RenderContext(params (string Id, string? TaxValue)[] taxes) => new()
     {
         Submandant = "51696697501",
-        TaxRatePercentById = rates.ToDictionary(r => r.Id, r => r.Percent),
+        TaxValueById = taxes.ToDictionary(t => t.Id, t => t.TaxValue, StringComparer.Ordinal),
     };
 
     [Fact]
@@ -66,10 +67,17 @@ public class DilosRenderNodeTests
                 new WeClappOrderItem
                 {
                     PositionNumber = 1, ArticleId = "43222003744925",
-                    Quantity = "1", NetAmount = "29.99", Title = "Ersatzglas VOLT"
+                    Quantity = "1", NetAmount = "29.99", GrossAmount = "35.99",
+                    Title = "Ersatzglas VOLT"
                 }
             },
-            ShippingCostItems = { new WeClappShippingCostItem { NetAmount = "4.50", Title = "DHL Standard (DE)" } }
+            ShippingCostItems =
+            {
+                new WeClappShippingCostItem
+                {
+                    NetAmount = "4.50", GrossAmount = "5.40", Title = "DHL Standard (DE)",
+                },
+            }
         };
         A.CallTo(() => _dataContext.GetArray<WeClappSalesOrder>("$.items"))
             .Returns(new List<WeClappSalesOrder?> { order });
@@ -94,12 +102,14 @@ public class DilosRenderNodeTests
         {
             Id = "5910986621265",
             CustomerNumber = "7067387625809",
+            GrossAmount = "35.99",
             OrderItems =
             {
                 new WeClappOrderItem
                 {
                     PositionNumber = 1, ArticleId = "43222003744925",
-                    Quantity = "1", NetAmount = "29.99", Title = "Ersatzglas VOLT"
+                    Quantity = "1", NetAmount = "29.99", GrossAmount = "35.99",
+                    Title = "Ersatzglas VOLT"
                 }
             },
         };
@@ -128,6 +138,7 @@ public class DilosRenderNodeTests
         {
             Id = "5910986621265",
             CustomerNumber = "7067387625809",
+            GrossAmount = "44.67",
             OrderItems =
             {
                 new WeClappOrderItem
@@ -142,7 +153,7 @@ public class DilosRenderNodeTests
 
         await _sut.ProcessObjectAsync(_dataContext, _nodeContext);
 
-        var ctx = RenderContext(("3681", 20));
+        var ctx = RenderContext(("3681", "20"));
         var expected = DilosOrderWriter.RenderHeader(order, ctx) + "\n" +
                        string.Join("\n", DilosOrderWriter.RenderPositions(order, ctx)) + "\n";
         A.CallTo(() => _dataContext.Set(config.TargetPath, expected, config.DocumentMode,
@@ -241,6 +252,12 @@ public class DilosRenderNodeTests
             () => _sut.ProcessObjectAsync(_dataContext, _nodeContext));
 
         Assert.Contains("3681", ex.Message, StringComparison.Ordinal);
+
+        // The same anchor the other refusals carry: a rejected tax set leaves nothing behind for
+        // the delivery to pick up, and does not let the chain continue.
+        A.CallTo(() => _dataContext.Set(A<string>._, A<string>._, A<DocumentModes>._,
+            A<ValueKinds>._, A<TargetValueWriteModes>._)).MustNotHaveHappened();
+        A.CallTo(() => _next(_dataContext, _nodeContext)).MustNotHaveHappened();
     }
 
     // The writer refuses a position whose tax entity was not fetched. That refusal is raised
@@ -268,6 +285,7 @@ public class DilosRenderNodeTests
     {
         Id = "5910986621265",
         CustomerNumber = "7067387625809",
+        GrossAmount = "12.00",
         OrderItems =
         {
             new WeClappOrderItem
@@ -417,11 +435,13 @@ public class DilosRenderNodeTests
     {
         Id = "5910986621265",
         CustomerNumber = "7067387625809",
+        GrossAmount = "35.99",
         OrderItems =
         {
             new WeClappOrderItem
             {
-                PositionNumber = 1, ArticleId = "43222003744925", Quantity = "1", NetAmount = "29.99",
+                PositionNumber = 1, ArticleId = "43222003744925", Quantity = "1",
+                NetAmount = "29.99", GrossAmount = "35.99",
             },
         },
     };
@@ -455,12 +475,14 @@ public class DilosRenderNodeTests
             Id = "5910986621265",
             OrderNumber = "74299",   // Auftragsnummer2 (shop number) — must NOT name the file
             CustomerNumber = "7067387625809",
+            GrossAmount = "35.99",
             OrderItems =
             {
                 new WeClappOrderItem
                 {
                     PositionNumber = 1, ArticleId = "43222003744925",
-                    Quantity = "1", NetAmount = "29.99", Title = "Ersatzglas VOLT"
+                    Quantity = "1", NetAmount = "29.99", GrossAmount = "35.99",
+                    Title = "Ersatzglas VOLT"
                 }
             },
         };
@@ -513,8 +535,15 @@ public class DilosRenderNodeTests
             {
                 new()
                 {
-                    Id = "5910986621265", CustomerNumber = "7067387625809",
-                    OrderItems = { new WeClappOrderItem { PositionNumber = 1, ArticleId = "1", Quantity = "1" } },
+                    Id = "5910986621265", CustomerNumber = "7067387625809", GrossAmount = "0.00",
+                    OrderItems =
+                    {
+                        new WeClappOrderItem
+                        {
+                            PositionNumber = 1, ArticleId = "1", Quantity = "1",
+                            NetAmount = "0.00", GrossAmount = "0.00",
+                        },
+                    },
                 },
             });
 

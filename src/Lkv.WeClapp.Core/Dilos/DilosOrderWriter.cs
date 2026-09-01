@@ -1,4 +1,4 @@
-﻿using System.Globalization;
+using System.Globalization;
 using Lkv.WeClapp.Core.Mapping;
 using Lkv.WeClapp.Core.Model;
 
@@ -10,12 +10,15 @@ public sealed record DilosOrderContext
     /// <summary>WeClapp Mandanten-ID (constant per tenant) → DILOS Submandant; LKV maps it.</summary>
     public required string Submandant { get; init; }
 
-    /// <summary>VAT rate in whole percent per WeClapp <c>tax</c> id — the rates the positions
-    /// state in P* field 16. Required rather than defaulted to empty: an empty map renders every
-    /// rate as an empty field, which is the LEGITIMATE value for a position that states no tax,
-    /// so a forgotten map would produce files nothing downstream can tell from correct ones.
+    /// <summary>
+    /// The RAW <c>taxValue</c> of every fetched WeClapp <c>tax</c> entity, by id. Raw on purpose:
+    /// the rate is parsed and range-checked only for the entities a rendered position actually
+    /// names, so one unusable entity somewhere in the account's tax list cannot fail the orders
+    /// that are not taxed under it. Required rather than defaulted to empty, because an empty map
+    /// renders every rate as an empty field - the LEGITIMATE value for a position that states no
+    /// tax, and therefore invisible in the delivered file.
     /// </summary>
-    public required IReadOnlyDictionary<string, int> TaxRatePercentById { get; init; }
+    public required IReadOnlyDictionary<string, string?> TaxValueById { get; init; }
 }
 
 /// <summary>
@@ -28,11 +31,25 @@ public sealed record DilosOrderContext
 /// NOT the reference for which of them carry a value: they fill 18 and 20 and leave 16, 19 and 21
 /// empty, which is what the previous shop connector happened to produce. The contract is that each
 /// position states its rate in whole percent and both its unit and its line price, net and gross.
+///
+/// Because those prices ARE the contract now, an amount that is absent or unreadable fails the
+/// order instead of rendering 0.00. That fallback predates the price agreement, and under it a
+/// lost amount becomes an actively wrong statement to the partner which nothing downstream can
+/// detect. A price of genuinely zero is legitimate and renders 0.00 exactly as before.
 /// </summary>
 public static class DilosOrderWriter
 {
     private const int HeaderFieldCount = 66;
     private const int PositionFieldCount = 22;
+
+    /// <summary>
+    /// The only numeric shape a DILOS amount or rate may arrive in: dot decimal, optional sign,
+    /// nothing else. Deliberately NOT <see cref="NumberStyles.Any" />, which also accepts a group
+    /// separator and parentheses: under InvariantCulture "44,67" would then read as 4467 and
+    /// "(20)" as -20 - silently, and straight into a delivered file.
+    /// </summary>
+    private const NumberStyles AmountStyles =
+        NumberStyles.AllowDecimalPoint | NumberStyles.AllowLeadingSign;
 
     public static string RenderHeader(WeClappSalesOrder o, DilosOrderContext ctx)
     {
@@ -62,7 +79,8 @@ public static class DilosOrderWriter
         f[31] = o.OrderNumber;                 // Auftragsnummer2
         f[33] = o.ShipmentMethodId;            // Frächter = WeClapp shipmentMethod-ID (LKV mappt)
         f[46] = "0";                           // Text4: kein Rechnungsdruck
-        f[65] = Money(o.GrossAmount);          // RechnungssummeBrutto
+        f[65] = WeClappToDilos.Money(          // RechnungssummeBrutto
+            Amount(o.GrossAmount, "Rechnungssumme brutto", $"Order '{o.Id}'"));
         return Join(f, HeaderFieldCount);
     }
 
@@ -88,79 +106,132 @@ public static class DilosOrderWriter
         foreach (var item in o.OrderItems)
         {
             pos++;
-            var f = NewFields(PositionFieldCount);
-            f[1] = "P*";
-            f[2] = o.Id;                                    // Auftragsnummer1
-            // DILOS requires Position to be unique per Auftragsnummer. WeClapp's
-            // positionNumber can have gaps and would collide with the appended
-            // shipping pseudo line, so both position fields use the sequential
-            // render index; return-path matching uses Artikelnummer, not Position.
-            f[3] = pos.ToString(CultureInfo.InvariantCulture);                 // Position
-            f[4] = pos.ToString(CultureInfo.InvariantCulture);                 // PositionnummerAufLieferschein
-            f[5] = item.ArticleId;                          // Artikelnummer (= AS-Key)
-            f[11] = item.Quantity;                          // Mengeabg
-            f[14] = item.Title;                             // Text
-            f[15] = "5";                                    // Währungsschlüssel = EUR
-            f[16] = MwSt(item.TaxId, ctx, o.Id, pos);       // MwSt (Ganzzahl-Prozent)
-            f[17] = "L";                                    // KennzeichenDruck = Lieferschein
-            f[18] = UnitPrice(item.NetAmount, item.Quantity);  // Einzelpreis netto
-            f[19] = Money(item.NetAmount);                     // Positionspreis netto
-            f[20] = UnitPrice(item.GrossAmount, item.Quantity); // Einzelpreis brutto
-            f[21] = Money(item.GrossAmount);                   // Positionspreis brutto
-            yield return Join(f, PositionFieldCount);
+            yield return RenderPosition(ctx, o.Id, pos, item.ArticleId, item.Quantity, item.Title,
+                item.TaxId, item.NetAmount, item.GrossAmount);
         }
 
         // Versandkosten: eigene P*-Zeile mit Artikelnummer = -1 (← WeClapp shippingCostItems).
-        // WeClapp states net, gross and taxId on these items exactly as on an article position,
-        // and the line is printed on the same documents, so it carries the same price fields.
-        // Quantity is 1 by construction, which makes unit and line price the same number.
+        // WeClapp states net, gross and taxId on these items exactly as on an article position and
+        // the line prints on the same documents, so it renders through the SAME builder - quantity
+        // 1 by construction, which makes its unit and line prices the same number.
         foreach (var ship in o.ShippingCostItems)
         {
             pos++;
-            var f = NewFields(PositionFieldCount);
-            f[1] = "P*";
-            f[2] = o.Id;
-            f[3] = pos.ToString(CultureInfo.InvariantCulture);
-            f[4] = pos.ToString(CultureInfo.InvariantCulture);
-            f[5] = "-1";
-            f[11] = "1";
-            f[14] = ship.Title;
-            f[15] = "5";
-            f[16] = MwSt(ship.TaxId, ctx, o.Id, pos);
-            f[17] = "L";
-            f[18] = Money(ship.NetAmount);
-            f[19] = Money(ship.NetAmount);
-            f[20] = Money(ship.GrossAmount);
-            f[21] = Money(ship.GrossAmount);
-            yield return Join(f, PositionFieldCount);
+            yield return RenderPosition(ctx, o.Id, pos, "-1", "1", ship.Title,
+                ship.TaxId, ship.NetAmount, ship.GrossAmount);
         }
     }
 
     /// <summary>
-    /// DILOS P* field 16: the position's VAT rate in whole percent, resolved through the fetched
-    /// WeClapp tax entities. A position that names no tax entity states no rate and leaves the
-    /// field empty (spec: not mandatory; the partner's own files carry it empty throughout).
+    /// The ONE place a DILOS P* record is written. An article line and the shipping pseudo line
+    /// differ only in what they hand in - article id and quantity, versus "-1" and 1 - so a future
+    /// position field is written here once instead of in two places that can drift apart.
     /// </summary>
-    /// <exception cref="InvalidOperationException">The position names a tax entity that is not in
-    /// the fetched set. Falling back to an empty field instead would be indistinguishable from the
-    /// legitimate "no tax stated" above, in a file that is delivered once and then marked as
-    /// exported — so the order fails and the next tick retries it.</exception>
-    private static string MwSt(string? taxId, DilosOrderContext ctx, string orderId, int position)
+    private static string RenderPosition(DilosOrderContext ctx, string orderId, int pos,
+        string articleNumber, string quantity, string title, string? taxId,
+        string? netAmount, string? grossAmount)
+    {
+        var where = $"Order '{orderId}' position {pos}";
+        var net = Amount(netAmount, "Positionspreis netto", where);
+        var gross = Amount(grossAmount, "Positionspreis brutto", where);
+        var qty = ParseDec(quantity);
+
+        var f = NewFields(PositionFieldCount);
+        f[1] = "P*";
+        f[2] = orderId;                                    // Auftragsnummer1
+        // DILOS requires Position to be unique per Auftragsnummer. WeClapp's
+        // positionNumber can have gaps and would collide with the appended
+        // shipping pseudo line, so both position fields use the sequential
+        // render index; return-path matching uses Artikelnummer, not Position.
+        f[3] = pos.ToString(CultureInfo.InvariantCulture); // Position
+        f[4] = pos.ToString(CultureInfo.InvariantCulture); // PositionnummerAufLieferschein
+        f[5] = articleNumber;                              // Artikelnummer (= AS-Key)
+        f[11] = quantity;                                  // Mengeabg
+        f[14] = title;                                     // Text
+        f[15] = "5";                                       // Währungsschlüssel = EUR
+        f[16] = MwSt(taxId, ctx, where);                   // MwSt (Ganzzahl-Prozent)
+        f[17] = "L";                                       // KennzeichenDruck = Lieferschein
+        f[18] = WeClappToDilos.Money(PerUnit(net, qty));   // Einzelpreis netto
+        f[19] = WeClappToDilos.Money(net);                 // Positionspreis netto
+        f[20] = WeClappToDilos.Money(PerUnit(gross, qty)); // Einzelpreis brutto
+        f[21] = WeClappToDilos.Money(gross);               // Positionspreis brutto
+        return Join(f, PositionFieldCount);
+    }
+
+    /// <summary>
+    /// DILOS P* field 16: the position's VAT rate in whole percent. A position that names no tax
+    /// entity states no rate and leaves the field empty (spec: not mandatory; the partner's own
+    /// files carry it empty throughout). A rate of ZERO is a stated rate and renders "0" - the
+    /// customer's tax-free intra-EU supplies are taxed that way, and folding them into the empty
+    /// field would make them indistinguishable from a position with no tax reference at all.
+    ///
+    /// The rate is parsed HERE and not where the tax set is indexed, so only the entities a
+    /// rendered position actually names are ever validated: an unusable entity elsewhere in the
+    /// account's tax list is none of this order's business.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The position names a tax entity that was not
+    /// fetched, or one whose rate is unreadable or outside 0-100. Rendering an empty field instead
+    /// would be indistinguishable from the legitimate "no tax stated" above, in a file that is
+    /// delivered once and then marked as exported.</exception>
+    private static string MwSt(string? taxId, DilosOrderContext ctx, string where)
     {
         if (string.IsNullOrEmpty(taxId))
         {
             return "";
         }
 
-        if (!ctx.TaxRatePercentById.TryGetValue(taxId, out var percent))
+        if (!ctx.TaxValueById.TryGetValue(taxId, out var taxValue))
         {
             throw new InvalidOperationException(
-                $"Order '{orderId}' position {position} is taxed under WeClapp tax '{taxId}', which is " +
-                $"not among the {ctx.TaxRatePercentById.Count} fetched tax entities - its MwSt would " +
-                "silently render as an empty field, the value of a position that states no tax at all");
+                $"{where} is taxed under WeClapp tax '{taxId}', which is not among the " +
+                $"{ctx.TaxValueById.Count} fetched tax entities - its MwSt would silently render as " +
+                "an empty field, the value of a position that states no tax at all");
         }
 
-        return percent.ToString(CultureInfo.InvariantCulture);
+        if (!decimal.TryParse(taxValue, AmountStyles, CultureInfo.InvariantCulture, out var rate))
+        {
+            throw new InvalidOperationException(
+                $"{where} is taxed under WeClapp tax '{taxId}', whose rate '{taxValue ?? "<none>"}' " +
+                "is not a plain decimal percentage");
+        }
+
+        // Outside 0-100 it is not a rate this field can state. DILOS field 16 is a whole-percent
+        // integer, so a value that came from the wrong property - an amount, a tax key, a negative
+        // correction - would otherwise be rounded and delivered as though it were one.
+        if (rate is < 0m or > 100m)
+        {
+            throw new InvalidOperationException(
+                $"{where} is taxed under WeClapp tax '{taxId}', whose rate {rate} is outside the " +
+                "0 to 100 percent a MwSt field can state");
+        }
+
+        return WeClappToDilos.MwStPercent(rate).ToString(CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>
+    /// An amount the delivered file must state. Absent or unreadable fails the order: now that the
+    /// price fields are contract, a 0.00 stand-in is an actively wrong statement which neither the
+    /// file nor any downstream step can tell from a genuine zero - and the AI delivery writes its
+    /// export marker on the way out. A real zero parses and renders 0.00 as it always did.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The amount is null or not a plain decimal.
+    /// </exception>
+    private static decimal Amount(string? raw, string what, string where)
+    {
+        if (raw is null)
+        {
+            throw new InvalidOperationException(
+                $"{where} states no {what} - the price fields are part of the delivery contract, so " +
+                "a missing amount fails the order instead of rendering 0.00");
+        }
+
+        if (!decimal.TryParse(raw, AmountStyles, CultureInfo.InvariantCulture, out var value))
+        {
+            throw new InvalidOperationException(
+                $"{where} states the {what} as '{raw}', which is not a plain decimal amount");
+        }
+
+        return value;
     }
 
     private static string[] NewFields(int count)
@@ -175,18 +246,15 @@ public static class DilosOrderWriter
     private static string Date(long epochMs) =>
         ViennaTime.ToViennaDate(epochMs).ToString("dd.MM.yyyy", CultureInfo.InvariantCulture);
 
-    private static string Money(string? amount) => WeClappToDilos.Money(ParseDec(amount));
-
+    /// <summary>The quantity, which is not an amount the file computes with: it is only ever
+    /// divided BY, and field 11 carries the raw text either way. A value that does not read as a
+    /// number answers 0, which <see cref="PerUnit" /> treats as "nothing to divide by".</summary>
     private static decimal ParseDec(string? s) =>
-        decimal.TryParse(s, NumberStyles.Any, CultureInfo.InvariantCulture, out var d) ? d : 0m;
+        decimal.TryParse(s, AmountStyles, CultureInfo.InvariantCulture, out var d) ? d : 0m;
 
     /// <summary>Unit price from a LINE total: WeClapp states netAmount/grossAmount per position and
     /// its own unitPrice is the pre-discount list price, which matches neither. A zero quantity
     /// keeps the line total rather than dividing by it.</summary>
-    private static string UnitPrice(string? lineAmount, string quantity)
-    {
-        var amount = ParseDec(lineAmount);
-        var qty = ParseDec(quantity);
-        return WeClappToDilos.Money(qty == 0m ? amount : amount / qty);
-    }
+    private static decimal PerUnit(decimal lineAmount, decimal quantity) =>
+        quantity == 0m ? lineAmount : lineAmount / quantity;
 }
