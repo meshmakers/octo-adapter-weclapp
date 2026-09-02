@@ -61,4 +61,46 @@
   value: {{ .Values.adapterRtId | quote }}
 - name: OCTO_ADAPTER__REPORTINGSERVICEURL
   value: {{ .Values.reportingServiceUri | quote }}
+{{/*
+  AB#5072 -- the adapter's OUTBOUND credential: the identity it presents when it
+  connects to /{tenantId}/adapterHub. Read by AdapterOptions in
+  octo-communication-sdk, which every SDK-based adapter shares, so this block is
+  deliberately byte-identical across the adapter charts.
+
+  `authUri` needs no new plumbing: the communication operator writes it into the
+  context values of EVERY workload (WorkloadContextValuesBuilder). It must be the
+  PUBLIC issuer address -- OIDC discovery runs against it and the communication
+  controller validates the issuer of the resulting token.
+
+  Unlike octo-mesh-adapter there is no OCTO_ADAPTER__AUTHORITYURL beside this one:
+  that key is the INBOUND issuer that secured FromHttpRequest@2 routes accept, and
+  it lives on MeshAdapterConfiguration, which this adapter does not have.
+*/}}
+{{- if .Values.authUri }}
+- name: OCTO_ADAPTER__ISSUERURI
+  value: {{ .Values.authUri | quote }}
+{{- end }}
+{{/*
+  Client id of the adapter's own confidential OAuth client -- the
+  ServiceAccountConfiguration the communication controller provisions per adapter
+  (AB#5027) and projects onto this exact path as a ValueOverride at deploy time.
+  Omitted when unset: AdapterOptions.IsEnabled is `IssuerUri && ClientId`, so an
+  unconfigured adapter acquires no token and connects anonymously -- which is what
+  the whole fleet does today and must keep doing on upgrade.
+*/}}
+{{- if .Values.serviceAccountClientId }}
+- name: OCTO_ADAPTER__CLIENTID
+  value: {{ .Values.serviceAccountClientId | quote }}
+{{- end }}
+{{/*
+  🔴 Secret-flagged on the controller side, so the operator materialises it into
+  {release}-octo-secrets and hands this path a {valueFrom: {secretKeyRef: ...}} map
+  instead of the plaintext -- octo-mesh.secretEnv accepts both shapes, exactly as
+  secrets.rabbitmq does. Guarded by `if` because secretEnv FAILS on an empty value
+  (deliberate for the four mandatory cluster secrets) while this one is optional by
+  design -- see the ClientId note above.
+*/}}
+{{- if .Values.secrets.serviceAccountClientSecret }}
+{{ include "octo-mesh.secretEnv" (dict "envName" "OCTO_ADAPTER__CLIENTSECRET" "value" .Values.secrets.serviceAccountClientSecret "legacyKey" "serviceAccountClientSecret" "context" .) }}
+{{- end }}
 {{- end }}

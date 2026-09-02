@@ -146,5 +146,6 @@ externally via valueFrom.
 {{- else if and $s.databaseAdmin (not (kindIs "map" $s.databaseAdmin)) -}}true
 {{- else if and $s.rabbitmq (not (kindIs "map" $s.rabbitmq)) -}}true
 {{- else if and $s.streamDataPassword (not (kindIs "map" $s.streamDataPassword)) -}}true
+{{- else if and $s.serviceAccountClientSecret (not (kindIs "map" $s.serviceAccountClientSecret)) -}}true
 {{- end -}}
 {{- end -}}
