@@ -29,15 +29,36 @@ public sealed record WeClappOrderItem
     public string ArticleId { get; init; } = "";
     public string ArticleNumber { get; init; } = "";
     public string Quantity { get; init; } = "";
+
+    /// <summary>Line total net — NOT a unit price. WeClapp's own <c>unitPrice</c> is the
+    /// pre-discount list price and matches neither total, so DILOS P* field 19 carries this value
+    /// and field 18 divides it by the quantity.</summary>
     public string? NetAmount { get; init; }
+
+    /// <summary>Line total gross, stated by WeClapp itself rather than derived from the net and a
+    /// rate. DILOS P* field 21 carries it, field 20 divides it by the quantity.</summary>
+    public string? GrossAmount { get; init; }
+
     public string Title { get; init; } = "";
-    public string UnitName { get; init; } = "";
-    public string? TaxName { get; init; }
+
+    /// <summary>The WeClapp <c>tax</c> entity this position is taxed under, and the only route to
+    /// its rate: the position states no percentage of its own, so DILOS P* field 16 is resolved
+    /// against the separately fetched tax set (live customer account: 95/95 positions carry it).
+    /// The payload's <c>taxName</c> and <c>unitName</c> are deliberately not modelled - a label and
+    /// a unit of measure, neither of which the AI position record states.</summary>
+    public string? TaxId { get; init; }
 }
 
 public sealed record WeClappShippingCostItem
 {
     public string? NetAmount { get; init; }
+
+    /// <summary>Line total gross. Shipping cost items carry the same amounts and tax reference as
+    /// article positions, and the DILOS shipping pseudo line states the same price fields.
+    /// </summary>
+    public string? GrossAmount { get; init; }
+
+    public string? TaxId { get; init; }
     public string Title { get; init; } = "";
 }
 

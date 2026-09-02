@@ -914,12 +914,71 @@ public class PipelineYamlContractTests
     public async Task OrdersToAiYaml_PagedOrderRequest_FiltersOnConfirmedOrders()
     {
         var root = await PipelineDefinitions.DeserializeAsync("weclapp-orders-to-ai.yaml");
-        var paged = Assert.Single(
+        // Selected by the entity it fetches rather than by "the paged one": the pipeline pages a
+        // second WeClapp entity now, and a predicate that no longer identifies exactly one request
+        // would fail this guard for a reason that has nothing to do with the filter it protects.
+        var orders = Assert.Single(
             Walk(root.Transformations).OfType<MakeHttpRequestNodeConfiguration>(),
-            request => request.Paging is not null);
+            request => request.Url?.Contains("/salesOrder", StringComparison.Ordinal) == true);
 
-        Assert.Contains("/salesOrder", paged.Url, StringComparison.Ordinal);
-        Assert.Contains("status-eq=ORDER_CONFIRMATION_PRINTED", paged.Url, StringComparison.Ordinal);
+        Assert.NotNull(orders.Paging);
+        Assert.Contains("status-eq=ORDER_CONFIRMATION_PRINTED", orders.Url, StringComparison.Ordinal);
+
+        // The retired predicate ("the single paged request") also pinned, as a side effect, that
+        // the per-order customer lookup is NOT paged. Selecting by url gives that up, so it is
+        // stated outright: paging replaces the response body at targetPath with the flattened item
+        // ARRAY, so $.customerResponse.result[0] would resolve to nothing and every AI file would
+        // go out without a recipient - the exact defect the B2C guard above exists for, arriving
+        // through a different door and failing nothing on the way.
+        var customerLookup = Assert.Single(
+            Walk(root.Transformations).OfType<MakeHttpRequestNodeConfiguration>(),
+            request => request.Url?.Contains("/customer", StringComparison.Ordinal) == true);
+
+        Assert.Null(customerLookup.Paging);
+    }
+
+    // ---------- contract: the ai render reaches the VAT rates it states ----------
+
+    // A WeClapp order position states its net and its gross but no rate - it names a tax ENTITY,
+    // and the rate lives there. So the AI delivery fetches /tax and joins it, the way the AS
+    // delivery joins articleSupplySource for the EK-Preis. Three strings have to agree, and each
+    // can be edited alone and still ship green: the fetch's targetPath, the render's taxesPath,
+    // and the fetch staying OUTSIDE the per-order loop - inside it, the whole tax set would be
+    // re-fetched once per order, every tick. The failure mode of a broken join is the quiet one:
+    // an empty VAT field is the legitimate value for a position that states no tax, and the
+    // partner's own files carry it, so a file missing the promised rate looks exactly like a
+    // correct one.
+    [Fact]
+    public async Task OrdersToAiYaml_TaxLookupFeedsTheAiRender()
+    {
+        var root = await PipelineDefinitions.DeserializeAsync("weclapp-orders-to-ai.yaml");
+        var top = root.Transformations?.ToList() ?? [];
+
+        var taxes = Assert.Single(
+            Walk(root.Transformations).OfType<MakeHttpRequestNodeConfiguration>(),
+            request => request.Url?.Contains("/tax", StringComparison.Ordinal) == true);
+
+        // Top level AND ahead of the loop. "Outside the ForEach" alone is satisfied by a fetch
+        // placed AFTER it, which reads the tax set once the render that needs it has already run:
+        // every order of every tick would then fail on an unreachable rate, and the yaml would look
+        // entirely correct. Child order IS execution order, so the index comparison is the check -
+        // the same shape the customer-lookup guard uses for children[0].
+        var taxIndex = top.FindIndex(node => ReferenceEquals(node, taxes));
+        var loopIndex = top.FindIndex(node => node is ForEachNodeConfiguration);
+
+        Assert.True(taxIndex >= 0, "the /tax fetch must sit at the pipeline's top level, not inside the loop");
+        Assert.True(loopIndex >= 0, "the ai pipeline must fan out over its orders");
+        Assert.True(taxIndex < loopIndex,
+            $"the /tax fetch is step {taxIndex} and the per-order loop step {loopIndex} - the rates " +
+            "must be in the data context BEFORE the render that joins them");
+
+        // 235 tax entities on the customer account against a page size of 100: an unpaged fetch
+        // would read the first page and the join would then refuse every position whose entity sat
+        // on a later one.
+        Assert.NotNull(taxes.Paging);
+
+        var render = Assert.Single(Walk(root.Transformations).OfType<DilosRenderNodeConfiguration>());
+        Assert.Equal(taxes.TargetPath, render.TaxesPath);
     }
 
     // ---------- contract: the ai customer lookup feeds the order transform ----------

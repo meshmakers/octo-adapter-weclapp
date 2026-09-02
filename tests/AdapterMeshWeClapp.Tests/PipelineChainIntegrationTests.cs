@@ -43,19 +43,22 @@ public class PipelineChainIntegrationTests
             {
               "current":{
                 "id":"5910986621265","orderNumber":"74299","customerNumber":"7067387625809",
-                "customerId":"7","orderDate":1707177600000,
+                "customerId":"7","orderDate":1707177600000,"grossAmount":"41.39",
                 "deliveryAddress":{"company":"TJ Lucas","countryCode":"DE","zipcode":"51503",
                                    "street1":"Im Wielputzfeld 15a","city":"Rösrath"},
                 "orderItems":[{"positionNumber":1,"articleId":"43222003744925",
-                               "quantity":"1","netAmount":"29.99","title":"Ersatzglas VOLT"}],
-                "shippingCostItems":[{"netAmount":"4.50","title":"DHL Standard (DE)"}]
+                               "quantity":"1","netAmount":"29.99","grossAmount":"35.99",
+                               "taxId":"3681","title":"Ersatzglas VOLT"}],
+                "shippingCostItems":[{"netAmount":"4.50","grossAmount":"5.40","taxId":"3681",
+                                      "title":"DHL Standard (DE)"}]
               },
               "customerResponse":{"result":[
                 {"id":"7","customerNumber":"7067387625809","company":"TJ Lucas GmbH",
                  "email":"tj@example.com",
                  "addresses":[{"street1":"Im Wielputzfeld 15a","zipcode":"51503",
                                "city":"Rösrath","countryCode":"DE"}]}
-              ]}
+              ]},
+              "taxes":[{"id":"3681","name":"AT Umsatzsteuer","taxValue":"20"}]
             }
             """;
 
@@ -78,6 +81,7 @@ public class PipelineChainIntegrationTests
                 Path = "$.current",
                 TargetPath = "$.dilos",
                 FileNameTargetPath = "$.dilosFileName",
+                TaxesPath = "$.taxes",
             });
 
         var render = new DilosRenderNode((_, _) => Task.CompletedTask);
@@ -111,14 +115,25 @@ public class PipelineChainIntegrationTests
         var item = lines[1].Split('|');
         Assert.Equal("P*", item[0]);
         Assert.Equal("43222003744925", item[4]);  // Artikelnummer = WeClapp articleId
+        Assert.Equal("20", item[15]);             // MwSt in whole percent, joined from $.taxes
         Assert.Equal("29.99", item[17]);          // Einzelpreis netto (dot decimal!)
+        Assert.Equal("29.99", item[18]);          // Positionspreis netto
+        Assert.Equal("35.99", item[19]);          // Einzelpreis brutto
+        Assert.Equal("35.99", item[20]);          // Positionspreis brutto
 
         var shipping = lines[2].Split('|');
         Assert.Equal("-1", shipping[4]);          // shipping cost line marker
+        Assert.Equal("20", shipping[15]);
         Assert.Equal("4.50", shipping[17]);
+        Assert.Equal("4.50", shipping[18]);
+        Assert.Equal("5.40", shipping[19]);
+        Assert.Equal("5.40", shipping[20]);
 
         // --- File name: AI + Auftragsnummer1 (= WeClapp id, the SAME number as K* field
         //     29 above) — golden precedent AI5910748889425.txt. NOT the shop orderNumber.
+        // The name matches a golden file, and only the NAME does: that file is the previous shop
+        // connector's output (18 and 20 duplicated, 16/19/21 empty) and is never the reference for
+        // what the price fields carry - the assertions above are.
         Assert.Equal("AI5910986621265.txt", dataContext.Get<string>("$.dilosFileName"));
     }
 

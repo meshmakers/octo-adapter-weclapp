@@ -71,27 +71,15 @@ public class WeClappResolveSupplySourcesNode(NodeDelegate next) : IPipelineNode
         var articles = ReadArray(dataContext, config.Path, "article");
         var sources = ReadArray(dataContext, config.SupplySourcesPath, "articleSupplySource");
 
-        var sourcesById = new Dictionary<string, JsonNode>();
-        for (var index = 0; index < sources.Count; index++)
-        {
-            // The id is the ONLY thing an article stub can point at. An entity that carries none
-            // is unreachable, and the stubs aimed at it would resolve to nothing - which is
-            // indistinguishable from "this article has no purchase price" once the file is
-            // written. Loud here, where the entity index still exists to name.
-            if ((sources[index] as JsonObject)?["id"]?.ToString() is not { Length: > 0 } id)
-            {
-                throw new WeClappPipelineExecutionException(
-                    $"WeClappResolveSupplySources: entity {index} at '{config.SupplySourcesPath}' carries " +
-                    "no 'id' - article stubs resolve against it, so its price could not be reached");
-            }
-
-            if (!sourcesById.TryAdd(id, sources[index]!))
-            {
-                throw new WeClappPipelineExecutionException(
-                    $"WeClappResolveSupplySources: articleSupplySource id '{id}' appears more than once at " +
-                    $"'{config.SupplySourcesPath}' - the resolution would be ambiguous");
-            }
-        }
+        // The id is the ONLY thing an article stub can point at, and an entity that carries none is
+        // unreachable: the stubs aimed at it would resolve to nothing, which is indistinguishable
+        // from "this article has no purchase price" once the file is written. The AI render joins
+        // its tax rates against the same shape, so both go through the shared index and answer the
+        // defect identically - loud, while the element index still exists to name.
+        var sourcesById = NodeElementIndex.ById<JsonNode>(sources,
+            source => (source as JsonObject)?["id"]?.ToString(),
+            NodeName, config.SupplySourcesPath, "articleSupplySource",
+            "article stubs resolve against it, so its price could not be reached");
 
         var enriched = new JsonArray();
         var systemArticles = 0;

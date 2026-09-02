@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using Xunit.Abstractions;
 
@@ -12,8 +13,9 @@ namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Tests;
 /// only; the former dry-run/real-write smokes died with the trial account and must not be
 /// revived against this system. Verifies the real API contract the SHIPPED pipelines rely on,
 /// request for request: the AuthenticationToken header, page/pageSize paging, the {result:[...]}
-/// envelope the MakeHttpRequest@1 itemsPath addresses, the status-eq order filter and the id-eq
-/// customer lookup. Logs counts only - never payload contents and never the key.
+/// envelope the MakeHttpRequest@1 itemsPath addresses, the status-eq order filter, the id-eq
+/// customer lookup, and the tax entities the AI positions state their MwSt rate from. Logs counts
+/// only - never payload contents and never the key.
 /// </summary>
 public class WeClappCustomerSmokeTests(ITestOutputHelper output)
 {
@@ -106,6 +108,55 @@ public class WeClappCustomerSmokeTests(ITestOutputHelper output)
         Assert.All(sources, s => Assert.False(
             string.IsNullOrEmpty(s?["id"]?.ToString()),
             "the resolution matches article stubs against this id"));
+    }
+
+    // The ai delivery states a MwSt rate per position, and the position carries only a taxId - the
+    // percentage lives on the tax entity. Two facts about that entity cannot be checked offline and
+    // both decide how the yaml has to fetch it: the rate arrives as a STRING (so the render parses
+    // rather than reads a number), and the account holds far more tax entities than one page, so an
+    // unpaged fetch would silently miss the ones a position may point at.
+    [Fact]
+    public async Task LiveTaxes_StateTheRateAsAStringAndOutnumberOnePage()
+    {
+        if (LiveConfig() is not var (baseUrl, apiKey))
+        {
+            output.WriteLine("SKIPPED: WECLAPP_CUSTOMER_API_KEY / WECLAPP_CUSTOMER_BASEURL not set.");
+            return;
+        }
+
+        using var client = CreateClient(apiKey);
+        var root = baseUrl.TrimEnd('/');
+        const int pageSize = 10;
+        var taxes = await GetResultAsync(client, $"{root}/tax?page=1&pageSize={pageSize}");
+        var secondPage = await GetResultAsync(client, $"{root}/tax?page=2&pageSize={pageSize}");
+
+        output.WriteLine($"LIVE tax entities pulled: page 1 {taxes.Count}, page 2 {secondPage.Count}");
+
+        if (taxes.Count == 0)
+        {
+            output.WriteLine("INCONCLUSIVE: the account currently holds no tax entity.");
+            return;
+        }
+
+        // Every entity must be keyable and must state a rate - the two properties the render reads.
+        Assert.All(taxes, tax =>
+        {
+            Assert.False(string.IsNullOrEmpty(tax?["id"]?.ToString()),
+                "a position resolves its rate against this id");
+
+            // JsonValueKind.String, not Number: the AI render parses taxValue with invariant
+            // dot-decimal styles precisely because the API states it as text.
+            var taxValue = tax?["taxValue"];
+            Assert.NotNull(taxValue);
+            Assert.Equal(JsonValueKind.String, taxValue.GetValueKind());
+        });
+
+        // Paging is not an optimisation here. A second non-empty page proves the set does not fit
+        // one request, so a fetch without a paging block would resolve some positions and refuse
+        // the rest - per order, on every tick.
+        Assert.True(secondPage.Count > 0,
+            $"the account holds at most {pageSize} tax entities - the paging pin on the /tax fetch " +
+            "can no longer be demonstrated against live data");
     }
 
     // The ai pipeline's order URL carries status-eq=ORDER_CONFIRMATION_PRINTED, and that filter is
