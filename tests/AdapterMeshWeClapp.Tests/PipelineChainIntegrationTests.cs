@@ -226,7 +226,7 @@ public class PipelineChainIntegrationTests
         await using var uploadStream = await (Task<Stream>)buildUploadStream!
             .Invoke(uploadNode, [upload, dataContext, uploadContext])!;
         using var uploaded = new MemoryStream();
-        await uploadStream.CopyToAsync(uploaded);
+        await uploadStream.CopyToAsync(uploaded, TestContext.Current.CancellationToken);
         var uploadedBytes = uploaded.ToArray();
 
         Assert.Equal(Encoding.Latin1.GetBytes(dilos), uploadedBytes);

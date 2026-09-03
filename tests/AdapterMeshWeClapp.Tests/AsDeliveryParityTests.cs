@@ -59,7 +59,7 @@ public class AsDeliveryParityTests
     [Fact]
     public async Task AsBatch_RendersTheFrozenThirtyFourColumnLayout()
     {
-        var expected = await File.ReadAllBytesAsync(RepoFiles.Find(FixturePath));
+        var expected = await File.ReadAllBytesAsync(RepoFiles.Find(FixturePath), TestContext.Current.CancellationToken);
         AssertIsADeliverableAsFile(expected);
 
         var produced = await RenderTheShippedAsCompositionAsync();

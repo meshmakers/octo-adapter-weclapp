@@ -238,9 +238,10 @@ public class PipelineYamlContractTests
     {
         var theoryMethod = typeof(PipelineYamlContractTests)
             .GetMethod(nameof(ConvertedYaml_UsesPassiveTriggers_NoPollingFields))!;
+        // xUnit v3 exposes the inline row directly; GetData now needs a DisposalTracker and
+        // resolves asynchronously, which this reflective lookup has no use for.
         var coveredFiles = theoryMethod.GetCustomAttributes<InlineDataAttribute>()
-            .SelectMany(attribute => attribute.GetData(theoryMethod))
-            .Select(row => (string)row[0]!)
+            .Select(attribute => (string)attribute.Data[0]!)
             .OrderBy(file => file, StringComparer.Ordinal)
             .ToList();
 

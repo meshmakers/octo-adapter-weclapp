@@ -1,7 +1,6 @@
 using System.Net;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using Xunit.Abstractions;
 
 namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Tests;
 
