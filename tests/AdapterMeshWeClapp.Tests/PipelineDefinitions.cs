@@ -32,8 +32,7 @@ internal static class PipelineDefinitions
             .RegisterNodeConfiguration<WeClappBeWriteNodeConfiguration>()
             .RegisterNodeConfiguration<DilosFileGateNodeConfiguration>()
             .RegisterNodeConfiguration<DilosFileConfirmNodeConfiguration>()
-            .RegisterNodeConfiguration<WeClappResolveSupplySourcesNodeConfiguration>()
-            .RegisterNodeConfiguration<DilosExportRunKeyNodeConfiguration>();
+            .RegisterNodeConfiguration<WeClappResolveSupplySourcesNodeConfiguration>();
         var lookup = services.BuildServiceProvider().GetRequiredService<INodeQualifiedNameLookupService>();
 
         await using var stream = File.OpenRead(RepoFiles.Find(Path.Combine("pipelines", fileName)));

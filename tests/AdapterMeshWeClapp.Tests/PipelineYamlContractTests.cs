@@ -18,6 +18,8 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration.DependencyInjecti
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration.Serializer;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Control;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Extracts;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Transforms;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Triggers;
 using Meshmakers.Octo.Sdk.Common.Services;
 using Microsoft.Extensions.DependencyInjection;
@@ -202,12 +204,13 @@ public class PipelineYamlContractTests
     // ---------- contract 5: converted pipeline yamls use passive triggers, no polling fields ----------
 
     // The expected first transformation is parameterized per file, each an exact type match
-    // rather than a loosened "one of several" check: the as pipeline starts with
-    // DilosExportRunKey@1 (its two fetches sit inside the daily gate that key feeds), the ck and
-    // ai pipelines with the paged MakeHttpRequest@1 that seeds their item array, and the ar/be
-    // return-path pipelines with SftpList@1.
+    // rather than a loosened "one of several" check: the as pipeline starts with the
+    // SetPrimitiveValue@1 that names the export kind (the first step of the export-run key its
+    // two fetches sit behind, inside the daily gate), the ck and ai pipelines with the paged
+    // MakeHttpRequest@1 that seeds their item array, and the ar/be return-path pipelines with
+    // SftpList@1.
     [Theory]
-    [InlineData("weclapp-articles-to-as.yaml", typeof(DilosExportRunKeyNodeConfiguration))]
+    [InlineData("weclapp-articles-to-as.yaml", typeof(SetPrimitiveValueNodeConfiguration))]
     [InlineData("weclapp-articles-to-ck.yaml", typeof(MakeHttpRequestNodeConfiguration))]
     [InlineData("weclapp-orders-to-ai.yaml", typeof(MakeHttpRequestNodeConfiguration))]
     [InlineData("dilos-ar-to-weclapp.yaml", typeof(SftpListNodeConfiguration))]
@@ -790,14 +793,14 @@ public class PipelineYamlContractTests
 
             // Two name sources, one per delivery, and the yaml itself says which: the AI name is
             // per ORDER and can only come from the render that knows the order, while the AS name
-            // is the timestamp DilosExportRunKey@1 stamps from the SAME clock read as the day
-            // marker - deliberately, because two reads can straddle Vienna midnight and name
-            // different days. Whichever node owns the name, the upload must read exactly where
-            // that node writes it.
-            var exportRunKeys = nodes.OfType<DilosExportRunKeyNodeConfiguration>().ToList();
-            var namedBy = exportRunKeys.Count == 1 ? "DilosExportRunKey" : "DilosRender";
-            var expectedNamePath = exportRunKeys.Count == 1
-                ? exportRunKeys[0].TargetPath + ".fileName"
+            // is built by FormatString@1 from the timestamp that the SAME clock read produced as
+            // the day marker - deliberately, because two reads can straddle Vienna midnight and
+            // name different days. Whichever node owns the name, the upload must read exactly
+            // where that node writes it.
+            var nameBuilders = nodes.OfType<FormatStringNodeConfiguration>().ToList();
+            var namedBy = nameBuilders.Count == 1 ? "FormatString" : "DilosRender";
+            var expectedNamePath = nameBuilders.Count == 1
+                ? nameBuilders[0].TargetPath
                 : dilosRenders.Count == 1 ? dilosRenders[0].FileNameTargetPath : "";
 
             if (!string.Equals(expectedNamePath, upload.FileNamePath, StringComparison.Ordinal))
@@ -810,10 +813,10 @@ public class PipelineYamlContractTests
             // pipeline whose export-run node already names the file would put two writers on the
             // same delivery, and which one the upload ends up reading depends on nothing visible
             // in the yaml.
-            if (exportRunKeys.Count == 1 && dilosRenders.Count == 1 &&
+            if (nameBuilders.Count == 1 && dilosRenders.Count == 1 &&
                 dilosRenders[0].FileNameTargetPath.Length > 0)
             {
-                violations.Add($"{yaml}: DilosExportRunKey names the delivery, but DilosRender also " +
+                violations.Add($"{yaml}: FormatString names the delivery, but DilosRender also " +
                                $"writes a file name to '{dilosRenders[0].FileNameTargetPath}'");
             }
 

@@ -18,7 +18,7 @@ dotnet build Octo.WeClappAdapter.slnx -c DebugL
 
 ## Project Structure
 - `src/AdapterMeshWeClapp/` - Mesh adapter host (cloud, connects directly to OctoMesh
-  repositories) + all custom pipeline nodes (outbound: `DilosExportRunKey@1`,
+  repositories) + all custom pipeline nodes (outbound:
   `WeClappResolveSupplySources@1`, `WeClappToCk@1`, `DilosRender@1` (AI only; the AS article
   master renders through the product's `RenderDelimitedText@1`) - the fetching itself is
   the product's `MakeHttpRequest@1` and the delivery its `SftpUpload@1`, see "AS/AI Delivery"
@@ -34,7 +34,8 @@ dotnet build Octo.WeClappAdapter.slnx -c DebugL
   httpGet probes on `/healthz/live|ready`)
 - `pipelines/` - tenant pipeline YAMLs (orders→AI per order; articles split into per-item
   CK sync + batched AS delivery [at most one file per Vienna calendar day, gated on the per-day
-  CK marker `Industry.Logistics/ExportRun` whose key `DilosExportRunKey@1` writes - K1 gate];
+  CK marker `Industry.Logistics/ExportRun` whose key the yaml's own `DateTime@1` chain writes -
+  K1 gate];
   AR/BE return path);
   the YAMLs carry no credentials — WeClapp access comes
   from the tenant GlobalConfiguration entry `WeClappApi` (`apiConfiguration`), SFTP from
@@ -154,8 +155,8 @@ every delivery overwrite the previous one;
 open: that a delivery has exactly ONE content source (ai `DilosRender@1` OR as
 `RenderDelimitedText@1`, never both and never neither), that `SftpUpload@1` reads exactly what
 that source wrote (`path` == `targetPath`), that its `fileNamePath` matches whichever node names
-that delivery (the ai render's `fileNameTargetPath`, the as `DilosExportRunKey@1`'s `targetPath` +
-`.fileName`) and that only ONE node writes the name, that it delivers to the SFTP root, and that
+that delivery (the ai render's `fileNameTargetPath`, the as `FormatString@1`'s `targetPath`) and
+that only ONE node writes the name, that it delivers to the SFTP root, and that
 it names the same tenant SFTP entry the AR/BE return path uses - every one of those strings can be
 renamed on ONE side, ship green and surface on staging at the earliest;
 `AsYaml_RenderDelimitedText_SpellsOutTheThirtyFourColumnDilosLayout` pins the AS file format
@@ -277,7 +278,7 @@ claims completeness invites re-pinning an invariant that already holds.
 - Render and transport are separate nodes, and the RENDER differs per delivery kind: AI content
   comes from `DilosRender@1`, AS content from the product's `RenderDelimitedText@1` (see "The AS
   file format lives in the yaml" below). The file name comes from `DilosRender@1` for AI (per
-  order) and from `DilosExportRunKey@1` for AS (per Vienna day,
+  order) and from `FormatString@1` for AS (per Vienna day,
   same clock read as the marker), and `SftpUpload@1` (`encoding: iso-8859-1`,
   `onEncodingError: Replace`) writes both to the LKV SFTP root. The tenant entry (`LkvSftp`) MUST carry a `MaxConcurrentConnections` value
   (3) — the CK attribute is optional but the node reads a non-nullable int, and an unset value
