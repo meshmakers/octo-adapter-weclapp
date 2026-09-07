@@ -13,7 +13,7 @@
 # Timing: with hourly cron ticks the delivery settles on the first tick after Vienna
 # midnight; across the day boundary two deliveries in short succession are possible
 # (yesterday's late run + today's early one) — deliberately accepted.
-# The marker day AND the delivery file name come from a single clock read - one Now@1, one Vienna
+# The marker day AND the delivery file name come from a single clock read - one DateTime@1 Now, one Vienna
 # conversion, two formats off that one instant - so they cannot name different days even when a
 # run crosses Vienna midnight. AsExportGateTests pins that structure.
 # System articles (LOADING_EQUIPMENT) are dropped by WeClappResolveSupplySources@1, which also

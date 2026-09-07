@@ -24,7 +24,7 @@ dotnet build Octo.WeClappAdapter.slnx -c DebugL
   the product's `MakeHttpRequest@1` and the delivery its `SftpUpload@1`, see "AS/AI Delivery"
   below; return path: `DilosFileGate@1`, `DilosFileConfirm@1`, `WeClappArWrite@1`,
   `WeClappBeWrite@1` — the listing and the reading themselves are the product's `SftpList@1`
-  and `SftpDownload@1`, see "AR/BE Return Path" below. That is the complete inventory: EIGHT
+  and `SftpDownload@1`, see "AR/BE Return Path" below. That is the complete inventory: SEVEN
   declared node types, and no trigger node of its own - every pipeline is driven by a passive
   product trigger, see "Pipeline Trigger Architecture" below)
 - `src/Lkv.WeClapp.Core/` - plain core lib: WeClapp DTOs/JSON, WeClapp→DILOS value rules,
@@ -70,16 +70,18 @@ former per-execution chain out over that array, one iteration per element
 (`weclapp-articles-to-as.yaml` has no `ForEach@1` - it renders one batch per tick). The ai loop
 is the exception on two counts: its FIRST child is a per-order `MakeHttpRequest@1` customer
 lookup, and it carries `continueOnError: true`, so a customer that fails permanently fails its
-own order instead of starving the tick. The as pipeline starts with `DilosExportRunKey@1`
-instead of a fetch - it writes `{ exportKind, exportDay, fileName }` from the Vienna calendar
-day, and BOTH its fetches sit inside the K1 gate, so an already-delivered day costs no WeClapp
-request at all. The delivery file name comes from that node, out of the SAME clock read as the
-marker day (decision D3): two reads can straddle Vienna midnight, and the file would then carry
-day N+1 under the marker of day N - with no marker for N+1, the next tick delivers that day a
-second time. `DilosExportRunKeyNodeTests.AClockThatMovesBetweenReads_CannotSplitTheDayFromTheFileName`
-is the only test that a two-read implementation fails; a fixed clock answers both reads alike, so
-the other coupling tests would stay green. That node is a stand-in for a capability `DateTime@1`
-does not have (a time zone) and goes away once it does.
+own order instead of starving the tick. The as pipeline starts with its export-run key instead of
+a fetch - `SetPrimitiveValue@1` names the kind, then one `DateTime@1` `Now`, one
+`ConvertToTimeZone` to `Europe/Vienna` and two `Format` steps write
+`{ exportKind, exportDay, fileName }` (the name assembled by `FormatString@1`), and BOTH its
+fetches sit inside the K1 gate, so an already-delivered day costs no WeClapp request at all. The
+delivery file name comes out of the SAME clock read as the marker day: two reads can straddle
+Vienna midnight, and the file would then carry day N+1 under the marker of day N - with no marker
+for N+1, the next tick delivers that day a second time. `DateTime@1` reads `DateTime.UtcNow` and
+cannot be handed a clock from a test, so that coupling is pinned STRUCTURALLY in
+`AsExportGateTests`: exactly one `Now` node, and both `Format` nodes read the instant the single
+`ConvertToTimeZone` produced - a second read would appear as a second node and fail there.
+`PipelineChainIntegrationTests` seeds that instant and pins the resulting day and name.
 
 **Canonical ForEach block** (use exactly this shape — the guard tests below pin
 `keyPath`/`targetPath`/`maxDegreeOfParallelism` against every shipped `ForEach@1`):
@@ -286,11 +288,12 @@ claims completeness invites re-pinning an invariant that already holds.
 - The two content guards have different homes now, because nothing downstream repeats them:
   `SftpUpload@1` uploads empty content as a 0-byte file, and resolves a file name carrying path
   segments to its last segment instead of refusing it. AS: the empty-batch brake is the `If@1`
-  in the yaml (a batch of nothing but system articles is legitimate), and the name guard sits on
-  `DilosExportRunKey@1`. AI: `DilosRender@1` still throws on empty content, which is always an
-  upstream defect there, and on any name containing `/`, `\` or `..` - the AI name carries the
-  external WeClapp order number. The rule behind both name guards lives once, in
-  `DilosFile.IsPlainFileName`.
+  in the yaml (a batch of nothing but system articles is legitimate). The AS name has NO guard any
+  more (AB#5096): it is assembled in the yaml from a literal export kind and a generated 14 digit
+  stamp, so a path separator is unrepresentable. AI: `DilosRender@1` still throws on empty content,
+  which is always an upstream defect there, and on any name containing `/`, `\` or `..` - the AI
+  name carries the external WeClapp order number, so the guard stays where the risk is. That rule
+  lives in `DilosFile.IsPlainFileName`.
 - **The AS file format lives in the yaml.** `RenderDelimitedText@1` renders the 34 columns
   spelled out there; the two things a column model cannot do stay adapter-side in
   `WeClappResolveSupplySources@1`, which drops system articles (`LOADING_EQUIPMENT`) and projects
