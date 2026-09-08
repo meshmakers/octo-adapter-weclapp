@@ -289,7 +289,7 @@ claims completeness invites re-pinning an invariant that already holds.
   `SftpUpload@1` uploads empty content as a 0-byte file, and resolves a file name carrying path
   segments to its last segment instead of refusing it. AS: the empty-batch brake is the `If@1`
   in the yaml (a batch of nothing but system articles is legitimate). The AS name has NO guard any
-  more (AB#5096): it is assembled in the yaml from a literal export kind and a generated 14 digit
+  more (AB#5096): it is assembled in the yaml from a literal export kind and a generated 14-digit
   stamp, so a path separator is unrepresentable. AI: `DilosRender@1` still throws on empty content,
   which is always an upstream defect there, and on any name containing `/`, `\` or `..` - the AI
   name carries the external WeClapp order number, so the guard stays where the risk is. That rule
