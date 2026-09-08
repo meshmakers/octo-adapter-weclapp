@@ -8,6 +8,8 @@ using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.MeshAdapter.Nodes.Trigger;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Control;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Extracts;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Transforms;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Triggers;
 
 namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Tests;
@@ -44,10 +46,32 @@ public class AsExportGateTests
 
         // The export-run key is written BEFORE the probe and is the only thing the probe needs:
         // the whole fetch now sits inside the gate, so a day that was already delivered costs
-        // no WeClapp request at all.
-        var exportRunKey = Assert.Single(top.OfType<DilosExportRunKeyNodeConfiguration>());
-        Assert.Equal("AS", exportRunKey.ExportKind);
-        Assert.Equal("$.meta", exportRunKey.TargetPath);
+        // no WeClapp request at all. The key is assembled from standard nodes now that DateTime@1
+        // knows IANA time zones; the pins below are what keeps the day and the delivery name on
+        // ONE clock read - the property the custom node used to guarantee in code.
+        var exportKind = Assert.Single(top.OfType<SetPrimitiveValueNodeConfiguration>());
+        Assert.Equal("$.meta.exportKind", exportKind.TargetPath);
+        Assert.Equal("AS", exportKind.Value);
+
+        var clock = top.OfType<DateTimeNodeConfiguration>().ToList();
+        var now = Assert.Single(clock, c => c.Operation == DateTimeOperationDto.Now);
+        var vienna = Assert.Single(clock, c => c.Operation == DateTimeOperationDto.ConvertToTimeZone);
+        Assert.Equal(now.TargetPath, vienna.Path);
+        Assert.Equal("Europe/Vienna", vienna.Value);
+
+        // Both formats read the SAME converted instant - the single clock read, expressed
+        // structurally: a second Now would appear as a second node and fail the Single above.
+        var formats = clock.Where(c => c.Operation == DateTimeOperationDto.Format).ToList();
+        Assert.Equal(2, formats.Count);
+        Assert.All(formats, f => Assert.Equal(vienna.TargetPath, f.Path));
+        var day = Assert.Single(formats, f => f.TargetPath == "$.meta.exportDay");
+        Assert.Equal("yyyy-MM-dd", day.Value);
+        var stamp = Assert.Single(formats, f => f.TargetPath != "$.meta.exportDay");
+        Assert.Equal("yyyyMMddHHmmss", stamp.Value);
+
+        var fileName = Assert.Single(top.OfType<FormatStringNodeConfiguration>());
+        Assert.Equal("$.meta.fileName", fileName.TargetPath);
+        Assert.Equal($"{{{exportKind.TargetPath}}}{{{stamp.TargetPath}}}.txt", fileName.Format);
         Assert.DoesNotContain(top, n => n is MakeHttpRequestNodeConfiguration);
         Assert.DoesNotContain(top, n => n is WeClappResolveSupplySourcesNodeConfiguration);
 

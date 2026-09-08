@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using FakeItEasy;
 using Lkv.WeClapp.Core.Model;
 using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Nodes;
@@ -8,6 +9,8 @@ using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Tests.Nodes;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Extracts;
+using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes.Transforms;
 using Meshmakers.Octo.Sdk.MeshAdapter;
 using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
@@ -22,7 +25,7 @@ namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Tests;
 /// <summary>
 /// End-to-end chain over the custom nodes with a REAL pipeline data context (DataContextImpl, as
 /// the platform's own full-chain tests use): the document the shipped pipelines seed →
-/// WeClappToCk → DilosRender → AI lines, and the article batch → DilosExportRunKey →
+/// WeClappToCk → DilosRender → AI lines, and the article batch → the export-run key chain →
 /// WeClappResolveSupplySources → RenderDelimitedText → AS content → SftpUpload@1 bytes. The
 /// seeding itself is the product's MakeHttpRequest@1 and is not re-tested here; what the chain
 /// must agree on is the document SHAPE, so the fixtures below carry exactly the paths the yamls
@@ -144,6 +147,11 @@ public class PipelineChainIntegrationTests
     /// document, and SftpUpload@1 encodes it. What this adds over the byte anchor in
     /// AsDeliveryParityTests is the two ends the anchor does not reach: the NAME the delivery is
     /// given, and the BYTES that leave the process.
+    ///
+    /// The key is built from standard nodes, so the clock is the platform's own DateTime.UtcNow
+    /// and cannot be substituted from here. The instant it would produce is seeded instead, which
+    /// leaves everything this test is about running exactly as the yaml configures it: the Vienna
+    /// conversion, both formats and the name template.
     /// </summary>
     [Fact]
     public async Task WeClappArticles_BatchRendersOneAsFileWithViennaName()
@@ -160,13 +168,20 @@ public class PipelineChainIntegrationTests
                 {"id":"43222003745000","name":"Europalette","articleNumber":"PAL-1","unitName":"pc.",
                  "articleType":"LOADING_EQUIPMENT","supplySources":[]}
               ],
-              "supplySources":[]
+              "supplySources":[],
+              "clock":{"utcNow":"2026-02-05T13:31:34Z"}
             }
             """;
 
         var root = await PipelineDefinitions.DeserializeAsync("weclapp-articles-to-as.yaml");
         var nodes = Walk(root.Transformations).ToList();
-        var exportRunKey = Assert.Single(nodes.OfType<DilosExportRunKeyNodeConfiguration>());
+        var exportKind = Assert.Single(nodes.OfType<SetPrimitiveValueNodeConfiguration>());
+        var clockNodes = nodes.OfType<DateTimeNodeConfiguration>().ToList();
+        var vienna = Assert.Single(clockNodes, c => c.Operation == DateTimeOperationDto.ConvertToTimeZone);
+        var exportDay = Assert.Single(clockNodes, c => c.TargetPath == "$.meta.exportDay");
+        var stamp = Assert.Single(clockNodes,
+            c => c.Operation == DateTimeOperationDto.Format && c.TargetPath != "$.meta.exportDay");
+        var deliveryName = Assert.Single(nodes.OfType<FormatStringNodeConfiguration>());
         var resolve = Assert.Single(nodes.OfType<WeClappResolveSupplySourcesNodeConfiguration>());
         var render = Assert.Single(nodes.OfType<RenderDelimitedTextNodeConfiguration>());
         var upload = Assert.Single(nodes.OfType<SftpUploadNodeConfiguration>());
@@ -182,14 +197,28 @@ public class PipelineChainIntegrationTests
             node.ProcessObjectAsync(dataContext,
                 rootContext.RegisterChildNode(name, index, configuration, dataContext));
 
-        // Fixed clock: 2026-02-05 13:31:34 UTC = 14:31:34 Vienna (CET).
-        await Step(new DilosExportRunKeyNode((_, _) => Task.CompletedTask,
-                new FixedTimeProvider(new DateTimeOffset(2026, 2, 5, 13, 31, 34, TimeSpan.Zero))),
-            "DilosExportRunKey", 0, exportRunKey);
+        // Seeded clock: $.clock.utcNow = 2026-02-05 13:31:34 UTC = 14:31:34 Vienna (CET). Only the
+        // Now step is skipped; every node below runs with the configuration the yaml ships.
+        await Step(new SetPrimitiveValueNode((_, _) => Task.CompletedTask),
+            "SetPrimitiveValue", 0, exportKind);
+        await Step(new DateTimeNode((_, _) => Task.CompletedTask), "DateTime", 1, vienna);
+        await Step(new DateTimeNode((_, _) => Task.CompletedTask), "DateTime", 2, exportDay);
+        await Step(new DateTimeNode((_, _) => Task.CompletedTask), "DateTime", 3, stamp);
+        await Step(new FormatStringNode((_, _) => Task.CompletedTask), "FormatString", 4, deliveryName);
+
+        // The marker's CreateUpdateInfo@1 binds to $.meta as an OBJECT (path: $.meta) while its
+        // updates read the leaves. Writing the three fields one by one has to leave exactly that
+        // shape behind: if $.meta came out as anything else the marker would silently never
+        // persist and the K1 gate would re-deliver on every tick. The removed node wrote the
+        // object in one go, so this shape used to be free.
+        var meta = Assert.IsType<JsonObject>(dataContext.Get<JsonNode>("$.meta"));
+        Assert.Equal(new[] { "exportDay", "exportKind", "fileName" },
+            meta.Select(p => p.Key).OrderBy(k => k, StringComparer.Ordinal));
+
         await Step(new WeClappResolveSupplySourcesNode((_, _) => Task.CompletedTask),
-            "WeClappResolveSupplySources", 1, resolve);
+            "WeClappResolveSupplySources", 5, resolve);
         await Step(new RenderDelimitedTextNode((_, _) => Task.CompletedTask),
-            "RenderDelimitedText", 2, render);
+            "RenderDelimitedText", 6, render);
 
         var dilos = dataContext.Get<string>(render.TargetPath);
         Assert.NotNull(dilos);
@@ -205,9 +234,10 @@ public class PipelineChainIntegrationTests
         Assert.Equal("43222003744925", lines[0].Split('|')[2]); // DILOS field 3 = Artikelnummer
         Assert.Equal("43222003744999", lines[1].Split('|')[2]);
 
-        // The name the delivery reads is the one the export-run node wrote, from the same clock
-        // read as the marker day - the yaml pins the two paths to each other, this pins the value
-        // behind them.
+        // The name the delivery reads and the marker day come out of the SAME seeded instant - the
+        // yaml pins the two paths to each other, this pins the values behind them. Both are Vienna
+        // wall time: 13:31:34 UTC is 14:31:34 in Vienna, and the name carries that, not the UTC hour.
+        Assert.Equal("2026-02-05", dataContext.Get<string>("$.meta.exportDay"));
         Assert.Equal("AS20260205143134.txt", dataContext.Get<string>(upload.FileNamePath!));
 
         // Latin-1 delivery through the node the shipped pipelines use, configured exactly as the
@@ -222,7 +252,7 @@ public class PipelineChainIntegrationTests
             BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(buildUploadStream);
 
-        var uploadContext = rootContext.RegisterChildNode("SftpUpload", 3, upload, dataContext);
+        var uploadContext = rootContext.RegisterChildNode("SftpUpload", 7, upload, dataContext);
         await using var uploadStream = await (Task<Stream>)buildUploadStream!
             .Invoke(uploadNode, [upload, dataContext, uploadContext])!;
         using var uploaded = new MemoryStream();
