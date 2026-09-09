@@ -50,15 +50,15 @@ await adapterBuilder.RunAsync(args, builder =>
     builder.Services.AddSingleton<DilosFileFetchState>();
 
     // Add the adapter's own nodes to the container. Outbound: WeClappResolveSupplySources@1 →
-    // WeClappToCk@1 / DilosRender@1 (AI only — the AS
-    // article master renders through the product's RenderDelimitedText@1), with the product's
+    // DilosRender@1 (AI only — the AS article master renders through the product's
+    // RenderDelimitedText@1, and the CK-shaped view of articles and orders is built by standard
+    // nodes in the yamls), with the product's
     // MakeHttpRequest@1 fetching and SftpUpload@1 delivering. Return path: DilosFileGate@1 →
     // WeClappArWrite@1 / WeClappBeWrite@1 → DilosFileConfirm@1, with the product's SftpList@1 and
     // SftpDownload@1 doing the SFTP mechanics. Every pipeline is driven by a passive trigger from
     // the product, so this adapter declares no trigger node of its own.
     builder.Services.AddOctoMeshAdapter()
         .RegisterNode<WeClappResolveSupplySourcesNode>()
-        .RegisterNode<WeClappToCkNode>()
         .RegisterNode<DilosRenderNode>()
         .RegisterNode<DilosFileGateNode>()
         .RegisterNode<WeClappArWriteNode>()
