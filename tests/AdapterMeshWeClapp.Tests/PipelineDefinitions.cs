@@ -26,7 +26,6 @@ internal static class PipelineDefinitions
         services.AddDataPipeline()
             .AddMeshDataPipelineNodes()
             .RegisterNodeConfiguration<IfNodeConfiguration>()
-            .RegisterNodeConfiguration<WeClappToCkNodeConfiguration>()
             .RegisterNodeConfiguration<DilosRenderNodeConfiguration>()
             .RegisterNodeConfiguration<WeClappArWriteNodeConfiguration>()
             .RegisterNodeConfiguration<WeClappBeWriteNodeConfiguration>()

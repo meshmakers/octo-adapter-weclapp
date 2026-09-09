@@ -1,0 +1,13 @@
+{
+  "contract-168914-with-ean": {
+    "ArticleNumber": "168914",
+    "Name": "Ersatz Schnellverschlüsse",
+    "Ean": "9001234567890"
+  },
+  "sample-4262-without-ean": {
+    "ArticleNumber": "4262",
+    "Name": "TestArtikel",
+    "Ean": null
+  },
+  "sample-4250-loading-equipment": null
+}

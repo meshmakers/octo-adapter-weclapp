@@ -1,7 +1,11 @@
 # Pipeline: WeClapp sales orders → CK entities + DILOS AI file content (one file per
 # order, file name = Auftragsnummer1). MakeHttpRequest@1 seeds $.orders (cron-driven) and a
 # second one seeds $.taxes with the VAT rates the positions state; a ForEach@1 then processes
-# one order per iteration and looks up that order's customer itself.
+# one order per iteration: an If@1 drops system orders BEFORE any request, looks that order's
+# customer up, builds the CK-shaped view ($.ck) from standard nodes - the customer number copy
+# doubles as the existence check, Concat@1/TransformString@1 give the person name, an If@1 lets
+# a non-empty company win, SelectByPath@1 and DateTime@1 shape the order - and then runs the
+# delivery gate.
 #
 # WeClapp access comes from the tenant GlobalConfiguration entry "WeClappApi"
 # (apiConfiguration below), SFTP access from the entry "LkvSftp".
@@ -66,143 +70,220 @@ transformations:
     maxDegreeOfParallelism: 1        # NEVER omit: default 0 = Environment.ProcessorCount (parallel!)
     continueOnError: true            # one order whose customer fails must not starve the others
     transformations:
-      - type: MakeHttpRequest@1
-        description: Look up this order's customer
-        method: GET
-        apiConfiguration: WeClappApi
-        authHeaderName: AuthenticationToken
-        url: /customer?id-eq={customerId}
-        pathParameters:
-          - name: customerId
-            valuePath: $.current.customerId
-        targetPath: $.customerResponse    # raw response; the record sits under result[0]
-        retry:
-          maxAttempts: 4
-          backoffBaseSeconds: 1
-        timeoutSeconds: 60
-        # Throw is what makes the isolation above work: ForEach@1 catches a typed failure and
-        # keeps going, while the default would skip this order silently and report success.
-        onHttpError: Throw
-
-      - type: WeClappToCk@1
-        description: WeClapp order + customer -> CK-shaped document
-        mode: Order
-        path: $.current                             # the fetched array is flat
-        customerPath: $.customerResponse.result[0]  # the single match of the id-eq lookup
-        targetPath: $.ck
-
-      # --- Export dedup: lookups outside the gate (query-only), everything that renders,
-      # delivers or persists inside it. The persisted CK Order doubles as the export
-      # marker and is written ONLY after a successful upload (at-least-once: a crash
-      # between upload and persist re-delivers on the next tick).
-      - type: GetOrCreateRtEntitiesByType@1
-        description: Look up the Customer by its WeClapp customer number (query only, see gate note)
-        ckTypeId: Industry.Logistics/Customer
-        fieldFilters:
-          - attributePath: CustomerNumber
-            operator: Equals                      # FieldFilterOperatorDto member
-            comparisonValuePath: $.ck.Customer.CustomerNumber
-        rtIdTargetPath: $.rt.customerRtId
-        ckTypeIdTargetPath: $.rt.customerCkTypeId
-        modOperationPath: $.rt.customerModOperation
-
-      - type: GetOrCreateRtEntitiesByType@1
-        description: Look up the Order by its WeClapp id (= Auftragsnummer1) — the export marker probe
-        ckTypeId: Industry.Logistics/Order
-        fieldFilters:
-          - attributePath: OrderNumber
-            operator: Equals
-            comparisonValuePath: $.ck.Order.OrderNumber
-        rtIdTargetPath: $.rt.orderRtId
-        ckTypeIdTargetPath: $.rt.orderCkTypeId
-        modOperationPath: $.rt.orderModOperation
-
+      # If@1 always continues with the next node, so the whole loop body sits inside this gate:
+      # a system order (customer number ANONYMOUS_DEBITOR - the gate test pins this literal to the
+      # DILOS-side rule WeClappToDilos.IsSystemCustomer) makes no request, builds no view and
+      # never reaches the delivery gate.
       - type: If@1
-        description: Deliver only orders whose CK entity does not exist yet (ModOperation Insert = never exported)
-        path: $.rt.orderModOperation
-        operator: Equal
-        value: 0                    # UpdateKind.Insert (never exported yet)
-        valueType: Enum
+        description: Skip system orders - they never reach LKV or the CK
+        path: $.current.customerNumber
+        operator: NotEqual
+        value: ANONYMOUS_DEBITOR
+        valueType: String
         transformations:
-          # attributeValueType is REQUIRED per update — without it the update is silently
-          # dropped and the gate never persists its marker.
-          - type: CreateUpdateInfo@1
-            description: Customer attribute values onto the upserted entity (list still partial — full mapping tracked under AB#4228)
-            path: $.ck.Customer
-            rtIdPath: $.rt.customerRtId
+          - type: MakeHttpRequest@1
+            description: Look up this order's customer
+            method: GET
+            apiConfiguration: WeClappApi
+            authHeaderName: AuthenticationToken
+            url: /customer?id-eq={customerId}
+            pathParameters:
+              - name: customerId
+                valuePath: $.current.customerId
+            targetPath: $.customerResponse    # raw response; the record sits under result[0]
+            retry:
+              maxAttempts: 4
+              backoffBaseSeconds: 1
+            timeoutSeconds: 60
+            # Throw is what makes the isolation above work: ForEach@1 catches a typed failure and
+            # keeps going, while the default would skip this order silently and report success.
+            onHttpError: Throw
+
+          # --- The CK-shaped view ($.ck). Order matters twice: this copy is ALSO the existence
+          # check - SetPrimitiveValue@1 throws when its valuePath is absent, so an order whose
+          # lookup returned nothing fails right here, and ForEach@1 continueOnError isolates it
+          # like the former node's exception did. It has to stand BEFORE the name chain, because
+          # TransformString@1 ends the chain silently when its path matches nothing.
+          - type: SetPrimitiveValue@1
+            description: Customer number - and the check that the customer exists
+            targetPath: $.ck.Customer.CustomerNumber
+            valuePath: $.customerResponse.result[0].customerNumber
+            valueType: String
+
+          # Person name first ("Erika Muster"); a missing first or last name reads as "", the trim
+          # removes the stray blank - the shape the former node produced with "{first} {last}".Trim().
+          - type: Concat@1
+            description: Person name from the customer record
+            path: $.customerResponse.result[0]
+            parts:
+              - valuePath: firstName
+              - value: " "
+              - valuePath: lastName
+            concatSubPath: personName
+          - type: TransformString@1
+            description: Trim the person name
+            path: $.customerResponse.result[0]
+            sourcePath: personName
+            operation: Trim
+            targetPath: personName
+          - type: SetPrimitiveValue@1
+            description: CK customer name = person name (B2C)
+            targetPath: $.ck.Customer.Name
+            valuePath: $.customerResponse.result[0].personName
+            valueType: String
+          - type: If@1
+            description: A non-empty company wins; absent, null or "" keeps the person name
+            path: $.customerResponse.result[0].company
+            operator: RegexMatch          # a missing or null company never matches
+            value: ".+"
+            valueType: String
+            transformations:
+              - type: SetPrimitiveValue@1
+                description: CK customer name = company (B2B)
+                targetPath: $.ck.Customer.Name
+                valuePath: $.customerResponse.result[0].company
+                valueType: String
+
+          # Parity seed, written BEFORE the copy: the former node carried "" for a missing shop number.
+          - type: SetPrimitiveValue@1
+            description: Seed ExternalOrderNumber with "" (node parity)
+            targetPath: $.ck.Order.ExternalOrderNumber
+            value: ""
+            valueType: String
+          - type: SelectByPath@1
+            description: WeClapp order -> CK-shaped view (id = Auftragsnummer1, orderNumber = shop number)
+            selectPath:
+              - path: $.current.id
+                targetPath: $.ck.Order.OrderNumber
+              - path: $.current.orderNumber
+                targetPath: $.ck.Order.ExternalOrderNumber
+          # Epoch 0 or an absent orderDate means "no date": DateTime@1 would throw on an absent path
+          # and turn 0 into 1970, so the guard reads the number as Int64 and skips both.
+          - type: If@1
+            description: Only a real order date is converted
+            path: $.current.orderDate
+            operator: GreaterThan
+            value: 0
+            valueType: Int64
+            transformations:
+              - type: DateTime@1
+                description: WeClapp epoch milliseconds -> UTC order date
+                operation: FromUnixTimeMilliseconds
+                path: $.current.orderDate
+                targetPath: $.ck.Order.OrderDate
+
+          # --- Export dedup: lookups outside the gate (query-only), everything that renders,
+          # delivers or persists inside it. The persisted CK Order doubles as the export
+          # marker and is written ONLY after a successful upload (at-least-once: a crash
+          # between upload and persist re-delivers on the next tick).
+          - type: GetOrCreateRtEntitiesByType@1
+            description: Look up the Customer by its WeClapp customer number (query only, see gate note)
             ckTypeId: Industry.Logistics/Customer
-            updateKindPath: $.rt.customerModOperation # Insert|Update as decided by the lookup node
-            attributeUpdates:
-              - attributeName: CustomerNumber
-                attributeValueType: String
-                valuePath: $.ck.Customer.CustomerNumber
-              - attributeName: Name
-                attributeValueType: String
-                # CkCustomer.Name carries the B2C fallback (company name OR "first last")
-                valuePath: $.ck.Customer.Name
-            targetPath: $.updates
-            targetValueWriteMode: Append      # NEVER omit: the Overwrite default keeps only the LAST update
+            fieldFilters:
+              - attributePath: CustomerNumber
+                operator: Equals                      # FieldFilterOperatorDto member
+                comparisonValuePath: $.ck.Customer.CustomerNumber
+            rtIdTargetPath: $.rt.customerRtId
+            ckTypeIdTargetPath: $.rt.customerCkTypeId
+            modOperationPath: $.rt.customerModOperation
 
-          - type: CreateUpdateInfo@1
-            description: Order attribute values (list still partial — full mapping tracked under AB#4228)
-            path: $.ck.Order
-            rtIdPath: $.rt.orderRtId
+          - type: GetOrCreateRtEntitiesByType@1
+            description: Look up the Order by its WeClapp id (= Auftragsnummer1) — the export marker probe
             ckTypeId: Industry.Logistics/Order
-            updateKindPath: $.rt.orderModOperation
-            attributeUpdates:
-              - attributeName: OrderNumber
-                attributeValueType: String
-                valuePath: $.ck.Order.OrderNumber
-              - attributeName: ExternalOrderNumber
-                attributeValueType: String
-                valuePath: $.ck.Order.ExternalOrderNumber
-              - attributeName: OrderDate
-                attributeValueType: DateTime
-                valuePath: $.ck.Order.OrderDate
-            targetPath: $.updates
-            targetValueWriteMode: Append
+            fieldFilters:
+              - attributePath: OrderNumber
+                operator: Equals
+                comparisonValuePath: $.ck.Order.OrderNumber
+            rtIdTargetPath: $.rt.orderRtId
+            ckTypeIdTargetPath: $.rt.orderCkTypeId
+            modOperationPath: $.rt.orderModOperation
 
-          - type: CreateAssociationUpdate@1
-            description: Order → Customer (role from the imported Industry.Logistics CK)
-            updateKind: Create
-            originRtIdPath: $.rt.orderRtId
-            originCkTypeId: Industry.Logistics/Order
-            targetRtIdPath: $.rt.customerRtId
-            targetCkTypeId: Industry.Logistics/Customer
-            associationRoleId: Industry.Logistics/OrderCustomer
-            # Association updates are a DIFFERENT type than entity updates — own list;
-            # ApplyChanges@2 consumes both lists separately.
-            targetPath: $.associationUpdates
-            targetValueWriteMode: Append
+          - type: If@1
+            description: Deliver only orders whose CK entity does not exist yet (ModOperation Insert = never exported)
+            path: $.rt.orderModOperation
+            operator: Equal
+            value: 0                    # UpdateKind.Insert (never exported yet)
+            valueType: Enum
+            transformations:
+              # attributeValueType is REQUIRED per update — without it the update is silently
+              # dropped and the gate never persists its marker.
+              - type: CreateUpdateInfo@1
+                description: Customer attribute values onto the upserted entity (list still partial — full mapping tracked under AB#4228)
+                path: $.ck.Customer
+                rtIdPath: $.rt.customerRtId
+                ckTypeId: Industry.Logistics/Customer
+                updateKindPath: $.rt.customerModOperation # Insert|Update as decided by the lookup node
+                attributeUpdates:
+                  - attributeName: CustomerNumber
+                    attributeValueType: String
+                    valuePath: $.ck.Customer.CustomerNumber
+                  - attributeName: Name
+                    attributeValueType: String
+                    # $.ck.Customer.Name carries the B2C fallback (company name OR "first last"), built by the name chain above
+                    valuePath: $.ck.Customer.Name
+                targetPath: $.updates
+                targetValueWriteMode: Append      # NEVER omit: the Overwrite default keeps only the LAST update
 
-          - type: DilosRender@1
-            description: Render the AI file content for this order (K* + P* + shipping -1 line)
-            mode: AI
-            submandant: "51696697501"   # REPLACE per tenant: WeClapp-Mandanten-Kennung (LKV maps it)
-            path: $.current
-            taxesPath: $.taxes          # the tax entities fetched above - the ONLY route to the
-                                        # position MwSt rate; a position naming an entity that is
-                                        # not in this set fails the order rather than rendering an
-                                        # empty rate, which would look like "no tax stated"
-            targetPath: $.dilosAi
-            fileNameTargetPath: $.dilosAiFileName   # AI<Auftragsnummer1>.txt — the WeClapp id,
-                                                    # NOT the shop orderNumber
+              - type: CreateUpdateInfo@1
+                description: Order attribute values (list still partial — full mapping tracked under AB#4228)
+                path: $.ck.Order
+                rtIdPath: $.rt.orderRtId
+                ckTypeId: Industry.Logistics/Order
+                updateKindPath: $.rt.orderModOperation
+                attributeUpdates:
+                  - attributeName: OrderNumber
+                    attributeValueType: String
+                    valuePath: $.ck.Order.OrderNumber
+                  - attributeName: ExternalOrderNumber
+                    attributeValueType: String
+                    valuePath: $.ck.Order.ExternalOrderNumber
+                  - attributeName: OrderDate
+                    attributeValueType: DateTime
+                    valuePath: $.ck.Order.OrderDate
+                targetPath: $.updates
+                targetValueWriteMode: Append
 
-          # ISO-8859-1 delivery (DILOS file format) — SftpUpload@1 defaults to UTF-8, so the
-          # encoding property is what keeps umlauts single-byte; non-Latin-1 characters are
-          # replaced with '?'.
-          - type: SftpUpload@1
-            description: Deliver the AI file to the LKV SFTP root as ISO-8859-1 (delete-side handled by LKV)
-            serverConfiguration: LkvSftp        # SAME tenant GlobalConfiguration as the return path
-            remoteDirectory: /
-            fileNamePath: $.dilosAiFileName
-            path: $.dilosAi
-            encoding: iso-8859-1                # NEVER omit: the default utf-8 corrupts umlauts
-            onEncodingError: Replace            # one '?' per unrepresentable scalar, logged with its code point
+              - type: CreateAssociationUpdate@1
+                description: Order → Customer (role from the imported Industry.Logistics CK)
+                updateKind: Create
+                originRtIdPath: $.rt.orderRtId
+                originCkTypeId: Industry.Logistics/Order
+                targetRtIdPath: $.rt.customerRtId
+                targetCkTypeId: Industry.Logistics/Customer
+                associationRoleId: Industry.Logistics/OrderCustomer
+                # Association updates are a DIFFERENT type than entity updates — own list;
+                # ApplyChanges@2 consumes both lists separately.
+                targetPath: $.associationUpdates
+                targetValueWriteMode: Append
 
-          # Persisting the CK entities IS the export marker — MUST stay the last step so a
-          # failed upload leaves no marker (the order is retried on the next tick).
-          - type: ApplyChanges@2
-            description: Persist order + customer AFTER successful delivery (export marker, at-least-once)
-            entityUpdatesPath: $.updates
-            associationUpdatesPath: $.associationUpdates
+              - type: DilosRender@1
+                description: Render the AI file content for this order (K* + P* + shipping -1 line)
+                mode: AI
+                submandant: "51696697501"   # REPLACE per tenant: WeClapp-Mandanten-Kennung (LKV maps it)
+                path: $.current
+                taxesPath: $.taxes          # the tax entities fetched above - the ONLY route to the
+                                            # position MwSt rate; a position naming an entity that is
+                                            # not in this set fails the order rather than rendering an
+                                            # empty rate, which would look like "no tax stated"
+                targetPath: $.dilosAi
+                fileNameTargetPath: $.dilosAiFileName   # AI<Auftragsnummer1>.txt — the WeClapp id,
+                                                        # NOT the shop orderNumber
+
+              # ISO-8859-1 delivery (DILOS file format) — SftpUpload@1 defaults to UTF-8, so the
+              # encoding property is what keeps umlauts single-byte; non-Latin-1 characters are
+              # replaced with '?'.
+              - type: SftpUpload@1
+                description: Deliver the AI file to the LKV SFTP root as ISO-8859-1 (delete-side handled by LKV)
+                serverConfiguration: LkvSftp        # SAME tenant GlobalConfiguration as the return path
+                remoteDirectory: /
+                fileNamePath: $.dilosAiFileName
+                path: $.dilosAi
+                encoding: iso-8859-1                # NEVER omit: the default utf-8 corrupts umlauts
+                onEncodingError: Replace            # one '?' per unrepresentable scalar, logged with its code point
+
+              # Persisting the CK entities IS the export marker — MUST stay the last step so a
+              # failed upload leaves no marker (the order is retried on the next tick).
+              - type: ApplyChanges@2
+                description: Persist order + customer AFTER successful delivery (export marker, at-least-once)
+                entityUpdatesPath: $.updates
+                associationUpdatesPath: $.associationUpdates

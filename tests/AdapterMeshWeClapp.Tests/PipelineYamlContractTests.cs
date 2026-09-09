@@ -1,8 +1,9 @@
+using System.Globalization;
 using System.Reflection;
 using System.Text;
-using System.Text.Json;
 using System.Text.RegularExpressions;
 using Lkv.WeClapp.Core.Dilos;
+using Lkv.WeClapp.Core.Mapping;
 using FakeItEasy;
 using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Nodes;
 using Meshmakers.Octo.ConstructionKit.Contracts.DataTransferObjects;
@@ -31,10 +32,10 @@ namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Tests;
 /// Contract tests over the SHIPPED pipeline YAMLs — the gap that let three config bugs
 /// reach the first tenant run (2026-07-16, staging): CreateUpdateInfo@1 drops any
 /// attribute update without an attributeValueType (error is debug-only, the execution
-/// still completes), and value paths that do not match the WeClappToCk output shape
+/// still completes), and value paths that do not match the shape the mapping chain writes
 /// resolve to null (GetOrCreate then matches on null and would duplicate on every run).
 /// These tests parse the real files with the platform's own strict serializer and check
-/// both contracts against the real transform node output.
+/// both contracts against the output of the shipped mapping chains.
 /// </summary>
 public class PipelineYamlContractTests
 {
@@ -85,18 +86,17 @@ public class PipelineYamlContractTests
         Assert.Empty(violations);
     }
 
-    // ---------- contract 2: the ck yaml's paths resolve against the real transform output ----------
+    // ---------- contract 2: the ck yaml's paths resolve against the shipped mapping chain ----------
 
     [Fact]
     public async Task ArticlesToCkYaml_ConfiguredPaths_ResolveAgainstTransformOutput()
     {
         var root = await PipelineDefinitions.DeserializeAsync("weclapp-articles-to-ck.yaml");
         var all = Walk(root.Transformations).ToList();
-        var toCk = Assert.Single(all.OfType<WeClappToCkNodeConfiguration>());
         var lookup = Assert.Single(all.OfType<GetOrCreateRtEntitiesByTypeNodeConfiguration>());
         var updateInfo = Assert.Single(all.OfType<CreateUpdateInfoNodeConfiguration>());
 
-        var dataContext = await RunToCkNode(toCk, """
+        var dataContext = await ShippedMappingChain.RunAsync("weclapp-articles-to-ck.yaml", """
             {"current":{"id":"168914","articleNumber":"TW_Z_074","name":"Ersatz Schnellverschlüsse",
              "articleType":"STORABLE","ean":"9001234567890","active":true}}
             """);
@@ -117,52 +117,104 @@ public class PipelineYamlContractTests
         }
     }
 
-    // ---------- contract 3: the ai yaml's customer name survives B2C orders (no company) ----------
+    // If@1 always continues with the next node, so the filter only works if everything that
+    // persists sits INSIDE it - a system article must leave no lookup, no update, no ApplyChanges.
+    [Fact]
+    public async Task ArticlesToCkYaml_SystemArticleGate_WrapsThePersistence()
+    {
+        var root = await PipelineDefinitions.DeserializeAsync("weclapp-articles-to-ck.yaml");
+        var loop = Assert.Single(Walk(root.Transformations).OfType<ForEachNodeConfiguration>());
+        var gate = Assert.IsType<IfNodeConfiguration>(Assert.Single(loop.Transformations!));
+
+        Assert.Equal("$.current.articleType", gate.Path);
+        Assert.Equal(CompareOperator.NotEqual, gate.Operator);
+        Assert.Equal(AttributeValueTypesDto.String, gate.ValueType);
+        // The AS delivery drops system articles through WeClappToDilos.IsSystemArticle; the ck gate
+        // carries the literal itself, so the two are pinned to each other here.
+        Assert.True(WeClappToDilos.IsSystemArticle(Assert.IsType<string>(gate.Value)),
+            "the ck gate and the AS delivery must agree on what a system article is");
+
+        var children = gate.Transformations!.ToList();
+        Assert.Contains(children, n => n is GetOrCreateRtEntitiesByTypeNodeConfiguration);
+        Assert.Contains(children, n => n is CreateUpdateInfoNodeConfiguration);
+        Assert.IsType<ApplyChangesNodeConfiguration2>(children[^1]);
+
+        // The parity seeds stand BEFORE the copy that may overwrite them.
+        var lastSeed = children.FindLastIndex(n => n is SetPrimitiveValueNodeConfiguration);
+        var view = children.FindIndex(n => n is SelectByPathNodeConfiguration);
+        Assert.True(lastSeed >= 0 && lastSeed < view, "both seeds must precede SelectByPath@1");
+    }
+
+    // Node parity: the CK document carried "" for a missing name and an explicit null for a missing
+    // ean. CreateUpdateInfo@1 clears an attribute on null and leaves it alone when the path is
+    // absent, so the seeds are what keeps a removed EAN clearing on the nightly update.
+    [Theory]
+    [InlineData("""{"current":{"id":"1","name":"Ohne EAN","articleType":"STORABLE"}}""", "$.ck.Ean", DataKind.Null)]
+    [InlineData("""{"current":{"id":"1","articleType":"STORABLE","ean":"9001234567890"}}""", "$.ck.Name", DataKind.String)]
+    public async Task ArticlesToCkYaml_AbsentOptionalFields_KeepTheParitySeeds(string document, string path, DataKind expectedKind)
+    {
+        var dataContext = await ShippedMappingChain.RunAsync("weclapp-articles-to-ck.yaml", document);
+
+        Assert.Equal(expectedKind, dataContext.GetKind(path));
+        if (expectedKind == DataKind.String)
+        {
+            Assert.Equal("", dataContext.Get<string>(path));
+        }
+    }
 
     [Fact]
-    public async Task OrdersToAiYaml_CustomerNameUpdate_ResolvesForB2cCustomers()
+    public async Task ArticlesToCkYaml_SystemArticle_LeavesNoView()
+    {
+        var dataContext = await ShippedMappingChain.RunAsync("weclapp-articles-to-ck.yaml",
+            """{"current":{"id":"4250","name":"Default loading equipment","articleType":"LOADING_EQUIPMENT"}}""");
+
+        Assert.False(dataContext.Exists("$.ck"), "a system article must not reach the persistence nodes");
+    }
+
+    // ---------- contract 3: the ai yaml's customer name survives B2C orders (no company) ----------
+
+    [Theory]
+    [InlineData("\"company\":\"\",\"firstName\":\"Erika\",\"lastName\":\"Muster\"", "Erika Muster")]      // B2C: empty company (live finding 2026-07-16)
+    [InlineData("\"firstName\":\"Erika\",\"lastName\":\"Muster\"", "Erika Muster")]                      // company absent
+    [InlineData("\"company\":null,\"firstName\":\"Erika\",\"lastName\":\"Muster\"", "Erika Muster")]      // JSON null: the node threw a NullReferenceException here, the chain keeps the person (decided 2026-09-08)
+    [InlineData("\"company\":\"TJ Lucas GmbH\",\"firstName\":\"Erika\",\"lastName\":\"Muster\"", "TJ Lucas GmbH")]  // a non-empty company wins
+    [InlineData("\"company\":\"\",\"lastName\":\"Muster\"", "Muster")]                                  // one-sided name: the Trim removes the blank the Concat@1 leaves
+    [InlineData("\"company\":\"\",\"firstName\":\"Erika\"", "Erika")]
+    public async Task OrdersToAiYaml_CustomerNameUpdate_ResolvesForB2cCustomers(string customerFields, string expectedName)
     {
         var root = await PipelineDefinitions.DeserializeAsync("weclapp-orders-to-ai.yaml");
         var all = Walk(root.Transformations).ToList();
-        var toCk = Assert.Single(all.OfType<WeClappToCkNodeConfiguration>());
-        var gate = Assert.Single(all.OfType<IfNodeConfiguration>());
-        var customerUpdate = (gate.Transformations ?? [])
+        var insertGate = Assert.Single(all.OfType<IfNodeConfiguration>(), g => g.Path == "$.rt.orderModOperation");
+        var customerUpdate = (insertGate.Transformations ?? [])
             .OfType<CreateUpdateInfoNodeConfiguration>()
             .Single(c => c.CkTypeId == "Industry.Logistics/Customer");
         var nameUpdate = (customerUpdate.AttributeUpdates ?? []).Single(u => u.AttributeName == "Name");
 
-        // B2C: private customer without a company — exactly the case Jürgen reported
-        // as an empty recipient name on 2026-07-16.
-        var dataContext = await RunToCkNode(toCk, """
+        var dataContext = await ShippedMappingChain.RunAsync("weclapp-orders-to-ai.yaml", $$$"""
             {"current":{"id":"622075","orderNumber":"SO-1001","customerNumber":"K-77","orderDate":1782820560333,
               "orderItems":[]},
              "customerResponse":{"result":[
-              {"id":"77","customerNumber":"K-77","company":"","firstName":"Erika","lastName":"Muster"}]}}
+              {"id":"77","customerNumber":"K-77",{{{customerFields}}}}]}}
             """);
 
         var namePath = Assert.IsType<string>(nameUpdate.ValuePath);
-        var resolved = dataContext.Get<string?>(namePath);
-        Assert.False(string.IsNullOrWhiteSpace(resolved),
-            $"customer Name path '{nameUpdate.ValuePath}' is empty for a B2C order — " +
-            "CkCustomer.Name carries the person fallback and must be the source");
-        Assert.Equal("Erika Muster", resolved);
+        Assert.Equal(expectedName, dataContext.Get<string?>(namePath));
     }
 
-    // ---------- contract 4: ALL ai yaml $.ck paths resolve against the Order-mode output ----------
+    // ---------- contract 4: ALL ai yaml $.ck paths resolve against the shipped ai chain ----------
 
     [Fact]
     public async Task OrdersToAiYaml_ConfiguredCkPaths_ResolveAgainstOrderTransformOutput()
     {
-        // Article mode writes the CK document FLAT at $.ck, Order mode writes a NESTED
-        // CkOrderDocument — the exact confusion that broke the ck yaml. A symmetric
+        // The ck chain writes the view FLAT at $.ck, the ai chain NESTED ($.ck.Customer /
+        // $.ck.Order) — the exact confusion that broke the ck yaml. A symmetric
         // "flattening" of the ai yaml would break the dedup-gate probe (filter resolves
         // to null → every order re-delivered per poll + duplicated CK entities), so every
-        // $.ck path in the file is pinned here against the real transform output.
+        // $.ck path in the file is pinned here against the shipped mapping chain's output.
         var root = await PipelineDefinitions.DeserializeAsync("weclapp-orders-to-ai.yaml");
         var all = Walk(root.Transformations).ToList();
-        var toCk = Assert.Single(all.OfType<WeClappToCkNodeConfiguration>());
 
-        var dataContext = await RunToCkNode(toCk, """
+        var dataContext = await ShippedMappingChain.RunAsync("weclapp-orders-to-ai.yaml", """
             {"current":{"id":"622075","orderNumber":"SO-1001","customerNumber":"K-77","orderDate":1782820560333,
               "orderItems":[]},
              "customerResponse":{"result":[
@@ -196,7 +248,7 @@ public class PipelineYamlContractTests
         foreach (var (what, path) in ckPaths)
         {
             Assert.False(string.IsNullOrEmpty(dataContext.Get<string?>(path)),
-                $"{what} path '{path}' resolves to nothing against the real Order-mode output — " +
+                $"{what} path '{path}' resolves to nothing against the shipped ai chain's output — " +
                 "flat-vs-nested drift would re-deliver every order and duplicate CK entities");
         }
     }
@@ -309,7 +361,7 @@ public class PipelineYamlContractTests
                 {
                     violations.Add($"{yaml}: ForEach '{forEach.Description}' KeyPath is " +
                                     $"'{forEach.KeyPath}', expected '$.current' — every per-item child " +
-                                    "path (DilosFileConfirm@1's default Path, WeClappToCk's $.current.item, …) " +
+                                    "path (DilosFileConfirm@1's default Path, the $.current.* reads of the ck/ai mapping chains, …) " +
                                     "assumes this convention");
                 }
             }
@@ -985,27 +1037,173 @@ public class PipelineYamlContractTests
         Assert.Equal(taxes.TargetPath, render.TaxesPath);
     }
 
-    // ---------- contract: the ai customer lookup feeds the order transform ----------
+    // ---------- contract: the ai customer lookup feeds the CK view ----------
 
-    // Three strings have to agree for an AI file to carry a recipient: the lookup's targetPath,
-    // the transform's customerPath, and the order of the two children. Any one of them can be
-    // edited alone and still ship green - and the run would then fail per order at the earliest,
-    // on staging.
+    // Three things have to agree for an AI file to carry a recipient: the lookup's targetPath, the
+    // paths the existence check and the name chain read, and the lookup running FIRST inside the
+    // gate. Any one of them can be edited alone and still ship green - and the run would then fail
+    // per order at the earliest, on staging.
     [Fact]
     public async Task OrdersToAiYaml_CustomerLookupFeedsTheOrderTransform()
     {
         var root = await PipelineDefinitions.DeserializeAsync("weclapp-orders-to-ai.yaml");
         var loop = Assert.Single(Walk(root.Transformations).OfType<ForEachNodeConfiguration>());
-        var children = loop.Transformations!.ToList();
+        var gate = Assert.IsType<IfNodeConfiguration>(Assert.Single(loop.Transformations!));
+        var body = gate.Transformations!.ToList();
 
-        var lookup = Assert.IsType<MakeHttpRequestNodeConfiguration>(children[0]);
-        var toCk = Assert.Single(children.OfType<WeClappToCkNodeConfiguration>());
-
-        Assert.Equal("$.current", toCk.Path);
-        Assert.StartsWith(lookup.TargetPath + ".", toCk.CustomerPath);
+        var lookup = Assert.IsType<MakeHttpRequestNodeConfiguration>(body[0]);
         // The lookup addresses THIS order's customer, not a static one.
-        Assert.Contains(lookup.PathParameters,
-            parameter => parameter.ValuePath == "$.current.customerId");
+        Assert.Contains(lookup.PathParameters, parameter => parameter.ValuePath == "$.current.customerId");
+
+        // The existence check and the name chain read the lookup's response, not a path of their own.
+        var check = Assert.Single(body.OfType<SetPrimitiveValueNodeConfiguration>(),
+            s => s.TargetPath == "$.ck.Customer.CustomerNumber");
+        Assert.StartsWith(lookup.TargetPath + ".", check.ValuePath);
+        var person = Assert.Single(body.OfType<ConcatNodeConfiguration>());
+        Assert.StartsWith(lookup.TargetPath + ".", person.Path);
+    }
+
+    // ---------- contract: the system-order gate is the loop body, and the lookup runs inside it ----------
+
+    [Fact]
+    public async Task OrdersToAiYaml_SystemOrderGate_IsTheFirstLoopChildAndWrapsTheLookup()
+    {
+        var root = await PipelineDefinitions.DeserializeAsync("weclapp-orders-to-ai.yaml");
+        var loop = Assert.Single(Walk(root.Transformations).OfType<ForEachNodeConfiguration>());
+        var gate = Assert.IsType<IfNodeConfiguration>(Assert.Single(loop.Transformations!));
+
+        Assert.Equal("$.current.customerNumber", gate.Path);
+        Assert.Equal(CompareOperator.NotEqual, gate.Operator);
+        Assert.Equal(AttributeValueTypesDto.String, gate.ValueType);
+        Assert.True(WeClappToDilos.IsSystemCustomer(Assert.IsType<string>(gate.Value)),
+            "the ai gate and the DILOS-side rule must agree on what a system order is");
+
+        var body = gate.Transformations!.ToList();
+        Assert.IsType<MakeHttpRequestNodeConfiguration>(body[0]);   // no request for a system order
+        Assert.Contains(body, n => n is GetOrCreateRtEntitiesByTypeNodeConfiguration);
+    }
+
+    // TransformString@1 ends the chain SILENTLY when its path matches nothing, so the loud existence
+    // check (SetPrimitiveValue@1 throws on an absent valuePath) must run before the name chain; the
+    // "" seed must precede the SelectByPath@1 that may overwrite it; and the date guard must carry
+    // the literals that make If@1 compare two Int64 values.
+    [Fact]
+    public async Task OrdersToAiYaml_CustomerNumberCheck_PrecedesTheNameChain()
+    {
+        var slice = await ShippedMappingChain.MappingSliceAsync("weclapp-orders-to-ai.yaml");
+        var nodes = slice.Transformations!.ToList();
+
+        var check = nodes.FindIndex(n =>
+            n is SetPrimitiveValueNodeConfiguration { TargetPath: "$.ck.Customer.CustomerNumber", ValuePath: not null });
+        var person = nodes.FindIndex(n => n is ConcatNodeConfiguration);
+        var trim = nodes.FindIndex(n => n is TransformStringNodeConfiguration);
+        Assert.True(check >= 0 && check < person && person < trim,
+            "the existence check must stand before Concat@1 and TransformString@1");
+
+        var seed = nodes.FindIndex(n =>
+            n is SetPrimitiveValueNodeConfiguration { TargetPath: "$.ck.Order.ExternalOrderNumber", ValuePath: null });
+        var view = nodes.FindIndex(n => n is SelectByPathNodeConfiguration);
+        Assert.True(seed >= 0 && seed < view, "the \"\" seed must precede SelectByPath@1");
+
+        var dateGate = Assert.Single(nodes.OfType<IfNodeConfiguration>(), g => g.Path == "$.current.orderDate");
+        Assert.Equal(CompareOperator.GreaterThan, dateGate.Operator);
+        Assert.Equal(AttributeValueTypesDto.Int64, dateGate.ValueType);
+        Assert.NotNull(dateGate.Value);
+        Assert.Equal("0", Assert.IsType<string>(dateGate.Value));
+        var epoch = Assert.Single((dateGate.Transformations ?? []).OfType<DateTimeNodeConfiguration>());
+        Assert.Equal(DateTimeOperationDto.FromUnixTimeMilliseconds, epoch.Operation);
+        Assert.Equal("$.current.orderDate", epoch.Path);
+        Assert.Equal("$.ck.Order.OrderDate", epoch.TargetPath);
+    }
+
+    // The former node threw when the customer lookup returned nothing; the chain keeps that
+    // behaviour through SetPrimitiveValue@1's own contract (an absent valuePath throws). Nothing of
+    // the view may exist afterwards - the order is retried on the next tick, like today.
+    [Fact]
+    public async Task OrdersToAiYaml_MissingCustomer_FailsTheOrder()
+    {
+        var exception = await Assert.ThrowsAsync<PipelineExecutionException>(() => ShippedMappingChain.RunAsync(
+            "weclapp-orders-to-ai.yaml",
+            """{"current":{"id":"1","orderNumber":"","customerNumber":"K-1","orderDate":0,"orderItems":[]},"customerResponse":{"result":[]}}"""));
+
+        Assert.Contains("$.customerResponse.result[0].customerNumber", exception.Message);
+    }
+
+    // The quantity used to be validated in the transform; now the DILOS writer reads it "the same
+    // loud way as the amounts" (DilosOrderWriter.RenderPosition), inside the gate, before the upload
+    // and before ApplyChanges@2 - so a bad quantity still leaves neither a file nor a marker.
+    [Fact]
+    public async Task OrdersToAiYaml_NonNumericQuantity_FailsInTheRender()
+    {
+        var root = await PipelineDefinitions.DeserializeAsync("weclapp-orders-to-ai.yaml");
+        var all = Walk(root.Transformations).ToList();
+        var insertGate = Assert.Single(all.OfType<IfNodeConfiguration>(), g => g.Path == "$.rt.orderModOperation");
+        var children = insertGate.Transformations!.ToList();
+        var renderIndex = children.FindIndex(n => n is DilosRenderNodeConfiguration);
+        Assert.True(renderIndex >= 0);
+        Assert.DoesNotContain(children.Take(renderIndex),
+            n => n is SftpUploadNodeConfiguration or ApplyChangesNodeConfiguration2);
+
+        // The K* header states the order total and the writer renders it BEFORE the positions, so the
+        // document carries grossAmount - without it the render would refuse on the wrong field.
+        var dataContext = await ShippedMappingChain.RunAsync("weclapp-orders-to-ai.yaml", """
+            {"current":{"id":"5910986621265","orderNumber":"74299","customerNumber":"7067387625809","orderDate":1707177600000,"grossAmount":"41.39",
+              "deliveryAddress":{"company":"TJ Lucas","countryCode":"DE","zipcode":"51503","street1":"Im Wielputzfeld 15a","city":"Rösrath"},
+              "orderItems":[{"positionNumber":1,"articleId":"43222003744925","quantity":"abc","netAmount":"29.99","grossAmount":"35.99","taxId":"3681","title":"Ersatzglas VOLT"}],
+              "shippingCostItems":[]},
+             "customerResponse":{"result":[{"id":"7","customerNumber":"7067387625809","company":"TJ Lucas GmbH"}]},
+             "taxes":[{"id":"3681","name":"AT Umsatzsteuer","taxValue":"20"}]}
+            """);
+        Assert.True(dataContext.Exists("$.ck"), "the mapping itself does not look at the quantity");
+
+        var render = Assert.Single(children.OfType<DilosRenderNodeConfiguration>());
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddDataPipeline();
+        var rootContext = NodeContext.CreateRootNodeContext(services.BuildServiceProvider(),
+            A.Fake<IPipelineLogger>(), dataContext);
+        var exception = await Assert.ThrowsAsync<WeClappPipelineExecutionException>(() =>
+            new DilosRenderNode((_, _) => Task.CompletedTask)
+                .ProcessObjectAsync(dataContext, rootContext.RegisterChildNode("DilosRender", 1, render, dataContext)));
+
+        Assert.Contains("Mengeabg", exception.Message);
+        Assert.Contains("5910986621265", exception.Message);
+    }
+
+    // valueType Int64 on the date guard reads the JSON number, and CompareTo then sees two Int64s; a
+    // real epoch passes, 0 and an absent date leave no OrderDate (the node mapped 0 to null) and
+    // throw nothing (DateTime@1 would throw on an absent path).
+    [Theory]
+    [InlineData("\"orderDate\":1782165600000,", "2026-06-22T22:00:00Z")]   // sample order 4274
+    [InlineData("\"orderDate\":0,", null)]
+    [InlineData("", null)]
+    public async Task OrdersToAiYaml_OrderDate_ReadsEpochAsInt64(string orderDateField, string? expectedUtc)
+    {
+        var dataContext = await ShippedMappingChain.RunAsync("weclapp-orders-to-ai.yaml", $$$"""
+            {"current":{"id":"4274","orderNumber":"1000","customerNumber":"10000",{{{orderDateField}}}"orderItems":[]},
+             "customerResponse":{"result":[{"id":"4269","customerNumber":"10000","company":"FirmaMartin"}]}}
+            """);
+
+        if (expectedUtc is null)
+        {
+            Assert.Equal(DataKind.Undefined, dataContext.GetKind("$.ck.Order.OrderDate"));
+            return;
+        }
+
+        var expected = DateTime.Parse(expectedUtc, CultureInfo.InvariantCulture,
+            DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal);
+        Assert.Equal(expected, dataContext.Get<DateTime?>("$.ck.Order.OrderDate"));
+    }
+
+    [Fact]
+    public async Task OrdersToAiYaml_SystemOrder_LeavesNoView()
+    {
+        var dataContext = await ShippedMappingChain.RunAsync("weclapp-orders-to-ai.yaml", """
+            {"current":{"id":"1","orderNumber":"","customerNumber":"ANONYMOUS_DEBITOR","orderDate":0,"orderItems":[]},
+             "customerResponse":{"result":[{"id":"3456","customerNumber":"ANONYMOUS_DEBITOR","company":"ANONYMOUS_COMPANY"}]}}
+            """);
+
+        Assert.False(dataContext.Exists("$.ck"), "a system order must not reach the lookups or the gate");
     }
 
     // ---------- contract: one poisoned order cannot starve the others ----------
@@ -1149,17 +1347,4 @@ public class PipelineYamlContractTests
 
     // ---------- helpers ----------
 
-    private static async Task<IDataContext> RunToCkNode(WeClappToCkNodeConfiguration config, string documentJson)
-    {
-        var dataContext = new DataContextImpl(JsonDocument.Parse(documentJson));
-        var services = new ServiceCollection();
-        services.AddLogging();
-        services.AddDataPipeline();
-        var rootContext = NodeContext.CreateRootNodeContext(services.BuildServiceProvider(),
-            A.Fake<IPipelineLogger>(), dataContext);
-        var nodeContext = rootContext.RegisterChildNode("WeClappToCk", 0, config, dataContext);
-
-        await new WeClappToCkNode(A.Fake<NodeDelegate>()).ProcessObjectAsync(dataContext, nodeContext);
-        return dataContext;
-    }
 }

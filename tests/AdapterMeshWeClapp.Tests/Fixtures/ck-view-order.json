@@ -1,0 +1,36 @@
+{
+  "chain-5910986621265-company": {
+    "Customer": {
+      "CustomerNumber": "7067387625809",
+      "Name": "TJ Lucas GmbH"
+    },
+    "Order": {
+      "OrderNumber": "5910986621265",
+      "ExternalOrderNumber": "74299",
+      "OrderDate": "2024-02-06T00:00:00Z"
+    }
+  },
+  "b2c-622075-person": {
+    "Customer": {
+      "CustomerNumber": "K-77",
+      "Name": "Erika Muster"
+    },
+    "Order": {
+      "OrderNumber": "622075",
+      "ExternalOrderNumber": "SO-1001",
+      "OrderDate": "2026-06-30T11:56:00.333Z"
+    }
+  },
+  "sample-4274-company-no-items": {
+    "Customer": {
+      "CustomerNumber": "10000",
+      "Name": "FirmaMartin"
+    },
+    "Order": {
+      "OrderNumber": "4274",
+      "ExternalOrderNumber": "1000",
+      "OrderDate": "2026-06-22T22:00:00Z"
+    }
+  },
+  "anonymous-debitor": null
+}

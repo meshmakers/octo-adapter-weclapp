@@ -19,12 +19,13 @@ dotnet build Octo.WeClappAdapter.slnx -c DebugL
 ## Project Structure
 - `src/AdapterMeshWeClapp/` - Mesh adapter host (cloud, connects directly to OctoMesh
   repositories) + all custom pipeline nodes (outbound:
-  `WeClappResolveSupplySources@1`, `WeClappToCk@1`, `DilosRender@1` (AI only; the AS article
-  master renders through the product's `RenderDelimitedText@1`) - the fetching itself is
+  `WeClappResolveSupplySources@1`, `DilosRender@1` (AI only; the AS article master renders
+  through the product's `RenderDelimitedText@1`, and the CK-shaped view of articles and orders is
+  built by standard nodes in the yamls) - the fetching itself is
   the product's `MakeHttpRequest@1` and the delivery its `SftpUpload@1`, see "AS/AI Delivery"
   below; return path: `DilosFileGate@1`, `DilosFileConfirm@1`, `WeClappArWrite@1`,
   `WeClappBeWrite@1` — the listing and the reading themselves are the product's `SftpList@1`
-  and `SftpDownload@1`, see "AR/BE Return Path" below. That is the complete inventory: SEVEN
+  and `SftpDownload@1`, see "AR/BE Return Path" below. That is the complete inventory: SIX
   declared node types, and no trigger node of its own - every pipeline is driven by a passive
   product trigger, see "Pipeline Trigger Architecture" below)
 - `src/Lkv.WeClapp.Core/` - plain core lib: WeClapp DTOs/JSON, WeClapp→DILOS value rules,
@@ -67,10 +68,13 @@ loop: a redeploy or pod restart fires no execution. A fetch step
 first and seeds the data context at a fixed root path — always the array, even `[]` (a missing/non-array path aborts a downstream
 `ForEach@1` with `PathMustBeArray`); in 4 of the 5 YAMLs a per-item `ForEach@1` then fans the
 former per-execution chain out over that array, one iteration per element
-(`weclapp-articles-to-as.yaml` has no `ForEach@1` - it renders one batch per tick). The ai loop
-is the exception on two counts: its FIRST child is a per-order `MakeHttpRequest@1` customer
-lookup, and it carries `continueOnError: true`, so a customer that fails permanently fails its
-own order instead of starving the tick. The as pipeline starts with its export-run key instead of
+(`weclapp-articles-to-as.yaml` has no `ForEach@1` - it renders one batch per tick). The ck and ai
+loops have ONE child each, the `If@1` system-record gate that wraps the whole body (`If@1` always
+continues with the next node, so a step left outside it would run for loading equipment or the
+anonymous debitor); the ai loop is the exception on two further counts: the FIRST child of its gate
+is a per-order `MakeHttpRequest@1` customer lookup, and it carries `continueOnError: true`, so a
+customer that fails permanently fails its own order instead of starving the tick. The as pipeline
+starts with its export-run key instead of
 a fetch - `SetPrimitiveValue@1` names the kind, then one `DateTime@1` `Now`, one
 `ConvertToTimeZone` to `Europe/Vienna` and two `Format` steps write
 `{ exportKind, exportDay, fileName }` (the name assembled by `FormatString@1`), and BOTH its
@@ -141,9 +145,32 @@ on `apiConfiguration` (no inline `apiKey`/`baseUrl`, no substitution placeholder
 `AllPipelineYamls_EveryAttributeUpdate_DeclaresValueType` requires every `ApplyChanges` attribute
 update to declare its `valueType`; `ArticlesToCkYaml_ConfiguredPaths_ResolveAgainstTransformOutput`
 and `OrdersToAiYaml_ConfiguredCkPaths_ResolveAgainstOrderTransformOutput` resolve every configured
-value path against the REAL `WeClappToCk@1` output (Article mode writes `$.ck` FLAT, Order mode
-NESTED), so a path that silently resolves to null cannot ship;
-`OrdersToAiYaml_CustomerNameUpdate_ResolvesForB2cCustomers` covers the B2C case below;
+value path against the `$.ck` view the SHIPPED mapping chain builds (ck FLAT, ai NESTED under
+`Customer`/`Order`), so a path that silently resolves to null cannot ship; `CkViewParityTests` pins
+that view against the fixtures frozen from the former `WeClappToCk@1`;
+`ArticlesToCkYaml_SystemArticleGate_WrapsThePersistence` and
+`OrdersToAiYaml_SystemOrderGate_IsTheFirstLoopChildAndWrapsTheLookup` pin the system-record filters
+as `If@1` gates that wrap the WHOLE loop body - `If@1` always continues with the next node, so a
+step left outside the gate would run for loading equipment or the anonymous debitor - and pin each
+gate's literal to the core predicate (`WeClappToDilos.IsSystemArticle`, which the AS delivery
+still calls, and `IsSystemCustomer`), so the ck gate and the AS delivery cannot disagree on what a
+system article is;
+`ArticlesToCkYaml_AbsentOptionalFields_KeepTheParitySeeds` pins the `""`/null seeds an absent name
+or EAN keeps (`CreateUpdateInfo@1` clears an attribute on null and skips it on absent, so the seed
+is what makes a removed EAN clear on the nightly update; a name or shop number that is JSON null
+keeps its `""` seed as well, because `SelectByPath@1` skips a null source, where the former node
+wrote null - no WeClapp sample carries such a null); `ArticlesToCkYaml_SystemArticle_LeavesNoView`
+and `OrdersToAiYaml_SystemOrder_LeavesNoView` pin that a system record leaves no `$.ck` at all;
+`OrdersToAiYaml_CustomerNumberCheck_PrecedesTheNameChain` pins the loud existence check
+(`SetPrimitiveValue@1` throws on an absent `valuePath`) BEFORE the name chain, because
+`TransformString@1` ends the chain silently when its path matches nothing, plus the `""` seed
+before `SelectByPath@1` and the Int64 literals the date guard needs to compare two numbers;
+`OrdersToAiYaml_MissingCustomer_FailsTheOrder` pins that an empty customer lookup fails the order
+with the path in the message; `OrdersToAiYaml_NonNumericQuantity_FailsInTheRender` pins that the
+quantity is validated by the DILOS writer inside the delivery gate, before the upload and the
+marker; `OrdersToAiYaml_OrderDate_ReadsEpochAsInt64` pins that a real epoch converts and that 0 or
+an absent date leaves no `OrderDate`; `OrdersToAiYaml_CustomerNameUpdate_ResolvesForB2cCustomers`
+covers the B2C case below (empty, absent, null and non-empty company);
 `AsAiYamls_DeliverViaSftpUploadInIso88591` pins every shipped `SftpUpload@1`: effective
 `encoding` `iso-8859-1` resolving to the same code page the render side writes, effective
 `onEncodingError` `Replace`, and the delivered name coming from `fileNamePath` rather than a
@@ -199,9 +226,10 @@ equal to that request's `targetPath`. Each of those can be edited alone and ship
 failure is the quiet kind - an empty MwSt field is the legitimate value for a position that states
 no tax, and the partner's own files carry it, so a file missing the promised rate looks exactly like
 a correct one;
-`OrdersToAiYaml_CustomerLookupFeedsTheOrderTransform` pins the three strings that must agree for
-an AI file to carry a recipient (the lookup's `targetPath`, the transform's `customerPath`, and
-the lookup being the FIRST loop child), plus the lookup addressing THIS order's `customerId`;
+`OrdersToAiYaml_CustomerLookupFeedsTheOrderTransform` pins the three things that must agree for
+an AI file to carry a recipient (the lookup's `targetPath`, the paths the existence check and the
+name chain read, and the lookup being the FIRST child of the system-order gate), plus the lookup
+addressing THIS order's `customerId`;
 `OrdersToAiYaml_ForEachIsolatesAFailingOrder` pins `continueOnError: true` on the per-order loop,
 so one permanently failing customer fails its own order instead of starving the whole tick;
 `SourceYamls_AreCoveredByTheApiConfigurationGuard` pins the five pipelines that must carry the
@@ -223,9 +251,11 @@ claims completeness invites re-pinning an invariant that already holds.
   SKU) — parsers fail loud on mismatch by design.
 - B2C orders carry an EMPTY WeClapp `customer.company` (the person is in `firstName`/`lastName`).
   TWO independent fallbacks share the shape "company, else `FirstName LastName`" but NOT the
-  source: `WeClappToCkNode` builds `CkCustomer.Name` from the CUSTOMER record — the orders→AI yaml
-  must write that value (`valuePath: $.ck.Customer.Name`), because a path aimed at the raw company
-  field leaves the CK name empty for B2C (live finding 2026-07-16). `DilosOrderWriter`
+  source: the orders→AI yaml builds `$.ck.Customer.Name` from the CUSTOMER record itself
+  (`Concat@1` + `TransformString@1 Trim` for the person, overridden by a non-empty company through
+  `If@1 RegexMatch .+`) — the Customer update must keep reading `$.ck.Customer.Name`, because a
+  path aimed at the raw company field leaves the CK name empty for B2C (live finding 2026-07-16);
+  a company that is JSON null keeps the person name (the former node threw there). `DilosOrderWriter`
   (`RecipientName1`/`RecipientName2`) builds the DILOS FILE name fields from the ADDRESS instead;
   name2 ("Nachname Vorname") stays empty unless a company fills name1.
 - **The AI position prices are not read off the golden files.** Those carry fields 18 and 20 and
@@ -406,6 +436,15 @@ claims completeness invites re-pinning an invariant that already holds.
   succeeds silently, and the next tick throws "Unknown DilosRender mode 'AS'" — no delivery, no
   marker, hourly, until someone re-imports the as yaml. Both directions leave a window without an
   AS delivery: deploy the image FIRST, then re-import **every** changed yaml including the as one.
+- **The CK-view swap (AB#5162) is a FOURTH case, and it INVERTS the order: tenant yamls FIRST,
+  image second.** The new image no longer registers `WeClappToCk@1`, so a stored ck or ai
+  definition that still names it is rejected at load time (unknown discriminator) and BOTH
+  pipelines stay unregistered until they are re-imported - no CK article sync, no AI delivery.
+  Importing the two yamls first is windowless: every node, operator and property they use exists
+  in SDK 3.4.109 (commit 071725d, the SDK the staging image carried before the swap; the test runs
+  pinned at `-p:OctoVersion=3.4.109` prove the yamls deserialize there) and later, and the old
+  image keeps the then-unused node registered. Staging: `DeployPipeline` ck + ai from the branch,
+  then merge, train and lift; prod-2 gets yamls and image together in its one lift.
 - `WeClappArWrite@1`: AR K* Auftragsnummer1 = WeClapp `salesOrder.id` (404 = dead-letter
   log, file still consumed). Idempotency: SHIPPED shipment with same tracking = skip;
   reuse non-CANCELLED; else `createShipment`. Quantities match by **articleId, never by

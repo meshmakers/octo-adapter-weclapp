@@ -5,7 +5,6 @@ using System.Text.Json.Nodes;
 using FakeItEasy;
 using Lkv.WeClapp.Core.Model;
 using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Nodes;
-using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Tests.Nodes;
 using Meshmakers.Octo.MeshAdapter.Nodes.Load;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
@@ -25,7 +24,7 @@ namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Tests;
 /// <summary>
 /// End-to-end chain over the custom nodes with a REAL pipeline data context (DataContextImpl, as
 /// the platform's own full-chain tests use): the document the shipped pipelines seed →
-/// WeClappToCk → DilosRender → AI lines, and the article batch → the export-run key chain →
+/// the shipped mapping chain → DilosRender → AI lines, and the article batch → the export-run key chain →
 /// WeClappResolveSupplySources → RenderDelimitedText → AS content → SftpUpload@1 bytes. The
 /// seeding itself is the product's MakeHttpRequest@1 and is not re-tested here; what the chain
 /// must agree on is the document SHAPE, so the fixtures below carry exactly the paths the yamls
@@ -65,17 +64,9 @@ public class PipelineChainIntegrationTests
             }
             """;
 
-        // --- Phase 2: real data context + real transform/render chain ---
+        // --- Phase 2: the shipped mapping chain (standard nodes, read from the yaml), then the render ---
+        using var dataContext = (DataContextImpl)await ShippedMappingChain.RunAsync("weclapp-orders-to-ai.yaml", document);
         var nodeContext = A.Fake<INodeContext>();
-        using var dataContext = new DataContextImpl(JsonDocument.Parse(document));
-        A.CallTo(() => nodeContext.GetNodeConfiguration<WeClappToCkNodeConfiguration>())
-            .Returns(new WeClappToCkNodeConfiguration
-            {
-                Mode = "Order",
-                Path = "$.current",
-                CustomerPath = "$.customerResponse.result[0]",
-                TargetPath = "$.ck",
-            });
         A.CallTo(() => nodeContext.GetNodeConfiguration<DilosRenderNodeConfiguration>())
             .Returns(new DilosRenderNodeConfiguration
             {
@@ -87,18 +78,14 @@ public class PipelineChainIntegrationTests
                 TaxesPath = "$.taxes",
             });
 
-        var render = new DilosRenderNode((_, _) => Task.CompletedTask);
-        var toCk = new WeClappToCkNode((dc, nc) => render.ProcessObjectAsync(dc, nc));
+        await new DilosRenderNode((_, _) => Task.CompletedTask).ProcessObjectAsync(dataContext, nodeContext);
 
-        await toCk.ProcessObjectAsync(dataContext, nodeContext);
-
-        // --- CK branch: contact data from the customer, computed unit price ---
-        var ck = dataContext.Get<CkOrderDocument>("$.ck");
-        Assert.NotNull(ck);
-        Assert.Equal("TJ Lucas GmbH", ck.Customer.Contact.CompanyName);
-        Assert.Equal("Rösrath", ck.Customer.Contact.Address!.CityTown);
-        Assert.Equal("5910986621265", ck.Order.OrderNumber);
-        Assert.Equal(29.99d, Assert.Single(ck.OrderItems).UnitPriceNet);
+        // --- CK branch: the persisted view (contact, address and unit prices are AB#4228 territory) ---
+        Assert.Equal("TJ Lucas GmbH", dataContext.Get<string>("$.ck.Customer.Name"));
+        Assert.Equal("7067387625809", dataContext.Get<string>("$.ck.Customer.CustomerNumber"));
+        Assert.Equal("5910986621265", dataContext.Get<string>("$.ck.Order.OrderNumber"));
+        Assert.Equal("74299", dataContext.Get<string>("$.ck.Order.ExternalOrderNumber"));
+        Assert.Equal(new DateTime(2024, 2, 6, 0, 0, 0, DateTimeKind.Utc), dataContext.Get<DateTime?>("$.ck.Order.OrderDate"));
 
         // --- DILOS branch: one AI file content for this order (K* + item P* + shipping P*) ---
         var dilos = dataContext.Get<string>("$.dilos");
