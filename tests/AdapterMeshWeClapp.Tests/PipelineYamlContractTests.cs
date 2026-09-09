@@ -370,16 +370,17 @@ public class PipelineYamlContractTests
         Assert.Empty(violations);
     }
 
-    // ---------- contract 8: the AR/BE return path is listing -> gate -> download ----------
+    // ---------- contract 8: the AR/BE return path is listing -> per-file loop -> download inside the marker gate ----------
 
-    // The three nodes are only correct together: SftpList@1 emits metadata, DilosFileGate@1 keys
-    // the cross-tick state off it and stamps the survivors, SftpDownload@1 reads one file per
-    // iteration. A gate pointed at another path gates nothing (and the confirm node then finds no
-    // stamp); a download outside the loop would read every already-processed file on every tick.
-    // Neither shows up as a failure - the run stays green and does the wrong amount of work - so
-    // the wiring is pinned here rather than in a comment.
+    // The listing, the loop and the download are only correct together, and none of the strings
+    // that tie them fails loudly when it drifts: a loop over another path runs over nothing, a
+    // download outside the marker gate reads every already-processed file on every tick, a write
+    // node reading another path than the download wrote has nothing to write. Pinned here rather
+    // than in a comment. The gate is a standard If@1 on the marker probe since the file state
+    // moved into Industry.Logistics/InboundFile markers; the retired DilosFileGate@1 used to sit
+    // between the listing and the loop instead.
     [Fact]
-    public async Task ArBeYamls_FetchTheirFilesThroughSftpListGateAndSftpDownload()
+    public async Task ArBeYamls_FetchTheirFilesThroughSftpListAndSftpDownload()
     {
         var violations = new List<string>();
         var checkedYamls = 0;
@@ -388,23 +389,20 @@ public class PipelineYamlContractTests
         {
             var root = await PipelineDefinitions.DeserializeAsync(yaml);
             var nodes = Walk(root.Transformations).ToList();
-            if (!nodes.OfType<DilosFileConfirmNodeConfiguration>().Any())
+            if (!nodes.OfType<SftpDeleteNodeConfiguration>().Any())
             {
                 continue; // no DILOS return path in this yaml (as/ck/ai)
             }
 
             checkedYamls++;
             var list = Assert.Single(nodes.OfType<SftpListNodeConfiguration>());
-            var gate = Assert.Single(nodes.OfType<DilosFileGateNodeConfiguration>());
             var download = Assert.Single(nodes.OfType<SftpDownloadNodeConfiguration>());
             var forEach = Assert.Single(nodes.OfType<ForEachNodeConfiguration>());
-            var children = forEach.Transformations?.ToList() ?? new List<NodeConfiguration>();
-
-            if (gate.Path != list.TargetPath)
-            {
-                violations.Add($"{yaml}: DilosFileGate@1 gates '{gate.Path}' but SftpList@1 lists into " +
-                               $"'{list.TargetPath}' - the gate would pass judgement on nothing");
-            }
+            var children = forEach.Transformations?.ToList() ?? [];
+            var probe = Assert.Single(children.OfType<GetOrCreateRtEntitiesByTypeNodeConfiguration>());
+            var markerGate = Assert.Single(children.OfType<IfNodeConfiguration>(),
+                g => g.Path == probe.ModOperationPath);
+            var gated = markerGate.Transformations?.ToList() ?? [];
 
             if (forEach.IterationPath != list.TargetPath)
             {
@@ -412,10 +410,10 @@ public class PipelineYamlContractTests
                                $"listing lands in '{list.TargetPath}'");
             }
 
-            if (children.Count == 0 || children[0] is not SftpDownloadNodeConfiguration)
+            if (gated.Count == 0 || gated[0] is not SftpDownloadNodeConfiguration)
             {
-                violations.Add($"{yaml}: SftpDownload@1 must be the FIRST child of the per-file ForEach - " +
-                               "the write node behind it has nothing to write otherwise");
+                violations.Add($"{yaml}: SftpDownload@1 must be the FIRST child of the marker gate - " +
+                               "outside it every already-processed file would be read on every tick");
             }
 
             if (download.RemotePathPath != $"{forEach.KeyPath}.fullPath")
@@ -424,12 +422,14 @@ public class PipelineYamlContractTests
                                $"'{forEach.KeyPath}.fullPath' - the path of the file this iteration is for");
             }
 
-            // The pattern decides which files the return path picks up, and through the source
-            // object the listing stamps on every element it also decides the scope the gate keys
-            // its cross-tick memory on. Nothing else in the repo pinned it: an edit that blanks it
-            // or merely WIDENS it (AR* instead of AR*TXT) ships green from here and surfaces at
-            // the tenant at the earliest - as a stranded return path, or as a listing that hands
-            // DILOS parsers files that were never meant for them. Pinned exactly, per yaml:
+            if (download.ServerConfiguration != list.ServerConfiguration)
+            {
+                violations.Add($"{yaml}: SftpDownload@1 reads from '{download.ServerConfiguration}' while " +
+                               $"SftpList@1 listed '{list.ServerConfiguration}' - content from one server, " +
+                               "identity from the other");
+            }
+
+            // The pattern decides which files the return path picks up. Pinned exactly, per yaml:
             // neither pattern is on the REPLACE/TBD list, so there is nothing to keep loose.
             var expectedPattern = yaml switch
             {
@@ -446,14 +446,12 @@ public class PipelineYamlContractTests
             else if (list.FilePattern != expectedPattern)
             {
                 violations.Add($"{yaml}: SftpList@1 selects '{list.FilePattern}', expected " +
-                               $"'{expectedPattern}' - a different set of files, and a different " +
-                               "gate scope for the files it still lists");
+                               $"'{expectedPattern}' - a different set of files");
             }
 
             // The product node defaults minFileAgeSeconds to 0 and skips the guard entirely at
             // that value, so the yaml literal is the only thing keeping a file that is still
-            // being written out of the listing - the same class of quiet failure the encoding
-            // pin below covers, where the product default is wrong for DILOS.
+            // being written out of the listing.
             if (list.MinFileAgeSeconds < 60)
             {
                 violations.Add($"{yaml}: SftpList@1 lists files younger than " +
@@ -463,9 +461,9 @@ public class PipelineYamlContractTests
 
             // Without this the two path checks below pass on an empty sequence, and a yaml that
             // lost its write node altogether would read every file and do nothing with it.
-            Assert.Single(children.OfType<WeClappWriteNodeConfiguration>());
+            Assert.Single(gated.OfType<WeClappWriteNodeConfiguration>());
 
-            var contentPaths = children.OfType<WeClappWriteNodeConfiguration>()
+            var contentPaths = gated.OfType<WeClappWriteNodeConfiguration>()
                 .Select(w => w.ContentPath).ToList();
             if (contentPaths.Any(path => path != download.TargetPath))
             {
@@ -474,7 +472,7 @@ public class PipelineYamlContractTests
                                $"'{download.TargetPath}'");
             }
 
-            var namePaths = children.OfType<WeClappWriteNodeConfiguration>()
+            var namePaths = gated.OfType<WeClappWriteNodeConfiguration>()
                 .Select(w => w.FileNamePath).ToList();
             if (namePaths.Any(path => path != $"{forEach.KeyPath}.name"))
             {
@@ -488,36 +486,67 @@ public class PipelineYamlContractTests
         Assert.Equal(2, checkedYamls); // ar + be
     }
 
-    // ---------- contract: the keep/delete mode is configured in exactly ONE place ----------
+    // ---------- contract: the processing mode is configured in exactly ONE place ----------
 
-    // This is what the gate exists for. The mode used to sit on the fetch node AND on the confirm
-    // node, and the two had to agree: flipped on the confirm side alone, files were deleted
-    // although nothing had been written; flipped on the fetch side alone, every file was
-    // reprocessed forever. Both values live in tenant-side pipeline definitions and are editable
-    // in the Studio. Raw text on purpose - it catches a second occurrence in any node, including
-    // one the typed layer would not attribute to a node at all. Commented-out lines are not
-    // matched: the key has to stand at the start of its line, which is also why the yaml headers
-    // may discuss the property in prose.
+    // The mode is the one operational switch of the return path: it keys the marker (a file
+    // validated in dryRun is not the same processing as the live one, so after the flip to live
+    // the same file runs once for real - the backlog rule of the go-live) AND opens the delete.
+    // It used to be deleteAfterSuccess on the retired gate, and before that it sat in two places
+    // that had to agree. One SetPrimitiveValue@1 on $.mode per yaml, BEFORE the loop (the
+    // iteration contexts read it through the parent fallback), holding one of the two words the
+    // delete gate and the marker key understand. Raw text as well, so a second occurrence in any
+    // node - including one the typed layer would not attribute to a node - is caught.
     [Fact]
-    public void ArBeYamls_ConfigureDeleteAfterSuccessExactlyOnce()
+    public async Task ArBeYamls_ConfigureTheProcessingModeExactlyOnce()
     {
         var violations = new List<string>();
         var checkedYamls = 0;
 
         foreach (var yaml in AllPipelineYamls)
         {
-            var raw = File.ReadAllText(RepoFiles.Find(Path.Combine("pipelines", yaml)));
-            if (!raw.Contains("DilosFileConfirm@1", StringComparison.Ordinal))
+            var root = await PipelineDefinitions.DeserializeAsync(yaml);
+            if (!Walk(root.Transformations).OfType<SftpDeleteNodeConfiguration>().Any())
             {
                 continue; // no DILOS return path in this yaml (as/ck/ai)
             }
 
             checkedYamls++;
-            var occurrences = Regex.Matches(raw, @"(?m)^\s*deleteAfterSuccess\s*:").Count;
+            var top = root.Transformations?.ToList() ?? [];
+            var modeIndex = top.FindIndex(n => n is SetPrimitiveValueNodeConfiguration { TargetPath: "$.mode" });
+            var loopIndex = top.FindIndex(n => n is ForEachNodeConfiguration);
+
+            if (modeIndex < 0)
+            {
+                violations.Add($"{yaml}: no SetPrimitiveValue@1 writes $.mode at the top level - the marker " +
+                               "key and the delete gate read it");
+            }
+            else
+            {
+                var mode = (SetPrimitiveValueNodeConfiguration)top[modeIndex];
+                if (mode.ValueType != AttributeValueTypesDto.String)
+                {
+                    violations.Add($"{yaml}: $.mode is written as {mode.ValueType}, expected String - the " +
+                                   "delete gate compares a string");
+                }
+
+                if (mode.Value?.ToString() is not ("dryRun" or "live"))
+                {
+                    violations.Add($"{yaml}: $.mode is '{mode.Value}', expected dryRun or live");
+                }
+
+                if (loopIndex >= 0 && modeIndex > loopIndex)
+                {
+                    violations.Add($"{yaml}: $.mode is written AFTER the per-file loop that reads it");
+                }
+            }
+
+            var raw = File.ReadAllText(RepoFiles.Find(Path.Combine("pipelines", yaml)));
+            var occurrences = Regex.Matches(raw, @"(?m)^\s*targetPath\s*:\s*\$\.mode\s*(#.*)?$").Count;
             if (occurrences != 1)
             {
-                violations.Add($"{yaml}: deleteAfterSuccess is configured {occurrences} time(s) - it belongs " +
-                               "on DilosFileGate@1 and nowhere else, or two places can disagree again");
+                violations.Add($"{yaml}: $.mode is written {occurrences} time(s) - it belongs on ONE " +
+                               "SetPrimitiveValue@1 before the loop and nowhere else, or two places can " +
+                               "disagree again");
             }
         }
 
@@ -561,15 +590,18 @@ public class PipelineYamlContractTests
         Assert.Equal(2, downloads); // ar + be
     }
 
-    // ---------- contract 9: DilosFileConfirm@1 is the LAST child of the per-file ForEach ----------
+    // ---------- contract 9: SftpDelete@1 runs last, only in live mode, and only behind the marker ----------
 
-    // Child order IS execution order (middleware chain — a throw aborts the remainder): if the
-    // confirm ever moved before the write, keep mode would mark a file kept before its write ran
-    // (a later write failure then skips the file on every future tick), and delete mode would
-    // delete the LKV file before the write — until this test the invariant lived only in the
-    // yaml comments ("DilosFileConfirm@1 is the LAST child").
+    // Child order IS execution order (middleware chain - a throw aborts the remainder). The
+    // marker has to be persisted before the file is removed, so ApplyChanges@2 closes the marker
+    // gate and the delete sits in its own gate AFTER it: a crash between the two leaves a file
+    // with a marker, which the next tick only deletes - never a deleted file without a trace.
+    // SftpDelete@1 honours the execution mode only, which a cron tick never carries, so the mode
+    // gate is the only thing between a validation tick and a consumed LKV file. onMissingFile is
+    // pinned because the product default is Fail: a definition without the line turns every
+    // repeat of a half-finished tick red.
     [Fact]
-    public async Task ArBeYamls_DilosFileConfirm_IsTheLastPerFileForEachChild()
+    public async Task ArBeYamls_SftpDelete_IsGatedOnTheLiveModeBehindTheMarker()
     {
         var violations = new List<string>();
         var checkedYamls = 0;
@@ -578,30 +610,83 @@ public class PipelineYamlContractTests
         {
             var root = await PipelineDefinitions.DeserializeAsync(yaml);
             var nodes = Walk(root.Transformations).ToList();
-            if (!nodes.OfType<DilosFileConfirmNodeConfiguration>().Any())
+            if (!nodes.OfType<SftpDeleteNodeConfiguration>().Any())
             {
-                continue; // no DILOS return-path confirm in this yaml (as/ck/ai)
+                continue; // no DILOS return path in this yaml (as/ck/ai)
             }
 
             checkedYamls++;
+            var list = Assert.Single(nodes.OfType<SftpListNodeConfiguration>());
             var forEach = Assert.Single(nodes.OfType<ForEachNodeConfiguration>());
-            var children = forEach.Transformations?.ToList() ?? new List<NodeConfiguration>();
+            var children = forEach.Transformations?.ToList() ?? [];
+            var probe = Assert.Single(children.OfType<GetOrCreateRtEntitiesByTypeNodeConfiguration>());
+            var markerGate = Assert.Single(children.OfType<IfNodeConfiguration>(),
+                g => g.Path == probe.ModOperationPath);
+            var marker = Assert.Single(Walk(markerGate.Transformations).OfType<CreateUpdateInfoNodeConfiguration>());
+            var gated = markerGate.Transformations?.ToList() ?? [];
 
-            if (children.Count(c => c is DilosFileConfirmNodeConfiguration) != 1)
+            if (gated.Count == 0 || gated[^1] is not ApplyChangesNodeConfiguration2 persist ||
+                persist.EntityUpdatesPath != marker.TargetPath)
             {
-                violations.Add($"{yaml}: exactly ONE DilosFileConfirm@1 must confirm each file element");
+                violations.Add($"{yaml}: the marker gate must END with ApplyChanges@2 reading " +
+                               $"'{marker.TargetPath}' - anything after it would run on a file whose marker " +
+                               "is not persisted yet");
             }
 
-            if (children.Count == 0 || children[^1] is not DilosFileConfirmNodeConfiguration)
+            if (children.Count == 0 || children[^1] is not IfNodeConfiguration deleteGate)
             {
-                violations.Add($"{yaml}: DilosFileConfirm@1 must be the LAST child of the per-file " +
-                               "ForEach — anything after it would run on an already confirmed (possibly " +
-                               "deleted) file, anything before the write chain confirms an unwritten file");
+                violations.Add($"{yaml}: the LAST child of the per-file ForEach must be the If@1 delete " +
+                               "gate on $.mode");
+                continue;
+            }
+
+            if (deleteGate.Path != "$.mode" || deleteGate.Operator != CompareOperator.Equal ||
+                deleteGate.ValueType != AttributeValueTypesDto.String || deleteGate.Value?.ToString() != "live")
+            {
+                violations.Add($"{yaml}: the delete gate must be If@1 on $.mode, Equal, String, value " +
+                               $"live - got '{deleteGate.Path}', {deleteGate.Operator}, {deleteGate.ValueType}, " +
+                               $"value '{deleteGate.Value}'");
+            }
+
+            if (children.FindIndex(n => ReferenceEquals(n, deleteGate)) <=
+                children.FindIndex(n => ReferenceEquals(n, markerGate)))
+            {
+                violations.Add($"{yaml}: the delete gate must come AFTER the marker gate");
+            }
+
+            var deletes = deleteGate.Transformations?.ToList() ?? [];
+            if (deletes.Count != 1 || deletes[0] is not SftpDeleteNodeConfiguration delete)
+            {
+                violations.Add($"{yaml}: the delete gate must hold exactly ONE SftpDelete@1 and nothing else");
+                continue;
+            }
+
+            if (nodes.OfType<SftpDeleteNodeConfiguration>().Count() != 1)
+            {
+                violations.Add($"{yaml}: exactly ONE SftpDelete@1 per return-path yaml, inside the delete gate");
+            }
+
+            if (delete.RemotePathPath != $"{forEach.KeyPath}.fullPath")
+            {
+                violations.Add($"{yaml}: SftpDelete@1 removes '{delete.RemotePathPath}', expected " +
+                               $"'{forEach.KeyPath}.fullPath' - the file this iteration is for");
+            }
+
+            if (delete.ServerConfiguration != list.ServerConfiguration)
+            {
+                violations.Add($"{yaml}: SftpDelete@1 deletes on '{delete.ServerConfiguration}' while " +
+                               $"SftpList@1 listed '{list.ServerConfiguration}'");
+            }
+
+            if (delete.OnMissingFile != MissingFileHandling.Ignore)
+            {
+                violations.Add($"{yaml}: SftpDelete@1 runs with onMissingFile {delete.OnMissingFile} - a " +
+                               "repeat of a half-finished tick finds the file gone and must not fail");
             }
         }
 
         Assert.Empty(violations);
-        Assert.Equal(2, checkedYamls); // ar + be — the return-path yamls must not lose the confirm
+        Assert.Equal(2, checkedYamls); // ar + be
     }
 
     // ---------- contract: WeClapp access comes ONLY from the tenant GlobalConfiguration ----------
@@ -649,23 +734,19 @@ public class PipelineYamlContractTests
         }
     }
 
-    // ---------- contract: a dry-run write node forbids deleting the source file ----------
+    // ---------- contract: the write node's dryRun and the mode agree ----------
 
-    // dryRun and deleteAfterSuccess are coupled by OPERATIONS, not by code: WeClappArWrite@1 /
+    // dryRun and the mode are coupled by OPERATIONS, not by code: WeClappArWrite@1 /
     // WeClappBeWrite@1 resolve their dry run as `config.DryRun || PipelineExecutionMode.IsDryRun`,
-    // while DilosFileConfirmNode only looks at PipelineExecutionMode - it never sees the write
-    // node's dryRun. A normal (non-dry-run) execution with dryRun: true and deleteAfterSuccess:
-    // true therefore writes nothing, reports success and still DELETES the remote file: the LKV
-    // copy is consumed although its content never reached WeClapp, and that copy is the only
-    // source. Until now the yaml comments were the sole guard against that combination.
-    //
-    // Both values are read through the SAME binding the tenant uses rather than off the raw text,
-    // because YAML has more than one spelling of true: a text probe written for "true" passes a
-    // definition saying "yes", "on" or "!!bool true", and the guard then reports no violation for
-    // exactly the combination it exists to forbid. The binding has no spellings - it answers with
-    // a bool - so this covers the ones nobody has written yet as well.
+    // while the delete gate and the marker key read $.mode - neither sees the other, and a cron
+    // tick carries no execution mode at all. Both directions are wrong: mode live with dryRun
+    // true writes nothing, persists a live marker and DELETES the only copy of the LKV file;
+    // mode dryRun with dryRun false books for real under a dryRun marker, and the flip to live
+    // then books the same file a second time. Both values are read through the SAME binding the
+    // tenant uses rather than off the raw text: YAML has more than one spelling of true, and a
+    // text probe written for "true" passes "yes", "on" and "!!bool true" as "not set".
     [Fact]
-    public async Task ArBeYamls_DryRunWriteNode_ForbidsDeleteAfterSuccess()
+    public async Task ArBeYamls_DryRunWriteNode_ForbidsTheLiveMode()
     {
         var violations = new List<string>();
         var checkedYamls = 0;
@@ -674,33 +755,176 @@ public class PipelineYamlContractTests
         {
             var root = await PipelineDefinitions.DeserializeAsync(yaml);
             var nodes = Walk(root.Transformations).ToList();
-            if (!nodes.OfType<DilosFileConfirmNodeConfiguration>().Any())
+            if (!nodes.OfType<SftpDeleteNodeConfiguration>().Any())
             {
-                continue; // no confirm node - this yaml deletes no source file (as/ck/ai)
+                continue; // no delete - this yaml consumes no source file (as/ck/ai)
             }
 
             checkedYamls++;
+            var mode = Assert.Single(nodes.OfType<SetPrimitiveValueNodeConfiguration>(),
+                n => n.TargetPath == "$.mode");
+            var live = mode.Value?.ToString() == "live";
 
-            // Both sides are read for EVERY ar/be yaml and only the COMBINATION is a violation -
-            // the guard never skips itself. The go-live combination (dryRun false + deleting) is
-            // legitimate and simply produces no violation.
-            var deleting = nodes.OfType<DilosFileGateNodeConfiguration>()
-                .Count(gate => gate.DeleteAfterSuccess);
-            var dryRunning = nodes.OfType<WeClappWriteNodeConfiguration>()
-                .Count(write => write.DryRun);
-
-            if (dryRunning > 0 && deleting > 0)
+            foreach (var write in nodes.OfType<WeClappWriteNodeConfiguration>())
             {
-                violations.Add(
-                    $"{yaml}: {dryRunning} write node(s) run with dryRun: true while {deleting} " +
-                    "gate(s) delete after success - the write would be skipped and " +
-                    "DilosFileConfirm@1 (which never sees the write node's dryRun) would still " +
-                    "delete the LKV file");
+                if (live && write.DryRun)
+                {
+                    violations.Add($"{yaml}: mode is live while a write node runs with dryRun: true - the " +
+                                   "write would be skipped, a live marker persisted and SftpDelete@1 would " +
+                                   "still delete the LKV file");
+                }
+
+                if (!live && !write.DryRun)
+                {
+                    violations.Add($"{yaml}: mode is dryRun while a write node runs with dryRun: false - a " +
+                                   "real write under a dryRun marker is written a second time after the " +
+                                   "flip to live");
+                }
             }
         }
 
         Assert.Empty(violations);
         Assert.Equal(2, checkedYamls); // ar + be - the return-path yamls must stay covered
+    }
+
+    // ---------- contract: the InboundFile marker keys on the listing element and the mode ----------
+
+    // The file identity crosses a JSON boundary: FormatString@1 copies the listing's own
+    // lastWriteTimeUtc TEXT (a re-formatted value would key an unchanged file differently from
+    // one tick to the next, and nothing would ever count as processed), and the mode is part of
+    // the key on purpose (see the mode contract). The probe's filter, the marker's FileKey and
+    // the gate's path must agree with each other, and the seven attribute updates must carry the
+    // CK's value types: CreateUpdateInfo@1 silently drops an update whose type is missing, and a
+    // wrong type fails at the tenant, not here. GetOrCreateRtEntitiesByType@1 without filters
+    // logs an error and STOPS the chain, so the one filter is pinned too.
+    [Fact]
+    public async Task ArBeYamls_InboundFileMarker_KeysOnTheListingElementAndTheMode()
+    {
+        const string expectedFormat =
+            "{$.current.source.serverConfiguration}|{$.current.source.remoteDirectory}|{$.current.name}|" +
+            "{$.current.length}|{$.current.lastWriteTimeUtc}|{$.mode}";
+
+        var violations = new List<string>();
+        var checkedYamls = 0;
+
+        foreach (var yaml in AllPipelineYamls)
+        {
+            var root = await PipelineDefinitions.DeserializeAsync(yaml);
+            var nodes = Walk(root.Transformations).ToList();
+            if (!nodes.OfType<SftpDeleteNodeConfiguration>().Any())
+            {
+                continue; // no DILOS return path in this yaml (as/ck/ai)
+            }
+
+            checkedYamls++;
+            var forEach = Assert.Single(nodes.OfType<ForEachNodeConfiguration>());
+            var children = forEach.Transformations?.ToList() ?? [];
+            var key = Assert.Single(children.OfType<FormatStringNodeConfiguration>());
+            var probe = Assert.Single(children.OfType<GetOrCreateRtEntitiesByTypeNodeConfiguration>());
+            var markerGate = Assert.Single(children.OfType<IfNodeConfiguration>(),
+                g => g.Path == probe.ModOperationPath);
+            var gated = markerGate.Transformations?.ToList() ?? [];
+            var marker = Assert.Single(gated.OfType<CreateUpdateInfoNodeConfiguration>());
+            var clock = Assert.Single(gated.OfType<DateTimeNodeConfiguration>());
+            var keyPath = key.TargetPath ?? "";
+            var clockPath = clock.TargetPath ?? "";
+
+            if (key.Format != expectedFormat)
+            {
+                violations.Add($"{yaml}: the marker key is built as '{key.Format}', expected '{expectedFormat}'");
+            }
+
+            if (probe.CkTypeId != "Industry.Logistics/InboundFile" || marker.CkTypeId != probe.CkTypeId)
+            {
+                violations.Add($"{yaml}: probe and marker must both address Industry.Logistics/InboundFile - " +
+                               $"got '{probe.CkTypeId}' and '{marker.CkTypeId}'");
+            }
+
+            var filters = probe.FieldFilters?.ToList() ?? [];
+            if (filters.Count != 1 || filters[0].AttributePath != "FileKey" ||
+                filters[0].Operator.ToString() is not ("Equals" or "Equal") ||
+                filters[0].ComparisonValuePath != keyPath)
+            {
+                violations.Add($"{yaml}: the probe must filter exactly FileKey Equals '{keyPath}' (the " +
+                               "FormatString@1 target)");
+            }
+
+            var keyIndex = children.FindIndex(n => ReferenceEquals(n, key));
+            var probeIndex = children.FindIndex(n => ReferenceEquals(n, probe));
+            var gateIndex = children.FindIndex(n => ReferenceEquals(n, markerGate));
+            if (!(keyIndex < probeIndex && probeIndex < gateIndex))
+            {
+                violations.Add($"{yaml}: order must be FormatString@1 -> GetOrCreateRtEntitiesByType@1 -> marker gate");
+            }
+
+            if (markerGate.Operator != CompareOperator.Equal || markerGate.ValueType != AttributeValueTypesDto.Enum ||
+                markerGate.Value?.ToString() != "0")
+            {
+                violations.Add($"{yaml}: the marker gate must open on ModOperation Equal 0 (UpdateKind.Insert) as Enum");
+            }
+
+            if (marker.RtIdPath != probe.RtIdTargetPath || marker.UpdateKindPath != probe.ModOperationPath)
+            {
+                violations.Add($"{yaml}: the marker must read the probe's rtId ('{probe.RtIdTargetPath}') and mod " +
+                               $"operation ('{probe.ModOperationPath}') - got '{marker.RtIdPath}' / '{marker.UpdateKindPath}'");
+            }
+
+            if (marker.TargetValueWriteMode != TargetValueWriteModes.Append)
+            {
+                violations.Add($"{yaml}: the marker update must be appended (targetValueWriteMode: Append)");
+            }
+
+            if (clock.Operation != DateTimeOperationDto.Now)
+            {
+                violations.Add($"{yaml}: the processing timestamp must be DateTime@1 Now");
+            }
+
+            var expectedUpdates = new (string Name, AttributeValueTypesDto Type, string Path)[]
+            {
+                ("FileKey", AttributeValueTypesDto.String, keyPath),
+                ("SourceName", AttributeValueTypesDto.String, $"{forEach.KeyPath}.source.serverConfiguration"),
+                ("SourceDirectory", AttributeValueTypesDto.String, $"{forEach.KeyPath}.source.remoteDirectory"),
+                ("FileName", AttributeValueTypesDto.String, $"{forEach.KeyPath}.name"),
+                ("FileSize", AttributeValueTypesDto.Int64, $"{forEach.KeyPath}.length"),
+                ("LastWriteUtc", AttributeValueTypesDto.DateTime, $"{forEach.KeyPath}.lastWriteTimeUtc"),
+                ("ProcessedAt", AttributeValueTypesDto.DateTime, clockPath),
+            };
+            var actualUpdates = (marker.AttributeUpdates ?? [])
+                .Select(u => (u.AttributeName ?? "", u.AttributeValueType ?? default, u.ValuePath ?? ""))
+                .ToList();
+            foreach (var expected in expectedUpdates)
+            {
+                if (!actualUpdates.Contains(expected))
+                {
+                    violations.Add($"{yaml}: marker update {expected.Name} as {expected.Type} from " +
+                                   $"'{expected.Path}' is missing or differs");
+                }
+            }
+
+            if (actualUpdates.Count != expectedUpdates.Length)
+            {
+                violations.Add($"{yaml}: the marker writes {actualUpdates.Count} attribute(s), expected " +
+                               $"{expectedUpdates.Length}");
+            }
+
+            // Inside the gate: download, write, clock, marker, persist - in this order.
+            var order = new[]
+            {
+                gated.FindIndex(n => n is SftpDownloadNodeConfiguration),
+                gated.FindIndex(n => n is WeClappWriteNodeConfiguration),
+                gated.FindIndex(n => n is DateTimeNodeConfiguration),
+                gated.FindIndex(n => n is CreateUpdateInfoNodeConfiguration),
+                gated.FindIndex(n => n is ApplyChangesNodeConfiguration2),
+            };
+            if (order.Any(i => i < 0) || !order.SequenceEqual(order.OrderBy(i => i)))
+            {
+                violations.Add($"{yaml}: inside the marker gate the order must be SftpDownload@1 -> write node -> " +
+                               $"DateTime@1 -> CreateUpdateInfo@1 -> ApplyChanges@2 (got {string.Join(",", order)})");
+            }
+        }
+
+        Assert.Empty(violations);
+        Assert.Equal(2, checkedYamls); // ar + be
     }
 
     // ---------- contract 13: AS/AI deliver through the product node in Latin-1 ----------
