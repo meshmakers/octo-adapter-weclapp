@@ -600,8 +600,10 @@ public class PipelineYamlContractTests
     // with a marker, which the next tick only deletes - never a deleted file without a trace.
     // SftpDelete@1 honours the execution mode only, which a cron tick never carries, so the mode
     // gate is the only thing between a validation tick and a consumed LKV file. onMissingFile is
-    // pinned because the product default is Fail: a definition without the line turns every
-    // repeat of a half-finished tick red.
+    // pinned because the product default is Fail and Ignore is a deliberate choice: every file the
+    // delete is asked for was listed seconds earlier, so only someone else removing it inside the
+    // tick reaches this - and a run whose marker is already persisted must not go red for a file
+    // that is gone anyway.
     [Fact]
     public async Task ArBeYamls_SftpDelete_IsGatedOnTheLiveModeBehindTheMarker()
     {
@@ -683,7 +685,8 @@ public class PipelineYamlContractTests
             if (delete.OnMissingFile != MissingFileHandling.Ignore)
             {
                 violations.Add($"{yaml}: SftpDelete@1 runs with onMissingFile {delete.OnMissingFile} - a " +
-                               "repeat of a half-finished tick finds the file gone and must not fail");
+                               "file someone else removed between the listing and the delete must not fail " +
+                               "a run whose marker is already persisted");
             }
         }
 
@@ -860,7 +863,7 @@ public class PipelineYamlContractTests
             }
 
             if (markerGate.Operator != CompareOperator.Equal || markerGate.ValueType != AttributeValueTypesDto.Enum ||
-                markerGate.Value?.ToString() != "0")
+                markerGate.Value is null || Convert.ToInt32(markerGate.Value) != (int)UpdateKind.Insert)
             {
                 violations.Add($"{yaml}: the marker gate must open on ModOperation Equal 0 (UpdateKind.Insert) as Enum");
             }
@@ -1446,6 +1449,35 @@ public class PipelineYamlContractTests
 
         Assert.True(loop.ContinueOnError,
             "a permanently failing customer must fail its own order, not the whole tick");
+    }
+
+    // The same isolation on the return path, where it is the ONLY one left: the retired gate had
+    // its own try/catch around the delete it settled. Without the flag a file whose download, write
+    // or delete fails persistently aborts the loop at its own element, and every file after it in
+    // the listing is never processed - on every tick, for as long as that file stays. Deleting the
+    // one line removes it, and nothing else in the suite notices.
+    [Fact]
+    public async Task ArBeYamls_ForEachIsolatesAFailingFile()
+    {
+        var checkedYamls = 0;
+
+        foreach (var yaml in AllPipelineYamls)
+        {
+            var root = await PipelineDefinitions.DeserializeAsync(yaml);
+            var nodes = Walk(root.Transformations).ToList();
+            if (!nodes.OfType<SftpDeleteNodeConfiguration>().Any())
+            {
+                continue; // no DILOS return path in this yaml (as/ck/ai)
+            }
+
+            checkedYamls++;
+            var loop = Assert.Single(nodes.OfType<ForEachNodeConfiguration>());
+            Assert.True(loop.ContinueOnError,
+                $"{yaml}: a file that fails persistently must fail its own iteration, not every file " +
+                "listed after it");
+        }
+
+        Assert.Equal(2, checkedYamls); // ar + be
     }
 
     // The guard above keys on node names, and this change rewrote them. A file that drops out of

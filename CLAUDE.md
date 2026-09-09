@@ -72,9 +72,10 @@ former per-execution chain out over that array, one iteration per element
 (`weclapp-articles-to-as.yaml` has no `ForEach@1` - it renders one batch per tick). The ck and ai
 loops have ONE child each, the `If@1` system-record gate that wraps the whole body (`If@1` always
 continues with the next node, so a step left outside it would run for loading equipment or the
-anonymous debitor); the ai loop is the exception on two further counts: the FIRST child of its gate
-is a per-order `MakeHttpRequest@1` customer lookup, and it carries `continueOnError: true`, so a
-customer that fails permanently fails its own order instead of starving the tick. The as pipeline
+anonymous debitor); the ai loop is the exception on one further count: the FIRST child of its gate
+is a per-order `MakeHttpRequest@1` customer lookup. The ai, ar and be loops carry
+`continueOnError: true`, so a customer or a file that fails permanently fails its own iteration
+instead of starving the tick. The as pipeline
 starts with its export-run key instead of
 a fetch - `SetPrimitiveValue@1` names the kind, then one `DateTime@1` `Now`, one
 `ConvertToTimeZone` to `Europe/Vienna` and two `Format` steps write
@@ -137,16 +138,18 @@ them all as "not set";
 `ArBeYamls_SftpDelete_IsGatedOnTheLiveModeBehindTheMarker` pins `SftpDelete@1` as the only child of
 an `If@1` on `$.mode == live` that is the LAST per-file `ForEach@1` child, AFTER the marker gate
 whose last child is `ApplyChanges@2`, with `onMissingFile: Ignore` (the product default is Fail);
+`ArBeYamls_ForEachIsolatesAFailingFile` pins `continueOnError: true` on the per-file loop, the only
+isolation left on the return path since the retired gate took its try/catch with it;
 `ArBeYamls_InboundFileMarker_KeysOnTheListingElementAndTheMode` pins the marker key
 (`FormatString@1` over the listing element's server, directory, name, length, verbatim
 `lastWriteTimeUtc` text and the mode), the probe (`GetOrCreateRtEntitiesByType@1` on
 `Industry.Logistics/InboundFile`, one `FileKey Equals` filter on that key), the gate on the probe's
 mod operation (`Equal 0` = Insert) and the seven typed attribute updates the marker writes, in the
 order download -> write -> `DateTime@1 Now` -> `CreateUpdateInfo@1` -> `ApplyChanges@2`;
-`ArBeChainTests` runs that loop body with the real nodes against fakes and pins that the marker is
-handed to the repository BEFORE the file is deleted, that only the live mode deletes, that a known
-file is neither read nor written again and that a repository or write failure leaves the file on
-the server;
+`ArBeChainTests` runs that loop body with the real nodes against fakes (the ar yaml throughout, the
+be yaml once with its own write node) and pins that the marker is handed to the repository BEFORE
+the file is deleted, that only the live mode deletes, that a known file is neither read nor written
+again and that a repository or write failure leaves the file on the server;
 `ArBeYamls_ReadDilosFilesAsIso88591` pins the effective `encoding` of every `SftpDownload@1` to
 the code page the DILOS parsers expect (the node defaults to utf-8, which turns Latin-1 umlauts
 into replacement characters without failing anything);
@@ -418,16 +421,27 @@ claims completeness invites re-pinning an invariant that already holds.
   the execution mode only, which a cron tick never carries (the mesh adapter's
   `FromPipelineTriggerEvent@1` starts every tick without one), so the `$.mode` gate is the only
   thing between a validation tick and a consumed LKV file. `onMissingFile: Ignore` is explicit
-  because the product default is Fail: a repeat of a half-finished tick finds the file gone.
+  because the product default is Fail, and it is a judgment call rather than a necessity: every
+  file the delete is asked for was listed seconds earlier, so only someone else removing it inside
+  the tick reaches this, and a run whose marker is already persisted must not go red for a file
+  that is gone anyway (the node applies Ignore to a missing file only; a permission error still
+  fails).
 - Accepted residue: `ApplyChanges@2` logs and continues when the repository reports errors through
   its OperationResult instead of throwing, so a WRITTEN file could be deleted without a marker (no
   data lost, no trace). The AS marker carries the same residue; a product change is noted for U4.
   And the markers are never pruned: about 20 per working day at the customer's pace, kept as
-  history until the operations stage decides on a retention.
+  history until the operations stage decides on a retention. Because they are never pruned, a
+  file re-delivered byte-identical WITH its modification time preserved (an archived copy
+  re-uploaded by a tool that keeps mtime) keys the same as the processed one and is only deleted -
+  the retired confirm node forgot a key after a successful delete, this design does not. Delete
+  the marker instance before such a re-upload; a re-upload that changes the mtime is a new file.
 - A dry run started through `FromExecutePipelineCommand@1` (mesh adapter >= the AB#5159 fix)
   reaches every node with `IsDryRun`: the write nodes validate, `ApplyChanges@2` and
   `SftpDelete@1` record their intent and touch nothing - the way to validate a `live` definition
-  without consuming a file.
+  without consuming a file. That fix (octo-mesh-adapter `ae68ec0`) is in NO published SDK up to
+  3.4.112: on an older image the command starts a NORMAL execution, and a `mode: live` +
+  `dryRun: false` definition then writes and deletes for real. Validate a live definition this way
+  only on an image that carries the fix.
 - Two ways the wiring can be wrong without anything failing, both guarded because both are one
   Studio edit away: a probe without `fieldFilters` (`GetOrCreateRtEntitiesByType@1` logs an error
   and STOPS the chain - every tick green, no file processed) and a `SftpDownload@1` or
@@ -459,12 +473,14 @@ claims completeness invites re-pinning an invariant that already holds.
 - **The file-state swap (U2) is a FIFTH case of the rollout rule, and like the CK-view swap it
   INVERTS the order: tenant yamls FIRST, image second.** The new image no longer registers
   `DilosFileGate@1`/`DilosFileConfirm@1`, so a stored ar or be definition that still names them is
-  rejected at load time (unknown discriminator). Importing the two yamls first is windowless:
-  every node and property they use exists in the chart the tenant runs (`SftpDelete@1` since
-  3.4.113, the rest since 3.4.109), and `Industry.Logistics` 2.1.0 has to be imported BEFORE the
-  yamls (the probe fails loud on a tenant without the type). Staging: import the CK, `DeployPipeline`
-  ar + be from the branch, then merge, train and lift; prod-2 gets CK, yamls and image together in
-  its one lift.
+  rejected at load time (unknown discriminator). Importing the two yamls first is windowless on an
+  image at SDK 3.4.112 or later: `SftpDelete@1` ships in 3.4.112 and in no earlier version (the
+  staging chart 3.4.113 carries it), the rest since 3.4.109. On an older image the yaml import fails
+  registration (unknown discriminator `SftpDelete@1`) and the image-first order fails the same way
+  at load time - lift that image to >= 3.4.112 before either step. `Industry.Logistics` 2.1.0 has
+  to be imported BEFORE the yamls (the probe fails loud on a tenant without the type). Staging:
+  import the CK, `DeployPipeline` ar + be from the branch, then merge, train and lift; prod-2 gets
+  CK, yamls and image together in its one lift.
 - `WeClappArWrite@1`: AR K* Auftragsnummer1 = WeClapp `salesOrder.id` (404 = dead-letter
   log, file still consumed). Idempotency: SHIPPED shipment with same tracking = skip;
   reuse non-CANCELLED; else `createShipment`. Quantities match by **articleId, never by

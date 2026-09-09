@@ -82,7 +82,8 @@ that still names it is rejected at load time, and the yamls use nothing an image
 later lacks - so import `weclapp-articles-to-ck.yaml` and `weclapp-orders-to-ai.yaml` FIRST, then
 roll the image. The file-state swap (`DilosFileGate@1`/`DilosFileConfirm@1` replaced by
 `Industry.Logistics/InboundFile` markers and `SftpDelete@1`) is the same inversion: import CK 2.1.0,
-then the ar/be yamls, then the image.
+then the ar/be yamls, then the image - on an image at SDK 3.4.112 or later, where `SftpDelete@1`
+ships.
 
 ## Build & test
 

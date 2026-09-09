@@ -47,6 +47,15 @@ internal sealed class ShippedReturnPathChain : IDisposable
     public const string LastWriteText = "2026-08-28T07:11:16.0670000Z";
     public const long Length = 430;
 
+    /// <summary>The listing element the chain runs for - the AR golden file unless a case says otherwise.</summary>
+    public sealed record ListedFile(string Name, string FilePattern)
+    {
+        public string RemotePath => "/" + Name;
+        public static readonly ListedFile Ar = new(FileName, "AR*TXT");
+        public static readonly ListedFile Be = new("BE_20260828071116067.txt", "BE*txt");
+    }
+
+    public ListedFile Listed { get; }
     public ISftpSession Session { get; } = A.Fake<ISftpSession>();
     public ITenantRepository TenantRepository { get; } = A.Fake<ITenantRepository>();
     public FakeHttpMessageHandler Http { get; }
@@ -58,12 +67,14 @@ internal sealed class ShippedReturnPathChain : IDisposable
     /// <summary>The marker the chain persisted, or null when ApplyChanges@2 was never reached.</summary>
     public EntityUpdateInfo<RtEntity>? Marker => Applied.SingleOrDefault();
 
-    private readonly IServiceProvider _services;
+    private readonly ServiceProvider _services;
     private readonly IfNodeConfiguration _slice;
 
     public static async Task<ShippedReturnPathChain> PrepareAsync(string yamlFileName, string mode, bool dryRun,
-        UpdateKind probeResult, string content, Func<HttpRequestMessage, int, HttpResponseMessage>? responder = null)
+        UpdateKind probeResult, string content, Func<HttpRequestMessage, int, HttpResponseMessage>? responder = null,
+        ListedFile? file = null)
     {
+        file ??= ListedFile.Ar;
         var root = await PipelineDefinitions.DeserializeAsync(yamlFileName);
         var top = root.Transformations?.ToList() ?? [];
         var modeNode = Assert.Single(top.OfType<SetPrimitiveValueNodeConfiguration>(), n => n.TargetPath == "$.mode");
@@ -88,9 +99,9 @@ internal sealed class ShippedReturnPathChain : IDisposable
         // The document the loop body holds for one listed file, in the shape SftpList@1 emits.
         var dataContext = new DataContextImpl(JsonDocument.Parse($$$"""
             {"run":"yes",
-             "current":{"name":"{{{FileName}}}","fullPath":"{{{RemotePath}}}","length":{{{Length}}},
+             "current":{"name":"{{{file.Name}}}","fullPath":"{{{file.RemotePath}}}","length":{{{Length}}},
                         "lastWriteTimeUtc":"{{{LastWriteText}}}",
-                        "source":{"serverConfiguration":"LkvSftp","remoteDirectory":"/","filePattern":"AR*TXT"}
+                        "source":{"serverConfiguration":"LkvSftp","remoteDirectory":"/","filePattern":"{{{file.FilePattern}}}"}
                        }
             }
             """));
@@ -105,13 +116,14 @@ internal sealed class ShippedReturnPathChain : IDisposable
             TargetValueWriteModes.Overwrite);
 
         var http = new FakeHttpMessageHandler(responder ?? ((_, _) => new HttpResponseMessage(HttpStatusCode.NotFound)));
-        return new ShippedReturnPathChain(slice, dataContext, http, content);
+        return new ShippedReturnPathChain(slice, dataContext, http, content, file);
     }
 
     private ShippedReturnPathChain(IfNodeConfiguration slice, DataContextImpl dataContext, FakeHttpMessageHandler http,
-        string content)
+        string content, ListedFile file)
     {
         _slice = slice;
+        Listed = file;
         DataContext = dataContext;
         Http = http;
 
@@ -135,8 +147,8 @@ internal sealed class ShippedReturnPathChain : IDisposable
         A.CallTo(() => sessionFactory.ConnectAsync(A<SftpServerSettings>._, A<string>._, A<IMeshEtlContext>._,
                 A<INodeContext>._, A<CancellationToken>._))
             .Returns(Task.FromResult(Session));
-        A.CallTo(() => Session.Download(RemotePath, A<long>._)).Returns(Encoding.Latin1.GetBytes(content));
-        A.CallTo(() => Session.Delete(RemotePath)).Returns(true);
+        A.CallTo(() => Session.Download(file.RemotePath, A<long>._)).Returns(Encoding.Latin1.GetBytes(content));
+        A.CallTo(() => Session.Delete(file.RemotePath)).Returns(true);
         A.CallTo(() => TenantRepository.GetSessionAsync()).Returns(Task.FromResult(octoSession));
         A.CallTo(() => TenantRepository.ApplyChangesAsync(A<IOctoSession>._,
                 A<IReadOnlyList<IEntityUpdateInfo<RtEntity>>>._, A<IReadOnlyList<AssociationUpdateInfo>>._,
@@ -170,7 +182,11 @@ internal sealed class ShippedReturnPathChain : IDisposable
             .ProcessObjectAsync(DataContext, rootContext.RegisterChildNode("If", 0, _slice, DataContext));
     }
 
-    public void Dispose() => DataContext.Dispose();
+    public void Dispose()
+    {
+        DataContext.Dispose();
+        _services.Dispose();
+    }
 
     /// <summary>
     /// The CK type as CreateUpdateInfo@1 resolves it: the seven InboundFile attributes with the

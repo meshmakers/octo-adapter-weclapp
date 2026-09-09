@@ -1,5 +1,6 @@
 using System.Net;
 using FakeItEasy;
+using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Tests.Nodes;
 using Meshmakers.Octo.ConstructionKit.Contracts;
 using Meshmakers.Octo.MeshAdapter.Nodes;
 using Meshmakers.Octo.Runtime.Contracts;
@@ -11,7 +12,8 @@ namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Tests;
 /// The shipped ar yaml, run for ONE listed file with the real nodes against fakes: the marker is
 /// persisted BEFORE the file is deleted, only the live mode deletes, a known file is neither read
 /// nor written again, and every failure before the marker leaves the file on the server. be shares
-/// the structure (pinned by the yaml contracts); its write node has its own tests.
+/// the structure (pinned by the yaml contracts) and runs through the same chain once, with its own
+/// write node; the write nodes themselves have their own tests.
 /// </summary>
 public class ArBeChainTests
 {
@@ -25,6 +27,10 @@ public class ArBeChainTests
         "L*|400000001247987|1|400000001273682||||||1|1013408501850970172035\r\n";
 
     private const string Yaml = "dilos-ar-to-weclapp.yaml";
+    private const string BeYaml = "dilos-be-to-weclapp.yaml";
+
+    // One line of the customer's BE_20260828071116067.txt (seven fields, article code included).
+    private const string GoldenBeLine = "155294|TS_001|0|0||15|VER\r\n";
     private const string LiveKey = "LkvSftp|/|AR00006946.TXT|430|2026-08-28T07:11:16.0670000Z|live";
 
     [Fact]
@@ -70,7 +76,10 @@ public class ArBeChainTests
         var marker = Assert.IsType<EntityUpdateInfo<RtEntity>>(chain.Marker);
         Assert.EndsWith("|dryRun", Assert.IsType<string>(marker.RtEntity!.Attributes["FileKey"]));
         A.CallTo(() => chain.Session.Delete(A<string>._)).MustNotHaveHappened();
-        // The dry-run write still resolves the order (a GET) and nothing else.
+        // The default responder dead-letters the order lookup (404) before the write node consults
+        // its dryRun, so this case pins the yaml's side of the dry run - the marker suffix and the
+        // closed delete gate come from $.mode alone; the write node's own dry run is covered by
+        // WeClappArWriteNodeTests. Pinned here: the lookup was the only request.
         Assert.All(chain.Http.Requests, r => Assert.Equal("GET", r.Method));
     }
 
@@ -137,6 +146,37 @@ public class ArBeChainTests
 
         Assert.NotNull(chain.Marker);
     }
+
+    [Fact]
+    public async Task NewFile_LiveMode_BeYaml_PersistsTheMarkerBeforeTheDelete()
+    {
+        using var chain = await ShippedReturnPathChain.PrepareAsync(BeYaml, "live", dryRun: false, UpdateKind.Insert,
+            GoldenBeLine, BeLookups, ShippedReturnPathChain.ListedFile.Be);
+
+        await chain.RunAsync();
+
+        // Same chain, BE write node: the lookups answer with the warehouse and no articles, so the
+        // one line is skipped loudly and nothing is booked - marker first, delete second all the same.
+        Assert.All(chain.Http.Requests, r => Assert.Equal("GET", r.Method));
+        A.CallTo(() => chain.TenantRepository.ApplyChangesAsync(A<IOctoSession>._,
+                A<IReadOnlyList<IEntityUpdateInfo<RtEntity>>>._, A<IReadOnlyList<AssociationUpdateInfo>>._,
+                A<OperationResult>._))
+            .MustHaveHappenedOnceExactly()
+            .Then(A.CallTo(() => chain.Session.Delete(chain.Listed.RemotePath)).MustHaveHappenedOnceExactly());
+        var marker = Assert.IsType<EntityUpdateInfo<RtEntity>>(chain.Marker);
+        Assert.Equal("LkvSftp|/|BE_20260828071116067.txt|430|2026-08-28T07:11:16.0670000Z|live",
+            marker.RtEntity!.Attributes["FileKey"]);
+        Assert.Equal(chain.Listed.Name, marker.RtEntity.Attributes["FileName"]);
+    }
+
+    /// <summary>
+    /// WeClapp as WeClappBeWrite@1 reads it for a snapshot of unknown articles: the warehouse exists,
+    /// the article and stock pages are empty.
+    /// </summary>
+    private static HttpResponseMessage BeLookups(HttpRequestMessage request, int _) =>
+        FakeHttpMessageHandler.Json(request.RequestUri!.AbsolutePath.EndsWith("/warehouse", StringComparison.Ordinal)
+            ? """{"result":[{"id":"4156","defaultStoragePlaceId":"9001"}]}"""
+            : """{"result":[]}""");
 
     private static string Causes(Exception error)
     {

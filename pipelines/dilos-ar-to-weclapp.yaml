@@ -150,5 +150,6 @@ transformations:
             description: Remove the processed file from the LKV SFTP
             serverConfiguration: LkvSftp
             remotePathPath: $.current.fullPath
-            onMissingFile: Ignore         # NEVER omit: the default Fail turns every repeat of
-                                          # a half-finished tick red
+            onMissingFile: Ignore         # NEVER omit: the default is Fail. A listed file is only
+                                          # gone if someone else removed it inside this tick, and
+                                          # the marker is persisted by now - goal state reached
