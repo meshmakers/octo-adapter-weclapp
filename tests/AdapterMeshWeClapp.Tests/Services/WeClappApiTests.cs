@@ -20,7 +20,7 @@ public class WeClappApiTests
             ? throw new TaskCanceledException("The request was canceled due to the configured HttpClient.Timeout")
             : FakeHttpMessageHandler.Json("""{"result":[]}"""));
 
-        var result = await Create(handler).SendAsync(HttpMethod.Get, "article", null);
+        var result = await Create(handler).SendAsync(HttpMethod.Get, "article", null, TestContext.Current.CancellationToken);
 
         Assert.True(result.IsSuccess);
         Assert.Equal(2, handler.Requests.Count);
@@ -32,7 +32,7 @@ public class WeClappApiTests
         var handler = new FakeHttpMessageHandler((_, _) => throw new TaskCanceledException());
 
         var ex = await Assert.ThrowsAsync<WeClappPipelineExecutionException>(
-            () => Create(handler).SendAsync(HttpMethod.Get, "article", null));
+            () => Create(handler).SendAsync(HttpMethod.Get, "article", null, TestContext.Current.CancellationToken));
 
         Assert.Contains("4 attempts", ex.Message);
         Assert.Equal(4, handler.Requests.Count);
@@ -48,7 +48,7 @@ public class WeClappApiTests
         var handler = new FakeHttpMessageHandler((_, _) => throw new TaskCanceledException());
 
         await Assert.ThrowsAsync<TaskCanceledException>(() => Create(handler)
-            .SendAsync(HttpMethod.Post, "salesOrder/id/1/createShipment", new JsonObject()));
+            .SendAsync(HttpMethod.Post, "salesOrder/id/1/createShipment", new JsonObject(), TestContext.Current.CancellationToken));
 
         Assert.Single(handler.Requests);
     }
@@ -62,7 +62,7 @@ public class WeClappApiTests
             ? throw new TaskCanceledException("The request was canceled due to the configured HttpClient.Timeout")
             : FakeHttpMessageHandler.Json("""{"id":"7"}"""));
 
-        var result = await Create(handler).SendAsync(HttpMethod.Put, "shipment/id/7", new JsonObject());
+        var result = await Create(handler).SendAsync(HttpMethod.Put, "shipment/id/7", new JsonObject(), TestContext.Current.CancellationToken);
 
         Assert.True(result.IsSuccess);
         Assert.Equal(2, handler.Requests.Count);
@@ -94,7 +94,7 @@ public class WeClappApiTests
             ? throw new HttpRequestException("connection reset")
             : FakeHttpMessageHandler.Json("""{"result":[]}"""));
 
-        var result = await Create(handler).SendAsync(HttpMethod.Get, "article", null);
+        var result = await Create(handler).SendAsync(HttpMethod.Get, "article", null, TestContext.Current.CancellationToken);
 
         Assert.True(result.IsSuccess);
         Assert.Equal(2, handler.Requests.Count);
@@ -107,7 +107,7 @@ public class WeClappApiTests
         var handler = new FakeHttpMessageHandler((_, _) =>
             new HttpResponseMessage(HttpStatusCode.NotFound) { Content = new StringContent("{}") });
 
-        var result = await Create(handler).SendAsync(HttpMethod.Get, "salesOrder/id/1", null);
+        var result = await Create(handler).SendAsync(HttpMethod.Get, "salesOrder/id/1", null, TestContext.Current.CancellationToken);
 
         Assert.False(result.IsSuccess);
         Assert.Equal(404, result.StatusCode);

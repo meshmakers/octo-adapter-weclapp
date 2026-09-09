@@ -8,9 +8,7 @@ template.
 
 - `src/AdapterMeshWeClapp` — the adapter host (`WebAdapterBuilder`, `IAdapterService`,
   observability/health endpoints, pipeline registration) plus the custom pipeline nodes:
-  - outbound: `DilosExportRunKey@1` (writes `{ exportKind, exportDay, fileName }` from ONE
-    Vienna clock read - a stand-in until `DateTime@1` gains a time zone),
-    `WeClappResolveSupplySources@1` (replaces the article supply-source stubs with the fetched
+  - outbound: `WeClappResolveSupplySources@1` (replaces the article supply-source stubs with the fetched
     entities that carry the EK prices, drops system articles and projects the DILOS EK-Preis),
     `WeClappToCk@1`, `DilosRender@1` (AI content + golden file name, and the join that gives every
     AI position its MwSt rate: a WeClapp position names a `taxId` but states no percentage, so the
