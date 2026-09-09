@@ -19,8 +19,8 @@ public record WeClappConnectionSettings
 }
 
 /// <summary>
-/// Shared resolution of the WeClapp API access settings — one validation for the fetch
-/// trigger and both write-back nodes (mirror of <see cref="SftpConnectionSettingsResolver"/>).
+/// Shared resolution of the WeClapp API access settings — one validation for both write-back
+/// nodes.
 /// A configured-but-missing or half-configured entry fails loud; there is no silent
 /// fallback to a possibly stale inline key.
 /// </summary>

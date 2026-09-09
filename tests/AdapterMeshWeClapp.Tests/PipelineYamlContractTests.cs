@@ -342,11 +342,12 @@ public class PipelineYamlContractTests
 
     // ---------- contract 7: every ForEach fan-out pins keyPath to $.current ----------
 
-    // DilosFileConfirm@1's Path defaults to "$.current" (the ForEach keyPath convention) and
-    // every per-item chain in every converted yaml reads $.current.* — a ForEach configured with
-    // a different keyPath would silently break every one of those paths without any structural
-    // test noticing (the yaml still deserializes, every node is still "present", it would just
-    // read nothing at runtime).
+    // Every per-item node reads the current element under "$.current" - on the return path the
+    // download's remotePathPath, the write node's fileNamePath, the marker's valuePaths and the
+    // delete's remotePathPath, in the ck/ai yamls the mapping chains' $.current.* reads - so a
+    // loop with another keyPath would silently resolve them all to nothing (the yaml still
+    // deserializes, every node is still "present", it would just read nothing at runtime), and
+    // through the parent fallback possibly to the WHOLE array. Pinned per loop.
     [Fact]
     public async Task AllPipelineYamls_EveryForEach_KeyPathIsCurrent()
     {
@@ -361,7 +362,8 @@ public class PipelineYamlContractTests
                 {
                     violations.Add($"{yaml}: ForEach '{forEach.Description}' KeyPath is " +
                                     $"'{forEach.KeyPath}', expected '$.current' — every per-item child " +
-                                    "path (DilosFileConfirm@1's default Path, the $.current.* reads of the ck/ai mapping chains, …) " +
+                                    "path ($.current.fullPath and $.current.name of the return path, the marker's " +
+                                    "$.current.* value paths, the $.current.* reads of the ck/ai mapping chains) " +
                                     "assumes this convention");
                 }
             }
@@ -377,7 +379,7 @@ public class PipelineYamlContractTests
     // download outside the marker gate reads every already-processed file on every tick, a write
     // node reading another path than the download wrote has nothing to write. Pinned here rather
     // than in a comment. The gate is a standard If@1 on the marker probe since the file state
-    // moved into Industry.Logistics/InboundFile markers; the retired DilosFileGate@1 used to sit
+    // moved into Industry.Logistics/InboundFile markers; the retired custom gate node used to sit
     // between the listing and the loop instead.
     [Fact]
     public async Task ArBeYamls_FetchTheirFilesThroughSftpListAndSftpDownload()
@@ -491,7 +493,7 @@ public class PipelineYamlContractTests
     // The mode is the one operational switch of the return path: it keys the marker (a file
     // validated in dryRun is not the same processing as the live one, so after the flip to live
     // the same file runs once for real - the backlog rule of the go-live) AND opens the delete.
-    // It used to be deleteAfterSuccess on the retired gate, and before that it sat in two places
+    // It used to be a keep/delete flag on the retired gate, and before that it sat in two places
     // that had to agree. One SetPrimitiveValue@1 on $.mode per yaml, BEFORE the loop (the
     // iteration contexts read it through the parent fallback), holding one of the two words the
     // delete gate and the marker key understand. Raw text as well, so a second occurrence in any

@@ -18,10 +18,9 @@ template.
     spelled out in the yaml, and the CK-shaped view of articles and orders is built by standard
     nodes in the ck/ai yamls; the fetching is the product's `MakeHttpRequest@1` and the delivery its
     `SftpUpload@1` with `encoding: iso-8859-1`)
-  - return path: `DilosFileGate@1` (per-file keep/delete state between ticks; the listing and
-    the download themselves are the product's `SftpList@1` and `SftpDownload@1`),
-    `DilosFileConfirm@1` (per-file keep/delete confirmation; last child of the
-    return-path `ForEach@1`), `WeClappArWrite@1`, `WeClappBeWrite@1`
+  - return path: `WeClappArWrite@1`, `WeClappBeWrite@1` (the listing, the reading and the deleting
+    are the product's `SftpList@1`, `SftpDownload@1` and `SftpDelete@1`; the per-file state is an
+    `Industry.Logistics/InboundFile` marker written by standard nodes in the ar/be yamls)
 - `src/Lkv.WeClapp.Core` — plain .NET core library, no platform dependencies:
   - **WeClapp → DILOS (outbound)**: `WeClappJson`, `WeClappToDilos` value rules,
     `DilosOrderWriter` (AI `K*`/`P*`; the AS `A*` layout is the column list in
@@ -41,7 +40,7 @@ template.
   - **Trigger architecture:** every pipeline carries two passive triggers —
     `FromPipelineTriggerEvent@1` (cron, subscribes a per-pipeline queue) and
     `FromExecutePipelineCommand@1` (manual/API run). A fetch step
-    (`MakeHttpRequest@1` outbound, `SftpList@1` + `DilosFileGate@1` on the return path) runs
+    (`MakeHttpRequest@1` outbound, `SftpList@1` on the return path) runs
     first and seeds the data context; in
     4 of the 5 pipelines a per-item `ForEach@1` (`keyPath: $.current`,
     `maxDegreeOfParallelism: 1`) then fans the former per-execution chain out over the
@@ -81,7 +80,9 @@ incompatible in both directions: roll the image out first, then re-import the ya
 swap (AB#5162) is the inverse case: the image drops `WeClappToCk@1`, a stored ck or ai definition
 that still names it is rejected at load time, and the yamls use nothing an image on SDK 3.4.109 or
 later lacks - so import `weclapp-articles-to-ck.yaml` and `weclapp-orders-to-ai.yaml` FIRST, then
-roll the image.
+roll the image. The file-state swap (`DilosFileGate@1`/`DilosFileConfirm@1` replaced by
+`Industry.Logistics/InboundFile` markers and `SftpDelete@1`) is the same inversion: import CK 2.1.0,
+then the ar/be yamls, then the image.
 
 ## Build & test
 
