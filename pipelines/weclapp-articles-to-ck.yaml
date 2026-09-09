@@ -3,6 +3,11 @@
 # the AS file is one batch per run. Deployment + WeClapp access (apiConfiguration:
 # WeClappApi) identical to weclapp-orders-to-ai.yaml.
 #
+# The CK-shaped view ($.ck) is built by standard nodes inside the loop: an If@1 drops loading
+# equipment and wraps everything that persists, two SetPrimitiveValue@1 seeds keep the former
+# node's "" / null for absent fields, and SelectByPath@1 copies id/name/ean under the CK
+# attribute names the persistence nodes read 1:1.
+#
 # No supply-source resolution here - this pipeline maps no purchase prices into CK;
 # the AS delivery pipeline resolves them (EK-Preis field) before it renders.
 
@@ -36,45 +41,73 @@ transformations:
     targetPath: $.loopResult         # NEVER omit: default "$" replaces the document root
     maxDegreeOfParallelism: 1        # NEVER omit: default 0 = Environment.ProcessorCount (parallel!)
     transformations:
-      - type: WeClappToCk@1
-        description: WeClapp article → CK-shaped document (system articles filtered)
-        mode: Article
-        path: $.current             # the fetched array is flat - the element IS the article
-        targetPath: $.ck
+      # If@1 always continues with the next node, so EVERYTHING that persists sits inside this gate:
+      # loading equipment never enters the article master (WeClappToDilos.IsSystemArticle) and
+      # must leave neither a view nor an update.
+      - type: If@1
+        description: Skip loading equipment - it never enters the article master
+        path: $.current.articleType
+        operator: NotEqual              # an absent type counts as "not equal", like the "" model default did
+        value: LOADING_EQUIPMENT
+        valueType: String
+        transformations:
+          # Parity seeds, written BEFORE the copy: the former node carried "" for a missing name and
+          # null for a missing ean. CreateUpdateInfo@1 clears an attribute on null but leaves it
+          # alone when the path is absent - the null seed is what keeps a removed EAN clearing on
+          # the nightly update.
+          - type: SetPrimitiveValue@1
+            description: Seed Name with "" (node parity)
+            targetPath: $.ck.Name
+            value: ""
+            valueType: String
+          - type: SetPrimitiveValue@1
+            description: Seed Ean with null (node parity - a removed EAN still clears)
+            targetPath: $.ck.Ean
+            valueType: String
 
-      - type: GetOrCreateRtEntitiesByType@1
-        description: Upsert the Article by its WeClapp id (= DILOS Artikelnummer / AS key)
-        ckTypeId: Industry.Logistics/Article
-        fieldFilters:
-          - attributePath: ArticleNumber
-            operator: Equals                      # FieldFilterOperatorDto member
-            comparisonValuePath: $.ck.ArticleNumber   # WeClappToCk writes the CkArticle FLAT at $.ck
-        rtIdTargetPath: $.rt.articleRtId
-        ckTypeIdTargetPath: $.rt.articleCkTypeId
-        modOperationPath: $.rt.articleModOperation
+          - type: SelectByPath@1
+            description: WeClapp article -> CK-shaped view; an absent field keeps its seed
+            selectPath:
+              - path: $.current.id            # the stable WeClapp id = DILOS Artikelnummer / AS key
+                targetPath: $.ck.ArticleNumber
+              - path: $.current.name
+                targetPath: $.ck.Name
+              - path: $.current.ean
+                targetPath: $.ck.Ean
 
-      - type: CreateUpdateInfo@1
-        description: Article attribute values (list still partial — full mapping tracked under AB#4228)
-        path: $.ck
-        rtIdPath: $.rt.articleRtId
-        ckTypeId: Industry.Logistics/Article
-        updateKindPath: $.rt.articleModOperation
-        # attributeValueType is REQUIRED per update — without it the update is silently
-        # dropped. No Sku: neither the CK Article type nor CkArticle carries one.
-        attributeUpdates:
-          - attributeName: ArticleNumber
-            attributeValueType: String
-            valuePath: $.ck.ArticleNumber
-          - attributeName: Name
-            attributeValueType: String
-            valuePath: $.ck.Name
-          - attributeName: Ean
-            attributeValueType: String
-            valuePath: $.ck.Ean
-        targetPath: $.updates
-        targetValueWriteMode: Append      # NEVER omit: the Overwrite default keeps only the LAST update
+          - type: GetOrCreateRtEntitiesByType@1
+            description: Upsert the Article by its WeClapp id (= DILOS Artikelnummer / AS key)
+            ckTypeId: Industry.Logistics/Article
+            fieldFilters:
+              - attributePath: ArticleNumber
+                operator: Equals                      # FieldFilterOperatorDto member
+                comparisonValuePath: $.ck.ArticleNumber   # SelectByPath@1 writes the view FLAT at $.ck
+            rtIdTargetPath: $.rt.articleRtId
+            ckTypeIdTargetPath: $.rt.articleCkTypeId
+            modOperationPath: $.rt.articleModOperation
 
-      - type: ApplyChanges@2
-        description: Persist the article upsert
-        entityUpdatesPath: $.updates      # @2 renames the property and adds associationUpdatesPath;
-                                          # @1 has neither and rejects them at registration
+          - type: CreateUpdateInfo@1
+            description: Article attribute values (list still partial — full mapping tracked under AB#4228)
+            path: $.ck
+            rtIdPath: $.rt.articleRtId
+            ckTypeId: Industry.Logistics/Article
+            updateKindPath: $.rt.articleModOperation
+            # attributeValueType is REQUIRED per update — without it the update is silently
+            # dropped. No Sku: the CK Article type carries none.
+            attributeUpdates:
+              - attributeName: ArticleNumber
+                attributeValueType: String
+                valuePath: $.ck.ArticleNumber
+              - attributeName: Name
+                attributeValueType: String
+                valuePath: $.ck.Name
+              - attributeName: Ean
+                attributeValueType: String
+                valuePath: $.ck.Ean
+            targetPath: $.updates
+            targetValueWriteMode: Append      # NEVER omit: the Overwrite default keeps only the LAST update
+
+          - type: ApplyChanges@2
+            description: Persist the article upsert
+            entityUpdatesPath: $.updates      # @2 renames the property and adds associationUpdatesPath;
+                                              # @1 has neither and rejects them at registration

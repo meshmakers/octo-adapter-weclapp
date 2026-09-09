@@ -111,22 +111,27 @@ public class AiExportGateTests
         Assert.DoesNotContain(top, n => n is CreateAssociationUpdateNodeConfiguration);
 
         // MakeHttpRequest@1 seeds $.orders; the former per-execution chain now runs once per
-        // element inside ForEach@1, whose first child looks that order's customer up. Everything
-        // below descends into the loop's children instead of the pipeline's top level.
+        // element inside ForEach@1, whose one child is the system-order gate that looks that
+        // order's customer up. Everything below descends into the loop's children instead of the
+        // pipeline's top level.
         var forEach = Assert.Single(top.OfType<ForEachNodeConfiguration>());
+        // The loop body is ONE gate now - the system-order filter - and everything else, the read-only
+        // lookups included, lives inside it. The delivery gate is nested one level further down.
         var perItem = forEach.Transformations?.ToList() ?? new List<NodeConfiguration>();
+        var systemOrderGate = Assert.IsType<IfNodeConfiguration>(Assert.Single(perItem));
+        var body = systemOrderGate.Transformations?.ToList() ?? new List<NodeConfiguration>();
 
-        // The read-only lookups stay OUTSIDE the gate…
-        Assert.Contains(perItem, n => n is GetOrCreateRtEntitiesByTypeNodeConfiguration);
+        // The read-only lookups stay OUTSIDE the delivery gate…
+        Assert.Contains(body, n => n is GetOrCreateRtEntitiesByTypeNodeConfiguration);
         // …but nothing that renders, delivers or persists may run unconditionally:
-        Assert.DoesNotContain(perItem, n => n is DilosRenderNodeConfiguration);
-        Assert.DoesNotContain(perItem, n => n is SftpUploadNodeConfiguration);
-        Assert.DoesNotContain(perItem, n => n is ApplyChangesNodeConfiguration2);
-        Assert.DoesNotContain(perItem, n => n is CreateUpdateInfoNodeConfiguration);
-        Assert.DoesNotContain(perItem, n => n is CreateAssociationUpdateNodeConfiguration);
+        Assert.DoesNotContain(body, n => n is DilosRenderNodeConfiguration);
+        Assert.DoesNotContain(body, n => n is SftpUploadNodeConfiguration);
+        Assert.DoesNotContain(body, n => n is ApplyChangesNodeConfiguration2);
+        Assert.DoesNotContain(body, n => n is CreateUpdateInfoNodeConfiguration);
+        Assert.DoesNotContain(body, n => n is CreateAssociationUpdateNodeConfiguration);
 
-        // One gate, configured exactly like the semantics tests prove it works:
-        var gate = Assert.Single(perItem.OfType<IfNodeConfiguration>());
+        // One delivery gate, configured exactly like the semantics tests prove it works:
+        var gate = Assert.Single(body.OfType<IfNodeConfiguration>(), g => g.Path == ModOperationPath);
         var expected = GateConfiguration(transformations: null);
         Assert.Equal(expected.Path, gate.Path);
         Assert.Equal(expected.Operator, gate.Operator);

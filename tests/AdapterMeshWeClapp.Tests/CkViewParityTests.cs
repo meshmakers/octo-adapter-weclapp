@@ -1,13 +1,8 @@
-using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using FakeItEasy;
-using Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Nodes;
+using Meshmakers.Octo.MeshAdapter.Nodes.Transform;
 using Meshmakers.Octo.Sdk.Common.EtlDataPipeline;
-using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration.DependencyInjection;
-using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Nodes;
-using Microsoft.Extensions.DependencyInjection;
 using static Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Tests.PipelineYamlWalk;
 
 namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Tests;
@@ -17,8 +12,10 @@ namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Tests;
 /// reduces to "the same $.ck view for the same input" - as long as GetOrCreate/CreateUpdateInfo keep
 /// their configuration, which the yaml contract tests pin. The fixtures were frozen from
 /// WeClappToCk@1 at ca0cecb, the last commit that shipped the node, over the documents below, and
-/// restricted to the fields the shipped yamls persist. Everything else the node computed (contact,
-/// address, delivery date, order items) is not part of the contract and is tracked under AB#4228.
+/// restricted to the attributes the shipped yamls persist - read off the yamls' own CreateUpdateInfo@1
+/// nodes, so an attribute cannot come or go without the fixture noticing. Everything else the node
+/// computed (contact, address, delivery date, order items) is not part of the contract and is tracked
+/// under AB#4228.
 /// </summary>
 public class CkViewParityTests
 {
@@ -96,7 +93,7 @@ public class CkViewParityTests
         var actual = new JsonObject();
         foreach (var (name, document) in ArticleCases())
         {
-            actual[name] = PersistedArticleView(await RunArticleMapping(document));
+            actual[name] = await RunAndProjectAsync("weclapp-articles-to-ck.yaml", document);
         }
 
         await AssertMatchesFixtureAsync(ArticleFixture, actual);
@@ -108,68 +105,57 @@ public class CkViewParityTests
         var actual = new JsonObject();
         foreach (var (name, document) in OrderCases())
         {
-            actual[name] = PersistedOrderView(await RunOrderMapping(document));
+            actual[name] = await RunAndProjectAsync("weclapp-orders-to-ai.yaml", document);
         }
 
         await AssertMatchesFixtureAsync(OrderFixture, actual);
     }
 
-    // ---- producers: the node the fixtures are frozen from (replaced by the shipped chain later) ----
+    // ---- producer: the shipped mapping chain; projection: what the shipped yaml persists ----
 
-    private static Task<IDataContext> RunArticleMapping(string document) =>
-        RunNodeAsync("weclapp-articles-to-ck.yaml", document);
-
-    private static Task<IDataContext> RunOrderMapping(string document) =>
-        RunNodeAsync("weclapp-orders-to-ai.yaml", document);
-
-    private static async Task<IDataContext> RunNodeAsync(string yamlFileName, string document)
+    // The view holds exactly the attributes the yaml's CreateUpdateInfo@1 nodes read off $.ck, keyed by
+    // attribute name and grouped by the node's path (the ck yaml persists FLAT at $.ck, the ai yaml
+    // under $.ck.Customer and $.ck.Order). Reading that list off the yaml instead of restating it is
+    // what makes the fixture a change detector: an attribute added to or dropped from the yaml shows
+    // up here, and an attribute the yaml stopped persisting cannot keep claiming parity.
+    private static async Task<JsonNode?> RunAndProjectAsync(string yamlFileName, string document)
     {
-        var root = await PipelineDefinitions.DeserializeAsync(yamlFileName);
-        var config = Assert.Single(Walk(root.Transformations).OfType<WeClappToCkNodeConfiguration>());
-
-        var dataContext = new DataContextImpl(JsonDocument.Parse(document));
-        var services = new ServiceCollection();
-        services.AddLogging();
-        services.AddDataPipeline();
-        var rootContext = NodeContext.CreateRootNodeContext(services.BuildServiceProvider(),
-            A.Fake<IPipelineLogger>(), dataContext);
-
-        await new WeClappToCkNode(A.Fake<NodeDelegate>())
-            .ProcessObjectAsync(dataContext, rootContext.RegisterChildNode("WeClappToCk", 0, config, dataContext));
-        return dataContext;
-    }
-
-    // ---- the persisted view: exactly the paths the shipped yamls hand to GetOrCreate/CreateUpdateInfo ----
-
-    private static JsonNode? PersistedArticleView(IDataContext dataContext)
-    {
+        var dataContext = await ShippedMappingChain.RunAsync(yamlFileName, document);
         if (!dataContext.Exists("$.ck"))
         {
             return null;
         }
+
+        var root = await PipelineDefinitions.DeserializeAsync(yamlFileName);
+        var updates = Walk(root.Transformations).OfType<CreateUpdateInfoNodeConfiguration>()
+            .Where(update => update.Path is "$.ck" || update.Path?.StartsWith("$.ck.", StringComparison.Ordinal) == true)
+            .ToList();
+        Assert.NotEmpty(updates);
 
         var view = new JsonObject();
-        CopyIfPresent(view, "ArticleNumber", dataContext, "$.ck.ArticleNumber");
-        CopyIfPresent(view, "Name", dataContext, "$.ck.Name");
-        CopyIfPresent(view, "Ean", dataContext, "$.ck.Ean");
-        return view;
-    }
-
-    private static JsonNode? PersistedOrderView(IDataContext dataContext)
-    {
-        if (!dataContext.Exists("$.ck"))
+        foreach (var update in updates)
         {
-            return null;
+            var group = view;
+            if (update.Path != "$.ck")
+            {
+                var name = update.Path!["$.ck.".Length..];
+                if (view[name] is not JsonObject nested)
+                {
+                    nested = new JsonObject();
+                    view[name] = nested;
+                }
+
+                group = nested;
+            }
+
+            foreach (var attribute in update.AttributeUpdates ?? [])
+            {
+                CopyIfPresent(group, Assert.IsType<string>(attribute.AttributeName), dataContext,
+                    Assert.IsType<string>(attribute.ValuePath));
+            }
         }
 
-        var customer = new JsonObject();
-        CopyIfPresent(customer, "CustomerNumber", dataContext, "$.ck.Customer.CustomerNumber");
-        CopyIfPresent(customer, "Name", dataContext, "$.ck.Customer.Name");
-        var order = new JsonObject();
-        CopyIfPresent(order, "OrderNumber", dataContext, "$.ck.Order.OrderNumber");
-        CopyIfPresent(order, "ExternalOrderNumber", dataContext, "$.ck.Order.ExternalOrderNumber");
-        CopyIfPresent(order, "OrderDate", dataContext, "$.ck.Order.OrderDate");
-        return new JsonObject { ["Customer"] = customer, ["Order"] = order };
+        return view;
     }
 
     // Absent and JSON null are DIFFERENT things to CreateUpdateInfo@1 - absent means no update, null
@@ -188,18 +174,8 @@ public class CkViewParityTests
 
     private static async Task AssertMatchesFixtureAsync(string fixture, JsonObject actual)
     {
-        var repoRoot = Path.GetDirectoryName(RepoFiles.Find("CLAUDE.md"))!;
-        var file = Path.Combine(repoRoot, fixture);
+        var file = RepoFiles.Find(fixture);
         var rendered = actual.ToJsonString(FixtureJson) + "\n";
-
-        // FREEZE, first run only: no fixture yet, so the node's view becomes the anchor - and the run
-        // fails on purpose, so the file is looked at before it is committed. Removed with the node.
-        if (!File.Exists(file))
-        {
-            await File.WriteAllTextAsync(file, rendered, new UTF8Encoding(false),
-                TestContext.Current.CancellationToken);
-            Assert.Fail($"fixture frozen at {fixture} - inspect it, then re-run to compare");
-        }
 
         var expected = await File.ReadAllTextAsync(file, TestContext.Current.CancellationToken);
         // A checkout may have turned the LF fixture into CRLF; the comparison is about content.
