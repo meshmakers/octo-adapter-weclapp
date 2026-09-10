@@ -57,9 +57,10 @@ template.
     `runOnStart`/`pollingIntervalSeconds` fields no longer exist on any pipeline; nothing fires
     on (re)deploy or pod restart by construction. The AS pipeline still gates delivery on a
     per-day CK marker (`Industry.Logistics/ExportRun`, at most one file per Vienna calendar
-    day). Operational constraint unchanged: keep the chart's `replicaCount: 1` — the gate's
-    probe-to-persist window is race-free only with a single replica (two replicas could both
-    deliver before the day marker lands)
+    day), and the AR/BE return path gates every file on a per-file marker
+    (`Industry.Logistics/InboundFile`). Operational constraint unchanged: keep the chart's
+    `replicaCount: 1` — every marker's probe-to-persist window is race-free only while two
+    executions of the same pipeline never overlap (see CLAUDE.md, "AR/BE Return Path")
 - `tests/Lkv.WeClapp.Core.Tests` — xUnit against real LKV golden files
   (specs verified field-by-field; see `docs/superpowers/specs/`)
 - `tests/AdapterMeshWeClapp.Tests` — node/pipeline tests plus multi-gated live smokes
@@ -81,9 +82,11 @@ swap (AB#5162) is the inverse case: the image drops `WeClappToCk@1`, a stored ck
 that still names it is rejected at load time, and the yamls use nothing an image on SDK 3.4.109 or
 later lacks - so import `weclapp-articles-to-ck.yaml` and `weclapp-orders-to-ai.yaml` FIRST, then
 roll the image. The file-state swap (`DilosFileGate@1`/`DilosFileConfirm@1` replaced by
-`Industry.Logistics/InboundFile` markers and `SftpDelete@1`) is the same inversion: import CK 2.1.0,
-then the ar/be yamls, then the image - on an image at SDK 3.4.112 or later, where `SftpDelete@1`
-ships.
+`Industry.Logistics/InboundFile` markers and `SftpDelete@1`) is the same inversion with a floor:
+import `Industry.Logistics` 2.1.0, then the ar/be yamls, then the image - but only while the
+running image is on SDK 3.4.112 or later, where `SftpDelete@1` ships. An older image rejects the
+new yamls (unknown `SftpDelete@1`) and the new image rejects the old ones (unknown
+`DilosFileGate@1`), so such a deployment takes model, yamls and image in one coordinated lift.
 
 ## Build & test
 

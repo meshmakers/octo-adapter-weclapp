@@ -416,8 +416,17 @@ claims completeness invites re-pinning an invariant that already holds.
 - The marker is persisted by `ApplyChanges@2` as the LAST child of the Insert gate, only after the
   write succeeded, and the delete runs in its own gate AFTER it: a crash between the two leaves a
   marked file on the server, which the next tick only deletes (the probe answers Update, the gate
-  stays closed). A failing download, write or marker aborts the iteration before the delete;
-  `continueOnError: true` isolates that file and fails the run at the end. `SftpDelete@1` honours
+  stays closed). A download, write or marker step that THROWS aborts the iteration before the
+  delete (the one non-throwing failure is the residue below); `continueOnError: true` isolates
+  that file and fails the run at the end. The probe is a query, not an atomic claim, so two
+  executions of the same pipeline that OVERLAP could both see Insert for one file before either
+  persists its marker. A second replica is not that case - the cron trigger is a competing
+  consumer on one named queue per tenant and pipeline (`FromPipelineTriggerEventNode` +
+  `EventHubControl.RegisterRoutedEventConsumer(address, ...)`), so a tick runs on ONE pod - but a
+  manual run beside a tick, or a tick that outlasts its interval, is. Then both write (the
+  writes are idempotent by design) and the unique `FileKey` index rejects the second marker. Keep
+  the chart's `replicaCount: 1` (its default) all the same - the constraint the AS export marker
+  already carries. `SftpDelete@1` honours
   the execution mode only, which a cron tick never carries (the mesh adapter's
   `FromPipelineTriggerEvent@1` starts every tick without one), so the `$.mode` gate is the only
   thing between a validation tick and a consumed LKV file. `onMissingFile: Ignore` is explicit
