@@ -428,7 +428,8 @@ claims completeness invites re-pinning an invariant that already holds.
   fails).
 - Accepted residue: `ApplyChanges@2` logs and continues when the repository reports errors through
   its OperationResult instead of throwing, so a WRITTEN file could be deleted without a marker (no
-  data lost, no trace). The AS marker carries the same residue; a product change is noted for U4.
+  data lost, no trace). The AS marker carries the same residue; a product change is noted for the
+  alerting stage.
   And the markers are never pruned: about 20 per working day at the customer's pace, kept as
   history until the operations stage decides on a retention. Because they are never pruned, a
   file re-delivered byte-identical WITH its modification time preserved (an archived copy
@@ -470,7 +471,7 @@ claims completeness invites re-pinning an invariant that already holds.
   pinned at `-p:OctoVersion=3.4.109` prove the yamls deserialize there) and later, and the old
   image keeps the then-unused node registered. Staging: `DeployPipeline` ck + ai from the branch,
   then merge, train and lift; prod-2 gets yamls and image together in its one lift.
-- **The file-state swap (U2) is a FIFTH case of the rollout rule, and like the CK-view swap it
+- **The file-state swap (AB#5181) is a FIFTH case of the rollout rule, and like the CK-view swap it
   INVERTS the order: tenant yamls FIRST, image second.** The new image no longer registers
   `DilosFileGate@1`/`DilosFileConfirm@1`, so a stored ar or be definition that still names them is
   rejected at load time (unknown discriminator). Importing the two yamls first is windowless on an
