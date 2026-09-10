@@ -18,10 +18,9 @@ template.
     spelled out in the yaml, and the CK-shaped view of articles and orders is built by standard
     nodes in the ck/ai yamls; the fetching is the product's `MakeHttpRequest@1` and the delivery its
     `SftpUpload@1` with `encoding: iso-8859-1`)
-  - return path: `DilosFileGate@1` (per-file keep/delete state between ticks; the listing and
-    the download themselves are the product's `SftpList@1` and `SftpDownload@1`),
-    `DilosFileConfirm@1` (per-file keep/delete confirmation; last child of the
-    return-path `ForEach@1`), `WeClappArWrite@1`, `WeClappBeWrite@1`
+  - return path: `WeClappArWrite@1`, `WeClappBeWrite@1` (the listing, the reading and the deleting
+    are the product's `SftpList@1`, `SftpDownload@1` and `SftpDelete@1`; the per-file state is an
+    `Industry.Logistics/InboundFile` marker written by standard nodes in the ar/be yamls)
 - `src/Lkv.WeClapp.Core` — plain .NET core library, no platform dependencies:
   - **WeClapp → DILOS (outbound)**: `WeClappJson`, `WeClappToDilos` value rules,
     `DilosOrderWriter` (AI `K*`/`P*`; the AS `A*` layout is the column list in
@@ -41,7 +40,7 @@ template.
   - **Trigger architecture:** every pipeline carries two passive triggers —
     `FromPipelineTriggerEvent@1` (cron, subscribes a per-pipeline queue) and
     `FromExecutePipelineCommand@1` (manual/API run). A fetch step
-    (`MakeHttpRequest@1` outbound, `SftpList@1` + `DilosFileGate@1` on the return path) runs
+    (`MakeHttpRequest@1` outbound, `SftpList@1` on the return path) runs
     first and seeds the data context; in
     4 of the 5 pipelines a per-item `ForEach@1` (`keyPath: $.current`,
     `maxDegreeOfParallelism: 1`) then fans the former per-execution chain out over the
@@ -58,9 +57,10 @@ template.
     `runOnStart`/`pollingIntervalSeconds` fields no longer exist on any pipeline; nothing fires
     on (re)deploy or pod restart by construction. The AS pipeline still gates delivery on a
     per-day CK marker (`Industry.Logistics/ExportRun`, at most one file per Vienna calendar
-    day). Operational constraint unchanged: keep the chart's `replicaCount: 1` — the gate's
-    probe-to-persist window is race-free only with a single replica (two replicas could both
-    deliver before the day marker lands)
+    day), and the AR/BE return path gates every file on a per-file marker
+    (`Industry.Logistics/InboundFile`). Operational constraint unchanged: keep the chart's
+    `replicaCount: 1` — every marker's probe-to-persist window is race-free only while two
+    executions of the same pipeline never overlap (see CLAUDE.md, "AR/BE Return Path")
 - `tests/Lkv.WeClapp.Core.Tests` — xUnit against real LKV golden files
   (specs verified field-by-field; see `docs/superpowers/specs/`)
 - `tests/AdapterMeshWeClapp.Tests` — node/pipeline tests plus multi-gated live smokes
@@ -81,7 +81,12 @@ incompatible in both directions: roll the image out first, then re-import the ya
 swap (AB#5162) is the inverse case: the image drops `WeClappToCk@1`, a stored ck or ai definition
 that still names it is rejected at load time, and the yamls use nothing an image on SDK 3.4.109 or
 later lacks - so import `weclapp-articles-to-ck.yaml` and `weclapp-orders-to-ai.yaml` FIRST, then
-roll the image.
+roll the image. The file-state swap (`DilosFileGate@1`/`DilosFileConfirm@1` replaced by
+`Industry.Logistics/InboundFile` markers and `SftpDelete@1`) is the same inversion with a floor:
+import `Industry.Logistics` 2.1.0, then the ar/be yamls, then the image - but only while the
+running image is on SDK 3.4.112 or later, where `SftpDelete@1` ships. An older image rejects the
+new yamls (unknown `SftpDelete@1`) and the new image rejects the old ones (unknown
+`DilosFileGate@1`), so such a deployment takes model, yamls and image in one coordinated lift.
 
 ## Build & test
 

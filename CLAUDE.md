@@ -23,9 +23,10 @@ dotnet build Octo.WeClappAdapter.slnx -c DebugL
   through the product's `RenderDelimitedText@1`, and the CK-shaped view of articles and orders is
   built by standard nodes in the yamls) - the fetching itself is
   the product's `MakeHttpRequest@1` and the delivery its `SftpUpload@1`, see "AS/AI Delivery"
-  below; return path: `DilosFileGate@1`, `DilosFileConfirm@1`, `WeClappArWrite@1`,
-  `WeClappBeWrite@1` — the listing and the reading themselves are the product's `SftpList@1`
-  and `SftpDownload@1`, see "AR/BE Return Path" below. That is the complete inventory: SIX
+  below; return path: `WeClappArWrite@1`, `WeClappBeWrite@1` — the listing, the reading and the
+  deleting are the product's `SftpList@1`, `SftpDownload@1` and `SftpDelete@1`, and the per-file
+  state is an `Industry.Logistics/InboundFile` marker built by standard nodes in the yamls, see
+  "AR/BE Return Path" below. That is the complete inventory: FOUR
   declared node types, and no trigger node of its own - every pipeline is driven by a passive
   product trigger, see "Pipeline Trigger Architecture" below)
 - `src/Lkv.WeClapp.Core/` - plain core lib: WeClapp DTOs/JSON, WeClapp→DILOS value rules,
@@ -64,16 +65,17 @@ All 5 pipeline YAMLs carry two passive triggers — `FromPipelineTriggerEvent@1`
 subscribes a per-pipeline queue and calls `ExecuteAsync` directly) and
 `FromExecutePipelineCommand@1` (manual/API run, e.g. for Härtetest probing). Neither is a poll
 loop: a redeploy or pod restart fires no execution. A fetch step
-(`MakeHttpRequest@1` outbound, `SftpList@1` + `DilosFileGate@1` on the AR/BE return path) runs
+(`MakeHttpRequest@1` outbound, `SftpList@1` on the AR/BE return path) runs
 first and seeds the data context at a fixed root path — always the array, even `[]` (a missing/non-array path aborts a downstream
 `ForEach@1` with `PathMustBeArray`); in 4 of the 5 YAMLs a per-item `ForEach@1` then fans the
 former per-execution chain out over that array, one iteration per element
 (`weclapp-articles-to-as.yaml` has no `ForEach@1` - it renders one batch per tick). The ck and ai
 loops have ONE child each, the `If@1` system-record gate that wraps the whole body (`If@1` always
 continues with the next node, so a step left outside it would run for loading equipment or the
-anonymous debitor); the ai loop is the exception on two further counts: the FIRST child of its gate
-is a per-order `MakeHttpRequest@1` customer lookup, and it carries `continueOnError: true`, so a
-customer that fails permanently fails its own order instead of starving the tick. The as pipeline
+anonymous debitor); the ai loop is the exception on one further count: the FIRST child of its gate
+is a per-order `MakeHttpRequest@1` customer lookup. The ai, ar and be loops carry
+`continueOnError: true`, so a customer or a file that fails permanently fails its own iteration
+instead of starving the tick. The as pipeline
 starts with its export-run key instead of
 a fetch - `SetPrimitiveValue@1` names the kind, then one `DateTime@1` `Now`, one
 `ConvertToTimeZone` to `Europe/Vienna` and two `Format` steps write
@@ -119,27 +121,38 @@ silently escape the ban; `AllPipelineYamls_EveryForEach_HasNonRootTargetPathAndS
 asserts every `ForEach@1` has a non-null, non-`"$"` `targetPath` and
 `maxDegreeOfParallelism == 1`; `AllPipelineYamls_EveryForEach_KeyPathIsCurrent` pins every
 `ForEach@1`'s `keyPath` to `$.current`;
-`ArBeYamls_FetchTheirFilesThroughSftpListGateAndSftpDownload` pins the AR/BE return-path wiring
-(`SftpList@1` -> `DilosFileGate@1` on the same path -> `SftpDownload@1` as the FIRST per-file
-child, reading `$.current.fullPath`; the write node's `contentPath` is the download's
-`targetPath` and its `fileNamePath` is `$.current.name`) — every one of those strings can be
-changed on ONE side and still ship green, doing the wrong amount of work — plus each yaml's
-`filePattern` EXACTLY (`AR*TXT` / `BE*txt`), which selects the files AND, through the `source`
-object the listing stamps on every element, the scope the gate keys its cross-tick memory on;
-nothing else pinned it, so a blanked or merely widened glob shipped green and surfaced at the
-tenant at the earliest;
-`ArBeYamls_ConfigureDeleteAfterSuccessExactlyOnce` allows the keep/delete mode in exactly one
-place per ar/be yaml, on `DilosFileGate@1`;
+`ArBeYamls_FetchTheirFilesThroughSftpListAndSftpDownload` pins the AR/BE return-path wiring
+(`SftpList@1` -> the per-file `ForEach@1` over the same path -> `SftpDownload@1` as the FIRST child
+of the marker gate, reading `$.current.fullPath` from the same server entry; the write node's
+`contentPath` is the download's `targetPath` and its `fileNamePath` is `$.current.name`) — every
+one of those strings can be changed on ONE side and still ship green, doing the wrong amount of
+work — plus each yaml's `filePattern` EXACTLY (`AR*TXT` / `BE*txt`) and `minFileAgeSeconds >= 60`;
+`ArBeYamls_ConfigureTheProcessingModeExactlyOnce` allows the processing mode in exactly one place
+per ar/be yaml, one `SetPrimitiveValue@1` on `$.mode` before the loop holding `dryRun` or `live`;
+`ArBeYamls_DryRunWriteNode_ForbidsTheLiveMode` couples that mode to the write node's `dryRun` in
+BOTH directions (`live` with `dryRun: true` would consume the only copy of an LKV file without
+writing it, `dryRun` with `dryRun: false` would book a file a second time after the flip), reading
+both values through the same binding the tenant uses rather than off the raw text — YAML has
+several spellings of true (`yes`, `on`, `!!bool true`) and a text probe written for `true` passes
+them all as "not set";
+`ArBeYamls_SftpDelete_IsGatedOnTheLiveModeBehindTheMarker` pins `SftpDelete@1` as the only child of
+an `If@1` on `$.mode == live` that is the LAST per-file `ForEach@1` child, AFTER the marker gate
+whose last child is `ApplyChanges@2`, with `onMissingFile: Ignore` (the product default is Fail);
+`ArBeYamls_ForEachIsolatesAFailingFile` pins `continueOnError: true` on the per-file loop, the only
+isolation left on the return path since the retired gate took its try/catch with it;
+`ArBeYamls_InboundFileMarker_KeysOnTheListingElementAndTheMode` pins the marker key
+(`FormatString@1` over the listing element's server, directory, name, length, verbatim
+`lastWriteTimeUtc` text and the mode), the probe (`GetOrCreateRtEntitiesByType@1` on
+`Industry.Logistics/InboundFile`, one `FileKey Equals` filter on that key), the gate on the probe's
+mod operation (`Equal 0` = Insert) and the seven typed attribute updates the marker writes, in the
+order download -> write -> `DateTime@1 Now` -> `CreateUpdateInfo@1` -> `ApplyChanges@2`;
+`ArBeChainTests` runs that loop body with the real nodes against fakes (the ar yaml throughout, the
+be yaml once with its own write node) and pins that the marker is handed to the repository BEFORE
+the file is deleted, that only the live mode deletes, that a known file is neither read nor written
+again and that a repository or write failure leaves the file on the server;
 `ArBeYamls_ReadDilosFilesAsIso88591` pins the effective `encoding` of every `SftpDownload@1` to
 the code page the DILOS parsers expect (the node defaults to utf-8, which turns Latin-1 umlauts
 into replacement characters without failing anything);
-`ArBeYamls_DilosFileConfirm_IsTheLastPerFileForEachChild` pins the confirm node as the LAST
-per-file `ForEach@1` child; `ArBeYamls_DryRunWriteNode_ForbidsDeleteAfterSuccess` forbids
-`deleteAfterSuccess: true` while the write node runs `dryRun: true`, reading BOTH values through
-the same binding the tenant uses rather than off the raw text — YAML has several spellings of true
-(`yes`, `on`, `!!bool true`) and a text probe written for `true` passes them all as "not set",
-i.e. green for exactly the combination that consumes the only copy of an LKV file without writing
-it;
 `AllPipelineYamls_UseApiConfigurationOnly_NoInlineCredentialsOrPlaceholders` keeps WeClapp access
 on `apiConfiguration` (no inline `apiKey`/`baseUrl`, no substitution placeholder);
 `AllPipelineYamls_EveryAttributeUpdate_DeclaresValueType` requires every `ApplyChanges` attribute
@@ -373,60 +386,82 @@ claims completeness invites re-pinning an invariant that already holds.
   info + file attribution) is tracked for C2.
 
 ## AR/BE Return Path (SFTP → WeClapp)
-- The chain is `SftpList@1` → `DilosFileGate@1` → `ForEach@1` [ `SftpDownload@1` →
-  `WeClappArWrite@1`/`WeClappBeWrite@1` → `DilosFileConfirm@1` ]. The product nodes own the SFTP
-  mechanics (credentials via tenant GlobalConfiguration entry `LkvSftp`, same JSON shape as
-  `SftpUpload@1`), this adapter owns the DILOS policy. `SftpList@1` seeds `$.files` with metadata
-  for every matching, ready file — always the array, even `[]` — and `minFileAgeSeconds: 60`
-  keeps a file that is still being written out of the listing (the node defaults to 0).
-  `SftpDownload@1` sits INSIDE the loop, one file per iteration, and needs
+- The chain is `SftpList@1` → `SetPrimitiveValue@1` (`$.mode`) → `ForEach@1` [ `FormatString@1`
+  (marker key) → `GetOrCreateRtEntitiesByType@1` (marker probe) → `If@1` on Insert [
+  `SftpDownload@1` → `WeClappArWrite@1`/`WeClappBeWrite@1` → `DateTime@1 Now` →
+  `CreateUpdateInfo@1` → `ApplyChanges@2` ] → `If@1` on `$.mode == live` [ `SftpDelete@1` ] ]. The
+  product nodes own the SFTP mechanics (credentials via tenant GlobalConfiguration entry `LkvSftp`,
+  same JSON shape as `SftpUpload@1`), this adapter owns the DILOS policy. `SftpList@1` seeds
+  `$.files` with metadata for every matching, ready file — always the array, even `[]` — and
+  `minFileAgeSeconds: 60` keeps a file that is still being written out of the listing (the node
+  defaults to 0). `SftpDownload@1` sits INSIDE the marker gate, one file per iteration, and needs
   `encoding: iso-8859-1`: its default is utf-8, and DILOS files are Latin-1.
-- `DilosFileGate@1` is the state between the two: per element it drops what a keep-mode run
-  already confirmed, settles a delete an earlier tick still owes the server (without letting the
-  file through again), and stamps the survivors with the file key, the mode and the server. It
-  keys on the element's own `source` object, so the server/directory/pattern triple stays
-  configured once, on the listing node. Because the filter sits BEFORE the download, an
-  already-processed file costs no transfer.
-- `deleteAfterSuccess` lives on the gate and NOWHERE else. `DilosFileConfirm@1` reads it — and
-  the server — off the stamped element, so the two nodes cannot be configured to disagree; a
-  missing stamp is an error, never a default. It performs the actual keep/delete as the LAST
-  child: with `deleteAfterSuccess: true` the remote file is deleted only AFTER the write
-  succeeded → the write MUST stay idempotent. The DEFAULT is the safe side (false = keep
-  files): a dry-run execution succeeds without writing, and deleting would consume the LKV file
-  with no effect — flip `deleteAfterSuccess: true` together with `dryRun: false` for go-live.
-- The file identity crosses a JSON boundary now: the key is built from the `lastWriteTimeUtc`
-  TEXT `SftpList@1` emitted, carried through verbatim. Re-parsing and re-formatting it would tie
-  the identity to the reader's format choice — an unchanged file would key differently from one
-  tick to the next, no keep mark would ever match, and every file would be delivered again on
-  every tick. `DilosFileGateNodeTests.KeysOnTheListingsOwnTimestampText_NotOnAReformattedValue`
-  pins the carry-through; `TwoListingsOfAnUnchangedFile_ProduceTheIdenticalKey` runs the real
-  `SftpList@1` twice and pins that its rendering is deterministic.
-- Cross-tick memory lives in the `DilosFileFetchState` DI singleton, shared by the ar AND the be
-  pipeline, which is why every key carries a scope prefix. A pod restart clears it (a kept file
-  is let through once more — downstream idempotency covers that); a pipeline REdeploy does not.
-  **Accepted residue:** the gate derives the scopes it prunes from the elements it is handed, so
-  an EMPTY listing prunes nothing, where a node configured with its own scope could prune it
-  unconditionally. In keep mode a file that disappears from the server and later
-  returns byte-identical with its modification time preserved therefore keys the same and is
-  dropped as already processed - until any non-empty listing of that scope runs without it, or
-  at the latest until the pod restarts. Reading the scope off the elements is
-  what removes the duplicated server/directory/pattern triple from the gate, so this is that
-  trade; in delete mode, where files do not linger, it cannot arise. Pinned as current behaviour
-  by `DilosFileGateNodeTests.EmptyListing_LeavesEarlierMarksInPlace`. Closing it properly needs
-  `SftpList@1` to name its source on an empty listing too, which is a product change.
+- The per-file state is an `Industry.Logistics/InboundFile` marker (CK 2.1.0, one instance per
+  processed file and mode, unique index on `FileKey`), not memory: it survives pod restarts and
+  redeploys, and it is visible in the Studio. The key is
+  `{serverConfiguration}|{remoteDirectory}|{name}|{length}|{lastWriteTimeUtc}|{mode}`, built by
+  `FormatString@1` from the element `SftpList@1` emitted, with the listing's own `lastWriteTimeUtc`
+  TEXT carried through verbatim (`FormatString@1` reads a JSON string as a string; re-parsing and
+  re-formatting it would tie the identity to the reader's format choice, and an unchanged file
+  would key differently from one tick to the next). A `|` inside a DILOS file name is not
+  guarded against - `SftpList@1` drops names with path separators, and the names are `AR*.TXT` /
+  `BE_*.txt`.
+- `$.mode` lives on ONE `SetPrimitiveValue@1` before the loop and NOWHERE else: `dryRun` (validate
+  only, dryRun marker, no delete) or `live` (real write, live marker, delete). It is part of the
+  key on purpose - a file validated in `dryRun` is not the same processing as the live one, so the
+  backlog on the LKV server runs once for real after the flip to `live`, exactly the go-live rule
+  the retired in-memory keep mark implemented. The write node's `dryRun` is a second place; the
+  contract test couples the two. The DEFAULT in the repo is the safe side (`dryRun` + `dryRun:
+  true`): flip `mode: live` together with `dryRun: false` for go-live.
+- The marker is persisted by `ApplyChanges@2` as the LAST child of the Insert gate, only after the
+  write succeeded, and the delete runs in its own gate AFTER it: a crash between the two leaves a
+  marked file on the server, which the next tick only deletes (the probe answers Update, the gate
+  stays closed). A download, write or marker step that THROWS aborts the iteration before the
+  delete (the one non-throwing failure is the residue below); `continueOnError: true` isolates
+  that file and fails the run at the end. The probe is a query, not an atomic claim, so two
+  executions of the same pipeline that OVERLAP could both see Insert for one file before either
+  persists its marker. A second replica is not that case - the cron trigger is a competing
+  consumer on one named queue per tenant and pipeline (`FromPipelineTriggerEventNode` +
+  `EventHubControl.RegisterRoutedEventConsumer(address, ...)`), so a tick runs on ONE pod - but a
+  manual run beside a tick, or a tick that outlasts its interval, is. Then both write (the
+  writes are idempotent by design) and the unique `FileKey` index rejects the second marker. Keep
+  the chart's `replicaCount: 1` (its default) all the same - the constraint the AS export marker
+  already carries. `SftpDelete@1` honours
+  the execution mode only, which a cron tick never carries (the mesh adapter's
+  `FromPipelineTriggerEvent@1` starts every tick without one), so the `$.mode` gate is the only
+  thing between a validation tick and a consumed LKV file. `onMissingFile: Ignore` is explicit
+  because the product default is Fail, and it is a judgment call rather than a necessity: every
+  file the delete is asked for was listed seconds earlier, so only someone else removing it inside
+  the tick reaches this, and a run whose marker is already persisted must not go red for a file
+  that is gone anyway (the node applies Ignore to a missing file only; a permission error still
+  fails).
+- Accepted residue: `ApplyChanges@2` logs and continues when the repository reports errors through
+  its OperationResult instead of throwing, so a WRITTEN file could be deleted without a marker (no
+  data lost, no trace). The AS marker carries the same residue; a product change is noted for the
+  alerting stage.
+  And the markers are never pruned: about 20 per working day at the customer's pace, kept as
+  history until the operations stage decides on a retention. Because they are never pruned, a
+  file re-delivered byte-identical WITH its modification time preserved (an archived copy
+  re-uploaded by a tool that keeps mtime) keys the same as the processed one and is only deleted -
+  the retired confirm node forgot a key after a successful delete, this design does not. Delete
+  the marker instance before such a re-upload; a re-upload that changes the mtime is a new file.
+- A dry run started through `FromExecutePipelineCommand@1` (mesh adapter >= the AB#5159 fix)
+  reaches every node with `IsDryRun`: the write nodes validate, `ApplyChanges@2` and
+  `SftpDelete@1` record their intent and touch nothing - the way to validate a `live` definition
+  without consuming a file. That fix (octo-mesh-adapter `ae68ec0`) is in NO published SDK up to
+  3.4.112: on an older image the command starts a NORMAL execution, and a `mode: live` +
+  `dryRun: false` definition then writes and deletes for real. Validate a live definition this way
+  only on an image that carries the fix.
 - Two ways the wiring can be wrong without anything failing, both guarded because both are one
-  Studio edit away: a gate whose `path` names something the listing never wrote (it would write
-  an empty array and every tick would run green while files pile up — the node refuses instead,
-  for a missing path and a path holding null alike),
-  and a `SftpDownload@1` naming a different `serverConfiguration` than the listing (content from
-  one server, deletion on the other). The second is covered by the shipped-yaml assertion that
-  every SFTP node in every pipeline names the SAME tenant entry.
+  Studio edit away: a probe without `fieldFilters` (`GetOrCreateRtEntitiesByType@1` logs an error
+  and STOPS the chain - every tick green, no file processed) and a `SftpDownload@1` or
+  `SftpDelete@1` naming a different `serverConfiguration` than the listing (content from one
+  server, deletion on the other). Both are pinned by the shipped-yaml contracts.
 - Importing a pipeline YAML that uses a config key the DEPLOYED image does not know yet fails the
   pipeline registration (the SDK YAML deserializer rejects unknown properties) → deploy the new
-  image before importing updated YAMLs. This swap changes both directions at once: the new image
-  no longer accepts `deleteAfterSuccess`/`serverConfiguration` on `DilosFileConfirm@1`, so the
-  stored definition and the running image disagree until the re-import — for those two pipelines
-  only, and only until it runs.
+  image before importing updated YAMLs. The SFTP swap that put the product's `SftpList@1` and
+  `SftpDownload@1` in front of the adapter's return-path nodes changed both directions at once and
+  counts as the first two cases of that rule; the next three follow.
 - **The AS swap is a THIRD case of the same rule, and it fails LATER than the other two.**
   `RenderDelimitedText@1` ships in SDK **3.4.101 and in no earlier version** (verified across the
   whole local package cache and the hand-maintained `999.0.0` DebugL feed), so importing the new
@@ -445,6 +480,17 @@ claims completeness invites re-pinning an invariant that already holds.
   pinned at `-p:OctoVersion=3.4.109` prove the yamls deserialize there) and later, and the old
   image keeps the then-unused node registered. Staging: `DeployPipeline` ck + ai from the branch,
   then merge, train and lift; prod-2 gets yamls and image together in its one lift.
+- **The file-state swap (AB#5181) is a FIFTH case of the rollout rule, and like the CK-view swap it
+  INVERTS the order: tenant yamls FIRST, image second.** The new image no longer registers
+  `DilosFileGate@1`/`DilosFileConfirm@1`, so a stored ar or be definition that still names them is
+  rejected at load time (unknown discriminator). Importing the two yamls first is windowless on an
+  image at SDK 3.4.112 or later: `SftpDelete@1` ships in 3.4.112 and in no earlier version (the
+  staging chart 3.4.113 carries it), the rest since 3.4.109. On an older image the yaml import fails
+  registration (unknown discriminator `SftpDelete@1`) and the image-first order fails the same way
+  at load time - lift that image to >= 3.4.112 before either step. `Industry.Logistics` 2.1.0 has
+  to be imported BEFORE the yamls (the probe fails loud on a tenant without the type). Staging:
+  import the CK, `DeployPipeline` ar + be from the branch, then merge, train and lift; prod-2 gets
+  CK, yamls and image together in its one lift.
 - `WeClappArWrite@1`: AR K* Auftragsnummer1 = WeClapp `salesOrder.id` (404 = dead-letter
   log, file still consumed). Idempotency: SHIPPED shipment with same tracking = skip;
   reuse non-CANCELLED; else `createShipment`. Quantities match by **articleId, never by

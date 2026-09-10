@@ -36,34 +36,20 @@ await adapterBuilder.RunAsync(args, builder =>
     // MakeHttpRequest@1 node resolves a plain injected HttpClient, which is that default.
     builder.Services.AddWeClappHttpClients();
 
-    // SFTP seam for the DILOS AR/BE return path - the remote delete both DilosFileGate@1 (settling
-    // a delete an earlier tick still owed) and DilosFileConfirm@1 (the keep/delete decision after a
-    // successful write) perform. SSH.NET-backed in production, faked in tests. The listing and the
-    // download themselves are the product's SftpList@1 / SftpDownload@1 and never reach this seam.
-    builder.Services.AddSingleton<ISftpFileSystemFactory, SshNetSftpFileSystemFactory>();
-
-    // Cross-tick memory for DilosFileGate@1 / DilosFileConfirm@1 (AR/BE return path): the pipeline
-    // engine constructs a fresh node instance per chain, i.e. per tick, so which files an earlier
-    // tick already processed cannot live on the nodes themselves. ONE instance is shared by the ar
-    // AND the be pipeline, which is why every key carries a scope prefix. A pod restart clears it;
-    // a pipeline redeploy does not.
-    builder.Services.AddSingleton<DilosFileFetchState>();
-
     // Add the adapter's own nodes to the container. Outbound: WeClappResolveSupplySources@1 →
     // DilosRender@1 (AI only — the AS article master renders through the product's
     // RenderDelimitedText@1, and the CK-shaped view of articles and orders is built by standard
-    // nodes in the yamls), with the product's
-    // MakeHttpRequest@1 fetching and SftpUpload@1 delivering. Return path: DilosFileGate@1 →
-    // WeClappArWrite@1 / WeClappBeWrite@1 → DilosFileConfirm@1, with the product's SftpList@1 and
-    // SftpDownload@1 doing the SFTP mechanics. Every pipeline is driven by a passive trigger from
-    // the product, so this adapter declares no trigger node of its own.
+    // nodes in the yamls), with the product's MakeHttpRequest@1 fetching and SftpUpload@1
+    // delivering. Return path: WeClappArWrite@1 / WeClappBeWrite@1, with the product's SftpList@1,
+    // SftpDownload@1 and SftpDelete@1 doing the SFTP mechanics and an Industry.Logistics/InboundFile
+    // marker per processed file (standard nodes in the yamls) replacing the former in-memory file
+    // state. Every pipeline is driven by a passive trigger from the product, so this adapter
+    // declares no trigger node of its own.
     builder.Services.AddOctoMeshAdapter()
         .RegisterNode<WeClappResolveSupplySourcesNode>()
         .RegisterNode<DilosRenderNode>()
-        .RegisterNode<DilosFileGateNode>()
         .RegisterNode<WeClappArWriteNode>()
-        .RegisterNode<WeClappBeWriteNode>()
-        .RegisterNode<DilosFileConfirmNode>();
+        .RegisterNode<WeClappBeWriteNode>();
 
 }, app =>
 {

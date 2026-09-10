@@ -29,8 +29,6 @@ internal static class PipelineDefinitions
             .RegisterNodeConfiguration<DilosRenderNodeConfiguration>()
             .RegisterNodeConfiguration<WeClappArWriteNodeConfiguration>()
             .RegisterNodeConfiguration<WeClappBeWriteNodeConfiguration>()
-            .RegisterNodeConfiguration<DilosFileGateNodeConfiguration>()
-            .RegisterNodeConfiguration<DilosFileConfirmNodeConfiguration>()
             .RegisterNodeConfiguration<WeClappResolveSupplySourcesNodeConfiguration>();
         var lookup = services.BuildServiceProvider().GetRequiredService<INodeQualifiedNameLookupService>();
 

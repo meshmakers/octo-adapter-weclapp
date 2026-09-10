@@ -3,8 +3,9 @@ using Meshmakers.Octo.Sdk.Common.EtlDataPipeline.Configuration;
 namespace Meshmakers.Octo.Communication.MeshAdapter.WeClapp.Nodes;
 
 /// <summary>
-/// Shared configuration of the AR/BE write-back nodes. Both consume the DilosFileFetch
-/// document <c>{ fileName, content }</c> and write to WeClapp with the fetch node's
+/// Shared configuration of the AR/BE write-back nodes. Both consume the
+/// <c>{ fileName, content }</c> document the ar/be yamls build (<c>fileNamePath</c> from the
+/// listing element, <c>contentPath</c> from SftpDownload@1) and write to WeClapp with a shared
 /// retry discipline (transient 5xx/408/429/network retried with exponential backoff,
 /// everything else fail-loud).
 /// </summary>
